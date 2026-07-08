@@ -1,0 +1,13 @@
+{
+  "name": "research-tree",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm --workspace @research-tree/web run dev",
+    "build": "npm --workspace @research-tree/web run build",
+    "lint": "npm --workspace @research-tree/web run lint",
+    "typecheck": "npm --workspace @research-tree/web run typecheck"
+  }
+}
