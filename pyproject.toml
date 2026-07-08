@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-tree"
+version = "0.1.0"
+description = "Backend tools for constructing Research Tree workspaces."
+requires-python = ">=3.11"
+dependencies = [
+  "langchain-core>=0.3.0",
+  "langgraph>=0.6.0",
+  "pydantic>=2.0.0",
+]
+
+[project.scripts]
+research-tree-prepare-candidates = "research_tree.cli.prepare_workspace_candidates:main"
+research-tree-construct-workspace = "research_tree.cli.construct_workspace:main"
+research-tree-enrich-similar-papers = "research_tree.cli.enrich_workspace_similar_papers:main"
+research-tree-run-pipeline = "research_tree.cli.run_workspace_pipeline:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+pipeline = [
+  "sentence-transformers>=3.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
