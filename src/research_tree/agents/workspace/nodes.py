@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
+from uuid import uuid4
 
 from langgraph.types import Command, interrupt
 
@@ -40,6 +41,7 @@ from research_tree.workspace.context import (
 )
 from research_tree.workspace.diff import derive_operations_and_diff_summary
 from research_tree.workspace.operations import apply_workspace_patch_in_memory
+from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.serialization import load_candidate_artifact, load_json_artifact
 from research_tree.workspace.validators import (
     run_workspace_validator,
@@ -57,11 +59,13 @@ class WorkspaceAgentNodes:
         llm_client: WorkspaceAgentLlmClient | None = None,
         workspace_constructor: Callable[..., dict[str, Any]] = construct_workspace,
         retrieval_runner: Callable[[Any], dict[str, Any]] = run_workspace_candidate_preparation_pipeline,
+        workspace_repository: WorkspaceRepository | None = None,
         repo_root: Path = REPO_ROOT,
     ) -> None:
         self.llm_client = llm_client or default_workspace_agent_llm_client()
         self.workspace_constructor = workspace_constructor
         self.retrieval_runner = retrieval_runner
+        self.workspace_repository = workspace_repository
         self.repo_root = repo_root
 
     def load_workspace(self, state: WorkspaceAgentState) -> dict[str, Any]:
@@ -71,7 +75,11 @@ class WorkspaceAgentNodes:
         errors: list[str] = []
         if workspace is None:
             workspace_id = state.get("workspace_id")
-            if workspace_id and Path(str(workspace_id)).is_file():
+            if workspace_id and self.workspace_repository is not None:
+                workspace = self.workspace_repository.get_current_workspace(
+                    str(workspace_id)
+                )
+            elif workspace_id and Path(str(workspace_id)).is_file():
                 payload = load_json_artifact(Path(str(workspace_id)))
                 if isinstance(payload, dict):
                     workspace = payload
@@ -99,6 +107,7 @@ class WorkspaceAgentNodes:
             "candidate_artifact": candidate_artifact,
             "candidate_pool": candidate_pool_from_artifact(candidate_artifact),
             "status": "loaded" if not errors else "failed",
+            "agent_run_id": state.get("agent_run_id") or f"agent_run_{uuid4().hex}",
             "allow_pipeline_rerun": bool(state.get("allow_pipeline_rerun", False)),
             "require_approval": bool(state.get("require_approval", True)),
             "approval_required": False,
@@ -288,10 +297,23 @@ class WorkspaceAgentNodes:
         guardrail = state.get("retrieval_guardrail_result") or {}
         reason = guardrail.get("rejection_reason") or "retrieval rerun rejected by guardrails"
         response = f"I cannot rerun retrieval for this request: {reason}."
+        run_event_id = self._append_agent_run_event(
+            state,
+            status="failed_guardrail",
+            payload={
+                "error_message": reason,
+                "errors": [reason],
+                "retrieval_guardrail_result": guardrail,
+            },
+            actor_type="system",
+            error_message=reason,
+            errors=[reason],
+        )
         return {
             "status": "failed",
             "final_response": response,
             "errors": [reason],
+            "persisted_event_ids": [run_event_id] if run_event_id else [],
             "node_trace": [_trace("answer_with_guardrail_rejection")],
         }
 
@@ -406,7 +428,7 @@ class WorkspaceAgentNodes:
         state: WorkspaceAgentState,
     ) -> Command[
         Literal[
-            "human_review_proposal",
+            "persist_pending_review",
             "repair_workspace_proposal",
             "finalize_validation_failure",
         ]
@@ -438,7 +460,7 @@ class WorkspaceAgentNodes:
             validation_round=validation_round,
         ).model_dump()
         if not errors:
-            goto = "human_review_proposal"
+            goto = "persist_pending_review"
         elif int(state.get("repair_attempts", 0)) < int(state.get("max_repair_attempts", 2)):
             goto = "repair_workspace_proposal"
         else:
@@ -452,6 +474,50 @@ class WorkspaceAgentNodes:
             },
             goto=goto,
         )
+
+    def persist_pending_review(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        review_id = state.get("review_id")
+        if self.workspace_repository is not None:
+            review_id = review_id or f"review_{uuid4().hex}"
+        payload = _review_interrupt_payload(state, review_id=review_id)
+        persisted_event_ids: list[str] = []
+        if self.workspace_repository is not None:
+            self.workspace_repository.save_pending_review(
+                _workspace_id(state),
+                review_id=review_id,
+                agent_run_id=str(state.get("agent_run_id") or ""),
+                base_workspace_version_hash=str(
+                    state.get("workspace_version_hash") or ""
+                ),
+                user_message=state.get("user_message", ""),
+                proposed_workspace=dict(
+                    _required_mapping(
+                        state.get("proposed_workspace"),
+                        "proposed_workspace",
+                    )
+                ),
+                proposed_operations=state.get("proposed_operations") or [],
+                diff_summary=state.get("diff_summary") or {},
+                validation_summary=state.get("validation_summary") or {},
+                interrupt_payload=payload,
+            )
+            run_event_id = self._append_agent_run_event(
+                state,
+                status="pending_review",
+                payload={"review_id": review_id},
+                actor_type="agent",
+            )
+            if run_event_id:
+                persisted_event_ids.append(run_event_id)
+        return {
+            "approval_payload": payload,
+            "approval_required": True,
+            "review_id": review_id,
+            "review_status": "pending" if review_id else None,
+            "status": "awaiting_approval",
+            "persisted_event_ids": persisted_event_ids,
+            "node_trace": [_trace("persist_pending_review")],
+        }
 
     def repair_workspace_proposal(self, state: WorkspaceAgentState) -> dict[str, Any]:
         validation_summary = state.get("validation_summary") or {}
@@ -489,15 +555,12 @@ class WorkspaceAgentNodes:
             "finalize_rejection",
         ]
     ]:
-        payload = {
-            "type": "workspace_patch_review",
-            "question": "Approve, edit, or reject this workspace change?",
-            "diff_summary": state.get("diff_summary") or {},
-            "proposed_operations": state.get("proposed_operations") or [],
-            "validation_summary": state.get("validation_summary") or {},
-            "warnings": state.get("warnings") or [],
-            "choices": ["approve", "edit", "reject"],
-        }
+        payload = state.get("approval_payload")
+        if not isinstance(payload, Mapping):
+            payload = _review_interrupt_payload(
+                state,
+                review_id=state.get("review_id"),
+            )
         decision = interrupt(payload)
         choice = _decision_choice(decision)
         if choice == "approve":
@@ -525,12 +588,81 @@ class WorkspaceAgentNodes:
             "node_trace": [_trace("validate_user_edited_patch")],
         }
         if isinstance(edited_workspace, Mapping):
-            updates["proposed_workspace"] = dict(edited_workspace)
+            edited_workspace_dict = dict(edited_workspace)
+            updates["proposed_workspace"] = edited_workspace_dict
+            if self.workspace_repository is not None and state.get("review_id"):
+                result = self.workspace_repository.edit_review_once(
+                    _workspace_id(state),
+                    str(state["review_id"]),
+                    edited_workspace=edited_workspace_dict,
+                    target_ids=_operation_target_ids(
+                        state.get("proposed_operations") or []
+                    ),
+                    approval_decision=decision,
+                )
+                updates["persisted_event_ids"] = result.get("persisted_event_ids") or []
+                if not result.get("ok"):
+                    error_message = (
+                        result.get("error_message")
+                        or "edited review payload could not be persisted."
+                    )
+                    updates["status"] = "failed"
+                    updates["errors"] = [str(error_message)]
+                    return updates
+            else:
+                event_id = self._append_event(
+                    state,
+                    event_type="workspace_patch_edited",
+                    before_hash=state.get("workspace_version_hash"),
+                    after_hash=workspace_version_hash(edited_workspace_dict),
+                    payload={
+                        "approval_decision": decision,
+                        "diff_summary": state.get("diff_summary") or {},
+                        "review_id": state.get("review_id"),
+                    },
+                    actor_type="user",
+                )
+                if event_id:
+                    updates["persisted_event_ids"] = [event_id]
+            updates["review_id"] = None
+            updates["review_status"] = "edited"
+            updates["approval_payload"] = None
         else:
             updates["errors"] = ["edited review payload did not include a proposed_workspace."]
         return updates
 
     def apply_patch_in_memory(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        if self.workspace_repository is not None and state.get("review_id"):
+            result = self.workspace_repository.approve_review_once(
+                _workspace_id(state),
+                str(state["review_id"]),
+                reason=(state.get("next_action") or {}).get("reason")
+                or state.get("user_message", "approved workspace agent patch"),
+                target_ids=_operation_target_ids(state.get("proposed_operations") or []),
+                approval_decision=state.get("approval_decision") or {},
+            )
+            if not result.get("ok"):
+                error_message = (
+                    result.get("error_message")
+                    or "Workspace review could not be approved."
+                )
+                return {
+                    "status": "failed",
+                    "review_status": result.get("status"),
+                    "final_response": str(error_message),
+                    "errors": [str(error_message)],
+                    "persisted_event_ids": result.get("persisted_event_ids") or [],
+                    "node_trace": [_trace("apply_patch_in_memory:approval_failed")],
+                }
+            return {
+                "updated_workspace": result.get("updated_workspace"),
+                "status": "approved",
+                "review_status": result.get("status"),
+                "persisted_version_hash": result.get("persisted_version_hash"),
+                "persisted_event_ids": result.get("persisted_event_ids") or [],
+                "node_trace": [_trace("apply_patch_in_memory")],
+            }
+
         updated_workspace = apply_workspace_patch_in_memory(
             base_workspace=_required_mapping(state.get("workspace"), "workspace"),
             proposed_workspace=_required_mapping(
@@ -539,9 +671,54 @@ class WorkspaceAgentNodes:
             ),
             validation_summary=state.get("validation_summary"),
         )
+        persisted_version_hash = None
+        persisted_event_ids: list[str] = []
+        if self.workspace_repository is not None:
+            workspace_id = _workspace_id(state)
+            parent_hash = state.get("workspace_version_hash")
+            persisted_version_hash = self.workspace_repository.save_workspace_version(
+                workspace_id,
+                updated_workspace,
+                actor="agent",
+                actor_type="agent",
+                actor_id="workspace_agent",
+                parent_version_hash=parent_hash,
+                reason=(state.get("next_action") or {}).get("reason")
+                or state.get("user_message", "approved workspace agent patch"),
+                agent_run_id=state.get("agent_run_id"),
+            )
+            event_id = self._append_event(
+                state,
+                event_type="workspace_patch_approved_applied",
+                before_hash=parent_hash,
+                after_hash=persisted_version_hash,
+                payload={
+                    "proposed_operations": state.get("proposed_operations") or [],
+                    "diff_summary": state.get("diff_summary") or {},
+                    "validation_summary": state.get("validation_summary") or {},
+                    "approval_decision": state.get("approval_decision") or {},
+                },
+                actor_type="user",
+            )
+            if event_id:
+                persisted_event_ids.append(event_id)
+            run_event_id = self._append_agent_run_event(
+                state,
+                status="approved_applied",
+                payload={
+                    "version_hash": persisted_version_hash,
+                    "event_id": event_id,
+                },
+                actor_type="user",
+            )
+            if run_event_id:
+                persisted_event_ids.append(run_event_id)
         return {
             "updated_workspace": updated_workspace,
             "status": "approved",
+            "review_status": "approved_applied" if state.get("review_id") else None,
+            "persisted_version_hash": persisted_version_hash,
+            "persisted_event_ids": persisted_event_ids,
             "node_trace": [_trace("apply_patch_in_memory")],
         }
 
@@ -563,18 +740,162 @@ class WorkspaceAgentNodes:
         }
 
     def finalize_rejection(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        if self.workspace_repository is not None and state.get("review_id"):
+            result = self.workspace_repository.reject_review_once(
+                _workspace_id(state),
+                str(state["review_id"]),
+                reason="user rejected workspace patch",
+                target_ids=_operation_target_ids(state.get("proposed_operations") or []),
+                approval_decision=state.get("approval_decision") or {},
+            )
+            if not result.get("ok"):
+                error_message = (
+                    result.get("error_message")
+                    or "Workspace review could not be rejected."
+                )
+                return {
+                    "status": "failed",
+                    "review_status": result.get("status"),
+                    "final_response": str(error_message),
+                    "errors": [str(error_message)],
+                    "persisted_event_ids": result.get("persisted_event_ids") or [],
+                    "node_trace": [_trace("finalize_rejection:failed")],
+                }
+            return {
+                "status": "rejected",
+                "review_status": result.get("status"),
+                "final_response": "Workspace change was rejected. No patch was applied.",
+                "persisted_event_ids": result.get("persisted_event_ids") or [],
+                "node_trace": [_trace("finalize_rejection")],
+            }
+
+        persisted_event_ids: list[str] = []
+        event_id = self._append_event(
+            state,
+            event_type="workspace_patch_rejected",
+            before_hash=state.get("workspace_version_hash"),
+            after_hash=None,
+            payload={
+                "approval_decision": state.get("approval_decision") or {},
+                "proposed_operations": state.get("proposed_operations") or [],
+                "diff_summary": state.get("diff_summary") or {},
+                "validation_summary": state.get("validation_summary") or {},
+            },
+            actor_type="user",
+        )
+        if event_id:
+            persisted_event_ids.append(event_id)
+        run_event_id = self._append_agent_run_event(
+            state,
+            status="rejected",
+            payload={"event_id": event_id},
+            actor_type="user",
+        )
+        if run_event_id:
+            persisted_event_ids.append(run_event_id)
         return {
             "status": "rejected",
+            "review_status": "rejected" if state.get("review_id") else None,
             "final_response": "Workspace change was rejected. No patch was applied.",
+            "persisted_event_ids": persisted_event_ids,
             "node_trace": [_trace("finalize_rejection")],
         }
 
+    def _append_event(
+        self,
+        state: WorkspaceAgentState,
+        *,
+        event_type: str,
+        before_hash: str | None,
+        after_hash: str | None,
+        payload: dict[str, Any],
+        actor_type: str = "agent",
+        actor_id: str | None = None,
+    ) -> str | None:
+        if self.workspace_repository is None:
+            return None
+        return self.workspace_repository.append_workspace_event(
+            _workspace_id(state),
+            actor=actor_type,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            event_type=event_type,
+            target_ids=_operation_target_ids(state.get("proposed_operations") or []),
+            before_hash=before_hash,
+            after_hash=after_hash,
+            payload={
+                **payload,
+                "agent_run_id": state.get("agent_run_id"),
+                "thread_id": state.get("thread_id"),
+            },
+        )
+
+    def _append_agent_run_event(
+        self,
+        state: WorkspaceAgentState,
+        *,
+        status: str,
+        payload: dict[str, Any],
+        actor_type: str = "system",
+        actor_id: str | None = None,
+        error_message: str | None = None,
+        errors: list[str] | None = None,
+    ) -> str | None:
+        if self.workspace_repository is None:
+            return None
+        append_run_event = getattr(
+            self.workspace_repository,
+            "append_agent_run_event",
+            None,
+        )
+        if append_run_event is None:
+            return None
+        return append_run_event(
+            _workspace_id(state),
+            agent_run_id=str(state.get("agent_run_id") or ""),
+            status=status,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            error_message=error_message,
+            errors=errors,
+            payload={
+                **payload,
+                "thread_id": state.get("thread_id"),
+                "workspace_version_hash": state.get("workspace_version_hash"),
+            },
+        )
+
     def finalize_validation_failure(self, state: WorkspaceAgentState) -> dict[str, Any]:
         summary = state.get("validation_summary") or {}
+        errors = [str(error) for error in summary.get("errors") or []]
+        failure_status = (
+            "failed_repair_exhausted"
+            if int(state.get("repair_attempts", 0))
+            >= int(state.get("max_repair_attempts", 2))
+            else "failed_validation"
+        )
+        run_event_id = self._append_agent_run_event(
+            state,
+            status=failure_status,
+            payload={
+                "error_message": (
+                    "Workspace proposal failed validation and could not be repaired."
+                ),
+                "errors": errors,
+                "validation_summary": summary,
+                "review_id": state.get("review_id"),
+            },
+            actor_type="system",
+            error_message=(
+                "Workspace proposal failed validation and could not be repaired."
+            ),
+            errors=errors,
+        )
         return {
             "status": "failed",
             "final_response": "Workspace proposal failed validation and could not be repaired.",
-            "errors": [str(error) for error in summary.get("errors") or []],
+            "errors": errors,
+            "persisted_event_ids": [run_event_id] if run_event_id else [],
             "node_trace": [_trace("finalize_validation_failure")],
         }
 
@@ -590,11 +911,71 @@ def _format_critique(critique: WorkspaceCritique) -> str:
     return "\n".join(lines)
 
 
+def _review_interrupt_payload(
+    state: WorkspaceAgentState,
+    *,
+    review_id: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "workspace_patch_review",
+        "question": "Approve, edit, or reject this workspace change?",
+        "diff_summary": state.get("diff_summary") or {},
+        "proposed_operations": state.get("proposed_operations") or [],
+        "validation_summary": state.get("validation_summary") or {},
+        "warnings": state.get("warnings") or [],
+        "choices": ["approve", "edit", "reject"],
+    }
+    if review_id:
+        payload["review_id"] = review_id
+    return payload
+
+
 def _workspace_topic(state: WorkspaceAgentState) -> str:
     workspace = state.get("workspace")
     if isinstance(workspace, Mapping) and workspace.get("topic"):
         return str(workspace["topic"])
     return "research topic"
+
+
+def _workspace_id(state: WorkspaceAgentState) -> str:
+    if state.get("workspace_id"):
+        return str(state["workspace_id"])
+    workspace = state.get("workspace")
+    if isinstance(workspace, Mapping) and workspace.get("workspace_id"):
+        return str(workspace["workspace_id"])
+    raise ValueError("workspace_id is required for persistence.")
+
+
+def _operation_target_ids(operations: list[dict[str, Any]]) -> dict[str, Any]:
+    branch_ids: set[str] = set()
+    paper_ids: set[str] = set()
+    path_ids: set[str] = set()
+    operation_types: set[str] = set()
+    for operation in operations:
+        if not isinstance(operation, Mapping):
+            continue
+        operation_types.add(str(operation.get("operation_type") or ""))
+        target_ids = operation.get("target_ids")
+        if not isinstance(target_ids, Mapping):
+            continue
+        for key, value in target_ids.items():
+            if value is None:
+                continue
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                text = str(item)
+                if "paper" in key:
+                    paper_ids.add(text)
+                elif "path" in key:
+                    path_ids.add(text)
+                elif "branch" in key:
+                    branch_ids.add(text)
+    return {
+        "operation_types": sorted(item for item in operation_types if item),
+        "branch_ids": sorted(branch_ids),
+        "paper_ids": sorted(paper_ids),
+        "path_ids": sorted(path_ids),
+    }
 
 
 def _decision_choice(decision: Any) -> str:

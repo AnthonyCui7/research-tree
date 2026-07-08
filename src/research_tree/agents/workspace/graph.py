@@ -28,6 +28,7 @@ def build_workspace_agent_graph(
     llm_client: WorkspaceAgentLlmClient | None = None,
     workspace_constructor: Any = None,
     retrieval_runner: Any = None,
+    workspace_repository: Any = None,
 ) -> Any:
     nodes = WorkspaceAgentNodes(
         llm_client=llm_client,
@@ -37,6 +38,11 @@ def build_workspace_agent_graph(
             else {}
         ),
         **({"retrieval_runner": retrieval_runner} if retrieval_runner is not None else {}),
+        **(
+            {"workspace_repository": workspace_repository}
+            if workspace_repository is not None
+            else {}
+        ),
     )
     builder = StateGraph(
         WorkspaceAgentState,
@@ -95,11 +101,12 @@ def build_workspace_agent_graph(
         "combine_validation_results",
         nodes.combine_validation_results,
         destinations=(
-            "human_review_proposal",
+            "persist_pending_review",
             "repair_workspace_proposal",
             "finalize_validation_failure",
         ),
     )
+    builder.add_node("persist_pending_review", nodes.persist_pending_review)
     builder.add_node("repair_workspace_proposal", nodes.repair_workspace_proposal)
     builder.add_node(
         "human_review_proposal",
@@ -133,6 +140,7 @@ def build_workspace_agent_graph(
         fan_out_validators_with_send,
     )
     builder.add_edge("run_validator", "combine_validation_results")
+    builder.add_edge("persist_pending_review", "human_review_proposal")
     builder.add_edge("repair_workspace_proposal", "derive_operations_and_diff")
     builder.add_edge("validate_user_edited_patch", "derive_operations_and_diff")
     builder.add_edge("apply_patch_in_memory", "finalize_response")
@@ -145,4 +153,3 @@ def build_workspace_agent_graph(
         cache=cache if cache is not None else InMemoryCache(),
         name="WorkspaceAgentGraph",
     )
-

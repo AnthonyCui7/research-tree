@@ -21,6 +21,7 @@ class WorkspaceAgentRunResult:
 
 
 _DEFAULT_GRAPH: Any | None = None
+_DEFAULT_REPOSITORY_GRAPHS: dict[int, Any] = {}
 
 
 def run_workspace_agent(
@@ -28,8 +29,9 @@ def run_workspace_agent(
     *,
     thread_id: str | None = None,
     graph: Any | None = None,
+    workspace_repository: Any | None = None,
 ) -> WorkspaceAgentRunResult:
-    active_graph = graph or _default_graph()
+    active_graph = graph or _default_graph(workspace_repository=workspace_repository)
     active_thread_id = _thread_id_for_input(input, explicit_thread_id=thread_id)
     run_input = dict(input)
     run_input["thread_id"] = active_thread_id
@@ -45,8 +47,9 @@ def resume_workspace_agent(
     resume_value: dict[str, Any],
     *,
     graph: Any | None = None,
+    workspace_repository: Any | None = None,
 ) -> WorkspaceAgentRunResult:
-    active_graph = graph or _default_graph()
+    active_graph = graph or _default_graph(workspace_repository=workspace_repository)
     config = {"configurable": {"thread_id": thread_id}}
     return _drain_workspace_agent_stream(
         active_graph.stream_events(
@@ -58,8 +61,15 @@ def resume_workspace_agent(
     )
 
 
-def _default_graph() -> Any:
+def _default_graph(*, workspace_repository: Any | None = None) -> Any:
     global _DEFAULT_GRAPH
+    if workspace_repository is not None:
+        repository_key = id(workspace_repository)
+        if repository_key not in _DEFAULT_REPOSITORY_GRAPHS:
+            _DEFAULT_REPOSITORY_GRAPHS[repository_key] = build_workspace_agent_graph(
+                workspace_repository=workspace_repository
+            )
+        return _DEFAULT_REPOSITORY_GRAPHS[repository_key]
     if _DEFAULT_GRAPH is None:
         _DEFAULT_GRAPH = build_workspace_agent_graph()
     return _DEFAULT_GRAPH
@@ -126,4 +136,3 @@ def _thread_id_for_input(
         for char in workspace_id
     )[:80]
     return f"workspace-agent:{compact_workspace_id}:{uuid4().hex[:12]}"
-

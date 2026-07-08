@@ -5,11 +5,17 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.md
+!README.md
+!**/README.md
+node_modules/
+dist/
+.vite/
 
-/AGENTS.md
-/PROJECT.md
 /experiments/
-/tests/
+/tests/*
+!/tests/test_api.py
+/data/
 
 cache/
 output/

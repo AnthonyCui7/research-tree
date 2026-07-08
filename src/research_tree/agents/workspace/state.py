@@ -72,6 +72,10 @@ class WorkspaceAgentState(TypedDict, total=False):
     approval_payload: dict[str, Any] | None
     approval_decision: dict[str, Any] | None
     approval_required: bool
+    review_id: str | None
+    review_status: str | None
+    persisted_version_hash: str | None
+    persisted_event_ids: Annotated[list[str], operator.add]
 
     warnings: Annotated[list[str], operator.add]
     errors: Annotated[list[str], operator.add]
@@ -102,4 +106,7 @@ class WorkspaceAgentOutput(TypedDict, total=False):
     warnings: list[str]
     errors: list[str]
     approval_required: bool
-
+    review_id: str | None
+    review_status: str | None
+    persisted_version_hash: str | None
+    persisted_event_ids: list[str]
