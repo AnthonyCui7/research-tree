@@ -7,16 +7,19 @@ type TreeNodeProps = {
 };
 
 export function TreeNode({ node, selected, onSelectNode }: TreeNodeProps) {
+  const family = node.kind === "root" ? undefined : node.family ?? undefined;
+
   return (
     <button
       type="button"
       className={`tree-node tree-node-${node.kind}`}
       data-selected={selected}
+      data-family={family}
       style={{
         left: node.position.x,
         top: node.position.y,
         width: node.size.width,
-        minHeight: node.size.height,
+        height: node.size.height,
       }}
       aria-pressed={selected}
       onClick={() => onSelectNode(node.id)}
@@ -39,7 +42,6 @@ function RootNodeContent({
       <strong className="root-node-title">{node.title}</strong>
       <span className="node-description">{node.overview}</span>
       <AnchorSummary paper={node.anchorPaper} label="Survey" />
-      <span className="node-expand-hint">Expand</span>
     </>
   );
 }
@@ -55,7 +57,6 @@ function BranchNodeContent({
       <strong>{node.title}</strong>
       <span className="node-description">{node.description}</span>
       <AnchorSummary paper={node.anchorPaper} label="Branch survey" />
-      <span className="node-expand-hint">Expand</span>
     </>
   );
 }
@@ -70,7 +71,6 @@ function PaperNodeContent({ paper }: { paper: Extract<TreeNodeViewModel, { kind:
         <b>TLDR</b>
         {paper.tldr || "Unavailable from Semantic Scholar."}
       </span>
-      <span className="node-expand-hint">Expand</span>
     </>
   );
 }

@@ -150,6 +150,7 @@ def build_similar_papers(
     paper_cards = enriched_workspace.get("paper_cards") or {}
     if not isinstance(paper_cards, dict):
         raise ValueError("workspace paper_cards must be an object.")
+    workspace_paper_ids = {str(paper_id) for paper_id in paper_cards}
 
     active_retriever = retriever or LocalBiEncoderSimilarPaperRetriever(
         model_name=bi_encoder_model
@@ -173,7 +174,7 @@ def build_similar_papers(
         candidates = [
             paper
             for paper in paper_database
-            if paper.paper_id != paper_id and paper.document_text().strip()
+            if paper.paper_id not in workspace_paper_ids and paper.document_text().strip()
         ]
         top_n = min(len(candidates), k * 10)
         bi_encoder_candidates = active_retriever.rank(query, candidates, top_n)

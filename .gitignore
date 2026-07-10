@@ -11,6 +11,12 @@ __pycache__/
 node_modules/
 dist/
 .vite/
+.*.tmp
+/.codex/
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
 
 /experiments/
 /tests/*

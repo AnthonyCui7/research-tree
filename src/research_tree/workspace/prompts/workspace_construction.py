@@ -4,7 +4,7 @@ import json
 from typing import Any, Mapping
 
 
-WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v3"
+WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v4"
 PROMPT_ABSTRACT_MAX_CHARS = 450
 PROMPT_AUTHOR_MAX_COUNT = 6
 
@@ -186,49 +186,19 @@ previous paper. Do not invent labels for stages or milestones.
 
 # Paper-card rules
 
-For every visible paper, create a structured paper card with:
+For every visible paper, output only its `paper_id`, primary tree location,
+secondary tags, and `importance`. Importance is one or two concise sentences
+explaining why this paper belongs in this branch and why it matters at this
+workspace's scope. Start with the paper title, method name, or a precise noun
+phrase; never begin a sentence with vague references such as `It`, `This`,
+`They`, or `The paper`. State the intellectual move first, then the branch-level
+reason it belongs in the workspace. Avoid generic praise, repetition of the
+TLDR, and filler such as "is important because".
 
-- title
-- authors
-- year
-- venue
-- primary link
-- DOI or arXiv ID if available
-- abstract
-- primary tree location
-- secondary tags
-- reading status, default `unread`
-- one plain-language paper role: `foundational`, `survey`, `method`,
-  `benchmark`, `evaluation`, `critique`, `application`, or `other`
-- importance: one or two concise sentences explaining why this paper belongs in
-  this branch and why it matters for understanding the topic at this scope
-- problem
-- core idea
-- method
-- assumptions
-- datasets or benchmarks
-- results
-- limitations
-- what to read before it
-- what to read after it
-- user notes, default empty string
-- similar papers, default empty list for now
-
-Do not hallucinate details. If the abstract does not support a field, use an empty string or a cautious phrase.
-
-# Reading-order rules
-
-Create a global reading order across the visible workspace.
-
-Prefer conceptual dependency over citation count.
-
-The reading order should help the user answer:
-
-- What should I read first to understand the problem?
-- What should I read next to understand the main method families?
-- What should I read to understand evaluation?
-- Which papers can I skip for now?
-- Which papers are only useful after understanding another branch?
+Do not output title, authors, dates, venue, links, abstract, TLDR, role,
+reading status, comparison tables, global reading order, discarded candidates,
+or generic paper-analysis fields. Research Tree adds those deterministically
+from the candidate artifact after your response.
 
 # Output requirements
 
@@ -259,9 +229,6 @@ The JSON must follow this top-level shape:
   "tree": {{...}},
   "paper_paths": [...],
   "paper_cards": {{...}},
-  "reading_order": [...],
-  "comparison_tables": [...],
-  "discarded_candidates": [...],
   "provenance": {{...}}
 }}
 
@@ -286,8 +253,8 @@ Nested shape requirements:
 - Every paper card must be keyed by paper ID and must include `paper_id`.
 - Every paper card's `primary_tree_location` must be an object:
   `{{"node_id":"branch-node-id","path":["Root Label","Branch Label"]}}`.
-- Every paper card must use `importance`, `read_before`, and `read_after`.
-- Every paper card must include `similar_papers: []`.
+- Every paper card must use only `paper_id`, `primary_tree_location`,
+  `secondary_tags`, and `importance`.
 
 # Candidate artifact
 

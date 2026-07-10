@@ -16,14 +16,14 @@ import type {
 } from "./types";
 
 const ROOT_POSITION_X = 32;
-const ROOT_SIZE = { width: 348, height: 290 };
-const BRANCH_SIZE = { width: 268, height: 138 };
-const BRANCH_WITH_SURVEY_SIZE = { width: 268, height: 220 };
-const PAPER_SIZE = { width: 296, height: 202 };
-const COLUMN_GAP = 70;
+const ROOT_WIDTH = 408;
+const BRANCH_WIDTH = 292;
+const PAPER_WIDTH = 324;
+const COLUMN_GAP = 72;
 const ROW_GAP = 32;
 const TOP_PADDING = 36;
 const BOTTOM_PADDING = 48;
+const BRANCH_FAMILY_COUNT = 8;
 
 type LayoutState = {
   nextY: number;
@@ -40,6 +40,12 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
   const branchesById = new Map(branches.map((branch) => [branch.node_id, branch]));
   const childrenByParent = childBranches(branches, workspace.tree.root_node_id);
   const pathsByBranch = pathsGroupedByBranch(workspace, branches, childrenByParent);
+  const familyByBranch = new Map(
+    branches
+      .filter((branch) => branch.is_leaf)
+      .map((branch, index) => [branch.node_id, index % BRANCH_FAMILY_COUNT]),
+  );
+  const rootSize = rootNodeSize(workspace.root, anchorPaper(workspace, workspace.root.survey_anchor_paper_ids));
   const state: LayoutState = {
     nextY: TOP_PADDING,
     nodes: [],
@@ -47,7 +53,7 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
     pathLabels: [],
     pathStarts: [],
     paperCountByBranch: new Map(),
-    maxRight: ROOT_POSITION_X + ROOT_SIZE.width,
+    maxRight: ROOT_POSITION_X + rootSize.width,
   };
 
   const rootId = workspace.tree.root_node_id || workspace.root.node_id || "root";
@@ -60,11 +66,12 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
       branchesById,
       childrenByParent,
       pathsByBranch,
+      familyByBranch,
       state,
     }))
     .filter((center): center is number => center !== null);
 
-  const rootCenterY = average(childCenters, TOP_PADDING + ROOT_SIZE.height / 2);
+  const rootCenterY = average(childCenters, TOP_PADDING + rootSize.height / 2);
   const rootNode: RootTreeNode = {
     id: workspace.root.node_id || rootId,
     kind: "root",
@@ -80,9 +87,9 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
     anchorPaper: anchorPaper(workspace, workspace.root.survey_anchor_paper_ids),
     position: {
       x: ROOT_POSITION_X,
-      y: rootCenterY - ROOT_SIZE.height / 2,
+      y: rootCenterY - rootSize.height / 2,
     },
-    size: ROOT_SIZE,
+    size: rootSize,
   };
   state.nodes.unshift(rootNode);
 
@@ -113,7 +120,7 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
       (node): node is PaperTreeNode => node.kind === "paper" && node.id === pathStart.paperNodeId,
     );
     if (branchNode && paperNode) {
-      state.edges.push(edgeBetween(branchNode, paperNode));
+      state.edges.push(edgeBetween(branchNode, paperNode, "timeline"));
     }
   }
 
@@ -149,6 +156,7 @@ function layoutBranch({
   branchesById,
   childrenByParent,
   pathsByBranch,
+  familyByBranch,
   state,
 }: {
   workspace: WorkspaceDocument;
@@ -157,6 +165,7 @@ function layoutBranch({
   branchesById: Map<string, BranchNode>;
   childrenByParent: Map<string, string[]>;
   pathsByBranch: Map<string, PaperPath[]>;
+  familyByBranch: Map<string, number>;
   state: LayoutState;
 }): number | null {
   const branch = branchesById.get(branchId);
@@ -174,20 +183,21 @@ function layoutBranch({
         branchesById,
         childrenByParent,
         pathsByBranch,
+        familyByBranch,
         state,
       }),
     )
     .filter((center): center is number => center !== null);
   const paths = pathsByBranch.get(branch.node_id) ?? [];
   const pathCenters = paths
-    .map((path) => layoutPath({ workspace, branch, branchX, path, state }))
+    .map((path) => layoutPath({ workspace, branch, branchX, path, familyByBranch, state }))
     .filter((center): center is number => center !== null);
   const childOrPathCenters = [...childCenters, ...pathCenters];
   const branchAnchor = anchorPaper(
     workspace,
     branch.survey_anchor_paper_id ? [branch.survey_anchor_paper_id] : [],
   );
-  const branchSize = branchAnchor ? BRANCH_WITH_SURVEY_SIZE : BRANCH_SIZE;
+  const branchSize = branchNodeSize(branch, branchAnchor);
   const fallbackCenterY = state.nextY + branchSize.height / 2;
   if (childOrPathCenters.length === 0) {
     state.nextY += branchSize.height + ROW_GAP;
@@ -197,6 +207,11 @@ function layoutBranch({
   const branchNode: BranchTreeNode = {
     id: branch.node_id,
     kind: "branch",
+    family: branch.is_leaf
+      ? familyByBranch.get(branch.node_id) ?? null
+      : (childrenByParent.get(branch.node_id)?.length ?? 0) > 0
+        ? "group"
+        : null,
     branchNodeId: branch.node_id,
     title: branch.label,
     description: branch.description,
@@ -214,7 +229,7 @@ function layoutBranch({
     size: branchSize,
   };
   state.nodes.push(branchNode);
-  state.maxRight = Math.max(state.maxRight, branchX + BRANCH_SIZE.width);
+  state.maxRight = Math.max(state.maxRight, branchX + branchSize.width);
   return centerY;
 }
 
@@ -223,12 +238,14 @@ function layoutPath({
   branch,
   branchX,
   path,
+  familyByBranch,
   state,
 }: {
   workspace: WorkspaceDocument;
   branch: BranchNode;
   branchX: number;
   path: PaperPath;
+  familyByBranch: Map<string, number>;
   state: LayoutState;
 }): number | null {
   const steps = paperSteps(workspace, path).filter((step) => {
@@ -240,19 +257,27 @@ function layoutPath({
   }
 
   const paperY = state.nextY;
-  const paperX = branchX + BRANCH_SIZE.width + COLUMN_GAP;
+  const paperX = branchX + BRANCH_WIDTH + COLUMN_GAP;
+  const family = familyByBranch.get(branch.node_id) ?? null;
   const paperNodes = steps.map((step, index) =>
     paperNodeViewModel({
       paper: workspace.paper_cards[step.paper_id],
       path,
       step,
       index,
+      family,
       position: {
-        x: paperX + index * (PAPER_SIZE.width + COLUMN_GAP),
+        x: paperX + index * (PAPER_WIDTH + COLUMN_GAP),
         y: paperY,
       },
     }),
   );
+  const pathHeight = Math.max(...paperNodes.map((node) => node.size.height));
+  const timelineCenterY = paperY + pathHeight / 2;
+  for (const paperNode of paperNodes) {
+    paperNode.position.y = timelineCenterY - paperNode.size.height / 2;
+  }
+
   state.nodes.push(...paperNodes);
   state.paperCountByBranch.set(
     branch.node_id,
@@ -267,15 +292,15 @@ function layoutPath({
 
   state.pathStarts.push({ branchId: branch.node_id, paperNodeId: paperNodes[0].id });
   for (let index = 1; index < paperNodes.length; index += 1) {
-    state.edges.push(edgeBetween(paperNodes[index - 1], paperNodes[index]));
+    state.edges.push(edgeBetween(paperNodes[index - 1], paperNodes[index], "timeline"));
   }
 
   state.maxRight = Math.max(
     state.maxRight,
-    paperNodes[paperNodes.length - 1].position.x + PAPER_SIZE.width,
+    paperNodes[paperNodes.length - 1].position.x + paperNodes[paperNodes.length - 1].size.width,
   );
-  state.nextY += PAPER_SIZE.height + ROW_GAP;
-  return paperY + PAPER_SIZE.height / 2;
+  state.nextY += pathHeight + ROW_GAP;
+  return timelineCenterY;
 }
 
 function childBranches(
@@ -341,22 +366,25 @@ function paperNodeViewModel({
   path,
   step,
   index,
+  family,
   position,
 }: {
   paper: PaperCard;
   path: PaperPath;
   step: PaperStep;
   index: number;
+  family: number | null;
   position: Point;
 }): PaperTreeNode {
   return {
     id: `paper:${path.path_id}:${index + 1}:${paper.paper_id}`,
     kind: "paper",
+    family,
     ...paperDetails(paper),
     whyReadHere: step.why_read_here,
     pathId: path.path_id,
     position,
-    size: PAPER_SIZE,
+    size: paperNodeSize(paper),
   };
 }
 
@@ -430,16 +458,71 @@ function branchBreadcrumb(
 }
 
 function branchPositionX(depth: number): number {
-  return ROOT_POSITION_X + ROOT_SIZE.width + COLUMN_GAP + (depth - 1) * (BRANCH_SIZE.width + COLUMN_GAP);
+  return ROOT_POSITION_X + ROOT_WIDTH + COLUMN_GAP + (depth - 1) * (BRANCH_WIDTH + COLUMN_GAP);
+}
+
+function rootNodeSize(root: WorkspaceDocument["root"], anchor: PaperDetails | null) {
+  const titleHeight = textHeight(root.label, 31, 24);
+  const overviewHeight = textHeight(root.overview, 54, 18);
+  const anchorHeight = anchor ? 41 + textHeight(anchor.title, 46, 15) : 0;
+  return {
+    width: ROOT_WIDTH,
+    height: Math.max(178, 52 + titleHeight + overviewHeight + anchorHeight),
+  };
+}
+
+function branchNodeSize(branch: BranchNode, anchor: PaperDetails | null) {
+  const titleHeight = textHeight(branch.label, 34, 18);
+  const descriptionHeight = textHeight(branch.description, 43, 18);
+  const anchorHeight = anchor ? 41 + textHeight(anchor.title, 40, 15) : 0;
+  return {
+    width: BRANCH_WIDTH,
+    height: Math.max(118, 52 + titleHeight + descriptionHeight + anchorHeight),
+  };
+}
+
+function paperNodeSize(paper: PaperCard) {
+  const titleHeight = textHeight(paper.title, 39, 18);
+  const authorsHeight = textHeight(compactAuthorLine(paper.authors), 42, 16);
+  const tldrHeight = textHeight(paper.tldr || "Unavailable from Semantic Scholar.", 46, 17);
+  return {
+    width: PAPER_WIDTH,
+    height: Math.max(164, 57 + titleHeight + authorsHeight + tldrHeight),
+  };
+}
+
+function textHeight(value: string, charactersPerLine: number, lineHeight: number): number {
+  if (!value) {
+    return 0;
+  }
+  const lines = value.split(/\r?\n/).reduce((total, line) => {
+    return total + Math.max(1, Math.ceil(line.length / charactersPerLine));
+  }, 0);
+  return lines * lineHeight;
+}
+
+function compactAuthorLine(authors: string[]): string {
+  if (authors.length === 0) {
+    return "Authors unavailable";
+  }
+  if (authors.length === 1) {
+    return authors[0];
+  }
+  if (authors.length === 2) {
+    return `${authors[0]} & ${authors[1]}`;
+  }
+  return `${authors[0]} et al.`;
 }
 
 function edgeBetween(
   from: Pick<RootTreeNode | BranchTreeNode | PaperTreeNode, "position" | "size">,
   to: Pick<RootTreeNode | BranchTreeNode | PaperTreeNode, "position" | "size">,
+  kind: TreeEdgeViewModel["kind"] = "tree",
 ): TreeEdgeViewModel {
   return {
     from: nodeRightCenter(from),
     to: nodeLeftCenter(to),
+    kind,
   };
 }
 

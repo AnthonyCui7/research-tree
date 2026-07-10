@@ -353,11 +353,20 @@ class WorkspaceAgentNodes:
             "warnings": guardrail.get("warnings") or [],
             "run_dir": candidate_artifact.get("run_dir") if isinstance(candidate_artifact, Mapping) else None,
         }
+        event_id = self._append_event(
+            state,
+            event_type="workspace_candidate_preparation_completed",
+            before_hash=state.get("workspace_version_hash"),
+            after_hash=state.get("workspace_version_hash"),
+            payload={"retrieval_result": result},
+            actor_type="system",
+        )
         return {
             "candidate_artifact": candidate_artifact,
             "candidate_pool": candidate_pool_from_artifact(candidate_artifact),
             "retrieval_result": result,
             "status": "retrieving",
+            "persisted_event_ids": [event_id] if event_id else [],
             "node_trace": [_trace("rerun_candidate_pipeline")],
         }
 

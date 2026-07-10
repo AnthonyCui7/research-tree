@@ -1,28 +1,31 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
 
 :root {
-  --background: #F8FAFC;
-  --canvas: #FFFFFF;
-  --sidebar: #F1F5F9;
-  --border: #D8E0EA;
+  --background: #f7f8f8;
+  --surface: #ffffff;
+  --surface-subtle: #f1f3f4;
+  --border: #d8dce0;
+  --border-strong: #b9c0c6;
 
-  --text-primary: #111827;
-  --text-secondary: #475569;
-  --text-muted: #64748B;
+  --text-primary: #1f2328;
+  --text-secondary: #5b6470;
+  --text-muted: #737c87;
 
-  --accent: #2563EB;
-  --accent-deep: #1E3A8A;
+  --accent: #1e7f5b;
+  --accent-deep: #176647;
+  --accent-subtle: #e7f5ef;
+  --warning: #d18a00;
+  --error: #c23b3b;
 
-  --node-fill: #FFFFFF;
-  --node-selected: #EFF6FF;
-  --node-border: #CBD5E1;
-  --edge-line: #94A3B8;
+  /* Preserve the existing relationship treatment in the research tree. */
+  --edge-line: #94a3b8;
+  --node-fill: #ffffff;
+  --node-selected: #e7f5ef;
+  --node-border: #c8ced3;
 
-  --success: #047857;
-  --warning: #B45309;
-  --error: #B91C1C;
-
-  --line-width: 2px;
+  --line-width: 1px;
   --edge-width: 2.25px;
   --focus-width: 3px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
 }

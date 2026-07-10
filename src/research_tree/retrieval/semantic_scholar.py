@@ -13,6 +13,11 @@ from research_tree.retrieval.text import (
 )
 
 
+# Semantic Scholar's introductory keyed limit is one request per second across
+# endpoints. CachedJsonClient also honors Retry-After for temporary throttling.
+SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.0
+
+
 SEMANTIC_SCHOLAR_PAPER_FIELDS = [
     "paperId",
     "title",
@@ -50,7 +55,7 @@ class SemanticScholarClient:
         self,
         cache_dir: Path,
         api_key: str | None = None,
-        request_delay_seconds: float = 1.0,
+        request_delay_seconds: float = SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
         refresh_cache: bool = False,
         max_retries: int = 2,
         timeout_seconds: float = 20.0,

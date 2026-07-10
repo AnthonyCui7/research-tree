@@ -5,7 +5,10 @@ import os
 from pathlib import Path
 
 from research_tree.retrieval.env import load_dotenv_file
-from research_tree.retrieval.semantic_scholar import SemanticScholarClient
+from research_tree.retrieval.semantic_scholar import (
+    SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SemanticScholarClient,
+)
 from research_tree.workspace.construction import (
     DEFAULT_WORKSPACE_LLM_MAX_OUTPUT_TOKENS,
     DEFAULT_WORKSPACE_LLM_REASONING_EFFORT,
@@ -61,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--s2-request-delay-seconds",
         type=float,
-        default=1.0,
+        default=SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
         help="Minimum delay between Semantic Scholar requests; 1.0 respects its keyed rate guidance.",
     )
     parser.add_argument("--s2-request-timeout-seconds", type=float, default=20.0)

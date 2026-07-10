@@ -248,6 +248,7 @@ def construct_workspace(
     workspace = parse_workspace_output(raw_output)
     normalize_workspace_payload(workspace)
     if active_candidate_artifact is not None:
+        materialize_workspace_candidate_references(workspace, active_candidate_artifact)
         fill_paper_card_source_metadata(workspace, active_candidate_artifact)
         ensure_survey_anchor_cards(workspace, active_candidate_artifact)
         if semantic_scholar_client is not None:
@@ -333,6 +334,7 @@ def construct_workspace_from_candidates(
         )
         raise
     normalize_workspace_payload(workspace)
+    materialize_workspace_candidate_references(workspace, candidate_artifact)
     fill_paper_card_source_metadata(workspace, candidate_artifact)
     ensure_survey_anchor_cards(workspace, candidate_artifact)
     if semantic_scholar_client is not None:
@@ -497,6 +499,209 @@ def fill_paper_card_source_metadata(
         card["semantic_scholar_metadata"] = candidate.semantic_scholar_metadata
         if candidate.is_survey:
             card["paper_role"] = "survey"
+
+
+def materialize_workspace_candidate_references(
+    workspace: dict[str, Any],
+    candidate_artifact: dict[str, Any],
+) -> None:
+    """Complete a compact LLM tree with deterministic candidate-backed cards.
+
+    The LLM owns the field shape, branch placement, paths, and paper importance.
+    Candidate artifacts own paper metadata. This keeps a partial model response
+    from discarding an otherwise usable retrieval run.
+    """
+
+    candidates = candidate_papers_from_artifact(candidate_artifact)
+    paper_cards = workspace.setdefault("paper_cards", {})
+    if not isinstance(paper_cards, dict):
+        workspace["paper_cards"] = paper_cards = {}
+    warnings = _workspace_warnings(workspace)
+
+    for paper_id in list(paper_cards):
+        if str(paper_id) not in candidates:
+            paper_cards.pop(paper_id)
+            warnings.append(
+                f"Removed LLM-selected paper {paper_id!r}: it was not in the candidate artifact."
+            )
+
+    tree = workspace.setdefault("tree", {"root_node_id": "root", "nodes": []})
+    if not isinstance(tree, dict):
+        workspace["tree"] = tree = {"root_node_id": "root", "nodes": []}
+    node_labels = _node_labels(workspace)
+    locations: dict[str, tuple[str, list[str]]] = {}
+
+    paths = workspace.get("paper_paths")
+    if not isinstance(paths, list):
+        workspace["paper_paths"] = paths = []
+    valid_paths: list[dict[str, Any]] = []
+    for path in paths:
+        if not isinstance(path, dict):
+            continue
+        branch_node_id = str(path.get("branch_node_id") or "")
+        valid_steps = [
+            step
+            for step in _paper_steps(path.get("paper_steps"))
+            if step["paper_id"] in candidates
+        ]
+        if not valid_steps:
+            valid_steps = [
+                step
+                for step in _steps_from_paper_ids(_string_list(path.get("paper_ids")))
+                if step["paper_id"] in candidates
+            ]
+        removed_ids = set(_string_list(path.get("paper_ids"))) - {
+            step["paper_id"] for step in valid_steps
+        }
+        if removed_ids:
+            warnings.append(
+                f"Removed unknown papers from path {path.get('path_id')!r}: "
+                f"{sorted(removed_ids)}."
+            )
+        if not valid_steps:
+            continue
+        path["paper_steps"] = valid_steps
+        path["paper_ids"] = [step["paper_id"] for step in valid_steps]
+        for paper_id in path["paper_ids"]:
+            locations.setdefault(
+                paper_id,
+                (branch_node_id, _location_path(branch_node_id, node_labels)),
+            )
+        valid_paths.append(path)
+    workspace["paper_paths"] = valid_paths
+
+    for node in tree.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("node_id") or "")
+        for field_name in ("primary_paper_ids", "secondary_paper_ids"):
+            original_ids = _string_list(node.get(field_name))
+            node[field_name] = [paper_id for paper_id in original_ids if paper_id in candidates]
+            for paper_id in node[field_name]:
+                locations.setdefault(
+                    paper_id,
+                    (node_id, _location_path(node_id, node_labels)),
+                )
+
+    root = workspace.setdefault("root", {})
+    if not isinstance(root, dict):
+        workspace["root"] = root = {}
+    for field_name in ("survey_anchor_paper_ids", "representative_paper_ids"):
+        original_ids = _string_list(root.get(field_name))
+        root[field_name] = [paper_id for paper_id in original_ids if paper_id in candidates]
+        for paper_id in root[field_name]:
+            locations.setdefault(paper_id, ("root", _location_path("root", node_labels)))
+
+    anchor_ids = set(_string_list(root.get("survey_anchor_paper_ids")))
+    for node in tree.get("nodes") or []:
+        if isinstance(node, dict):
+            anchor_ids.add(str(node.get("survey_anchor_paper_id") or ""))
+    for paper_id in list(paper_cards):
+        candidate = candidates.get(str(paper_id))
+        if candidate and candidate.is_survey and paper_id not in anchor_ids:
+            paper_cards.pop(paper_id)
+            warnings.append(
+                f"Removed survey {paper_id!r}: surveys are retained only as overview anchors."
+            )
+
+    for paper_id, (node_id, path) in locations.items():
+        candidate = candidates[paper_id]
+        card = paper_cards.setdefault(
+            paper_id,
+            _candidate_paper_card(candidate, node_id=node_id, path=path),
+        )
+        if not isinstance(card, dict):
+            paper_cards[paper_id] = _candidate_paper_card(
+                candidate,
+                node_id=node_id,
+                path=path,
+            )
+            continue
+        card.setdefault("primary_tree_location", {"node_id": node_id, "path": path})
+        card.setdefault("importance", "")
+        card.setdefault("reading_status", "unread")
+        card.setdefault("paper_role", "survey" if candidate.is_survey else "other")
+        card.setdefault("secondary_tags", [])
+        card.setdefault("read_before", [])
+        card.setdefault("read_after", [])
+        card.setdefault("user_notes", "")
+        card.setdefault("similar_papers", [])
+
+    workspace.setdefault("reading_order", _reading_order_from_paths(valid_paths))
+    workspace.setdefault("comparison_tables", [])
+    workspace.setdefault(
+        "discarded_candidates",
+        _discarded_candidates(candidates, set(paper_cards)),
+    )
+
+
+def _candidate_paper_card(
+    candidate: CandidatePaperMetadata,
+    *,
+    node_id: str,
+    path: list[str],
+) -> dict[str, Any]:
+    return {
+        "paper_id": candidate.paper_id,
+        "title": candidate.title,
+        "authors": candidate.authors,
+        "year": candidate.year,
+        "publication_date": candidate.publication_date,
+        "venue": candidate.venue,
+        "primary_link": candidate.primary_link or candidate.arxiv_link,
+        "doi": candidate.doi,
+        "arxiv_id": candidate.arxiv_id,
+        "arxiv_link": candidate.arxiv_link,
+        "doi_link": candidate.doi_link,
+        "s2_link": candidate.s2_link,
+        "citation_count": candidate.citation_count,
+        "semantic_scholar_metadata": candidate.semantic_scholar_metadata,
+        "abstract": candidate.abstract,
+        "primary_tree_location": {"node_id": node_id, "path": path},
+        "secondary_tags": [],
+        "reading_status": "unread",
+        "paper_role": "survey" if candidate.is_survey else "other",
+        "importance": "",
+        "read_before": [],
+        "read_after": [],
+        "user_notes": "",
+        "similar_papers": [],
+    }
+
+
+def _reading_order_from_paths(paths: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    paper_ids: list[str] = []
+    for path in paths:
+        for step in path.get("paper_steps") or []:
+            if not isinstance(step, dict):
+                continue
+            paper_id = str(step.get("paper_id") or "")
+            if paper_id and paper_id not in paper_ids:
+                paper_ids.append(paper_id)
+    return [
+        {
+            "order": index,
+            "paper_id": paper_id,
+            "reason": "Part of the selected learning path.",
+        }
+        for index, paper_id in enumerate(paper_ids, start=1)
+    ]
+
+
+def _discarded_candidates(
+    candidates: dict[str, CandidatePaperMetadata],
+    visible_paper_ids: set[str],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "paper_id": candidate.paper_id,
+            "title": candidate.title,
+            "discard_reason": "Not selected for the scoped core workspace.",
+            "possible_future_use": "candidate_for_branch_workspace",
+        }
+        for paper_id, candidate in candidates.items()
+        if paper_id not in visible_paper_ids
+    ]
 
 
 def ensure_survey_anchor_cards(

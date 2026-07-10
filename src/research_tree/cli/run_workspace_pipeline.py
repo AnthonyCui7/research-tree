@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 from research_tree.retrieval.env import load_dotenv_file
-from research_tree.retrieval.semantic_scholar import SemanticScholarClient
+from research_tree.retrieval.semantic_scholar import (
+    SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SemanticScholarClient,
+)
 from research_tree.retrieval.candidate_preparation import (
     DEFAULT_TOPIC,
     PipelineConfig,
@@ -23,10 +29,12 @@ from research_tree.workspace.construction import (
     construct_workspace_from_candidates,
 )
 from research_tree.workspace.prompts import WORKSPACE_CONSTRUCTION_PROMPT_VERSION
+from research_tree.workspace.publishing import publish_workspace_version
 from research_tree.workspace.similar_papers import (
     build_similar_papers_from_files,
     write_similar_paper_artifacts,
 )
+from research_tree.artifacts import write_json_file
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -39,6 +47,33 @@ def main(argv: list[str] | None = None) -> int:
         description="Run Research Tree candidate prep, workspace construction, and similar-paper enrichment."
     )
     parser.add_argument("--topic", default=DEFAULT_TOPIC)
+    parser.add_argument(
+        "--workspace-id",
+        help="Stable workspace ID to update. Defaults to a slug of the candidate topic.",
+    )
+    parser.add_argument(
+        "--repository-dir",
+        help="Workspace repository served by the API. Defaults to RESEARCH_TREE_DATA_DIR or data/workspaces.",
+    )
+    parser.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Write stage artifacts without updating the workspace served by the API.",
+    )
+    parser.add_argument(
+        "--candidate-json",
+        help=(
+            "Reuse an existing llm_candidate_papers.json and skip candidate preparation. "
+            "This is the safe recovery path after workspace construction fails."
+        ),
+    )
+    parser.add_argument(
+        "--paper-database-json",
+        help=(
+            "Paper database to use with --candidate-json. Defaults to the sibling "
+            "s2_bulk_deduped_paper_database.json."
+        ),
+    )
     parser.add_argument("--non-survey-count", type=int, default=50)
     parser.add_argument("--survey-baseline-count", type=int, default=5)
     parser.add_argument("--alpha", type=float, default=1.25)
@@ -49,7 +84,11 @@ def main(argv: list[str] | None = None) -> int:
         "--prompt-version",
         default=WORKSPACE_CONSTRUCTION_PROMPT_VERSION,
     )
-    parser.add_argument("--request-delay-seconds", type=float, default=1.0)
+    parser.add_argument(
+        "--request-delay-seconds",
+        type=float,
+        default=SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    )
     parser.add_argument("--request-timeout-seconds", type=float, default=20.0)
     parser.add_argument(
         "--llm-request-timeout-seconds",
@@ -109,79 +148,235 @@ def main(argv: list[str] | None = None) -> int:
     _validate_args(args)
 
     load_dotenv_file(REPO_ROOT / ".env")
-    retrieval_config = PipelineConfig(
-        repo_root=REPO_ROOT,
-        topic=args.topic.strip(),
-        k=args.non_survey_count,
-        survey_baseline_count=args.survey_baseline_count,
-        request_delay_seconds=args.request_delay_seconds,
-        request_timeout_seconds=args.request_timeout_seconds,
-        max_academic_retries=args.max_academic_retries,
-        refresh_cache=args.refresh_cache,
-        cross_encoder_model=args.cross_encoder_model,
-        citation_age_exponent=args.alpha,
-        s2_bulk_citation_multiplier=args.s2_bulk_citation_multiplier,
-        verbose=not args.quiet,
-    )
-    candidate_output = run_workspace_candidate_preparation_pipeline(retrieval_config)
-    run_dir = Path(str(candidate_output["run_dir"]))
-    candidate_json_path = run_dir / "llm_candidate_papers.json"
-    paper_database_json_path = run_dir / "s2_bulk_deduped_paper_database.json"
-
-    workspace_result = construct_workspace_from_candidates(
-        candidate_json_path=candidate_json_path,
-        model=args.model,
-        prompt_version=args.prompt_version,
-        output_dir=run_dir,
-        raw_llm_output_json_path=(
-            Path(args.llm_output_json) if args.llm_output_json else None
-        ),
-        request_timeout_seconds=args.llm_request_timeout_seconds,
-        reasoning_effort=(
-            None
-            if args.reasoning_effort == API_DEFAULT_REASONING_EFFORT
-            else args.reasoning_effort
-        ),
-        max_output_tokens=(
-            args.max_output_tokens if args.max_output_tokens > 0 else None
-        ),
-        text_verbosity=(
-            None
-            if args.text_verbosity == API_DEFAULT_TEXT_VERBOSITY
-            else args.text_verbosity
-        ),
-        response_format=args.response_format,
-        semantic_scholar_client=SemanticScholarClient(
-            cache_dir=REPO_ROOT / "experiments" / "cache" / "semantic_scholar",
-            api_key=(
-                os.environ.get("S2_API_KEY")
-                or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
-            ),
+    if args.candidate_json:
+        candidate_json_path = Path(args.candidate_json).resolve()
+        if not candidate_json_path.is_file():
+            raise FileNotFoundError(f"Candidate artifact does not exist: {candidate_json_path}")
+        run_dir = candidate_json_path.parent
+        paper_database_json_path = (
+            Path(args.paper_database_json).resolve()
+            if args.paper_database_json
+            else run_dir / "s2_bulk_deduped_paper_database.json"
+        )
+        if not paper_database_json_path.is_file():
+            raise FileNotFoundError(
+                "Paper database does not exist; pass --paper-database-json or use "
+                "the matching candidate preparation run."
+            )
+    else:
+        retrieval_config = PipelineConfig(
+            repo_root=REPO_ROOT,
+            topic=args.topic.strip(),
+            k=args.non_survey_count,
+            survey_baseline_count=args.survey_baseline_count,
             request_delay_seconds=args.request_delay_seconds,
+            request_timeout_seconds=args.request_timeout_seconds,
+            max_academic_retries=args.max_academic_retries,
             refresh_cache=args.refresh_cache,
-            max_retries=args.max_academic_retries,
-            timeout_seconds=args.request_timeout_seconds,
-        ),
+            cross_encoder_model=args.cross_encoder_model,
+            citation_age_exponent=args.alpha,
+            s2_bulk_citation_multiplier=args.s2_bulk_citation_multiplier,
+            verbose=not args.quiet,
+        )
+        candidate_output = run_workspace_candidate_preparation_pipeline(retrieval_config)
+        run_dir = Path(str(candidate_output["run_dir"]))
+        candidate_json_path = run_dir / "llm_candidate_papers.json"
+        paper_database_json_path = run_dir / "s2_bulk_deduped_paper_database.json"
+
+    _record_pipeline_stage(
+        run_dir,
+        "prepare_workspace_candidates",
+        "reused" if args.candidate_json else "completed",
+        artifacts={
+            "candidate_json": str(candidate_json_path),
+            "paper_database_json": str(paper_database_json_path),
+        },
     )
-    workspace_with_similar_papers, debug = build_similar_papers_from_files(
-        workspace_json_path=workspace_result.output_paths["workspace"],
-        paper_database_json_path=paper_database_json_path,
-        k=args.similar_papers_k,
-        bi_encoder_model=args.bi_encoder_model,
-        cross_encoder_model=args.cross_encoder_model,
+
+    try:
+        workspace_result = construct_workspace_from_candidates(
+            candidate_json_path=candidate_json_path,
+            model=args.model,
+            prompt_version=args.prompt_version,
+            output_dir=run_dir,
+            raw_llm_output_json_path=(
+                Path(args.llm_output_json) if args.llm_output_json else None
+            ),
+            request_timeout_seconds=args.llm_request_timeout_seconds,
+            reasoning_effort=(
+                None
+                if args.reasoning_effort == API_DEFAULT_REASONING_EFFORT
+                else args.reasoning_effort
+            ),
+            max_output_tokens=(
+                args.max_output_tokens if args.max_output_tokens > 0 else None
+            ),
+            text_verbosity=(
+                None
+                if args.text_verbosity == API_DEFAULT_TEXT_VERBOSITY
+                else args.text_verbosity
+            ),
+            response_format=args.response_format,
+            workspace_id_override=args.workspace_id or _workspace_id_from_candidate(
+                candidate_json_path
+            ),
+            semantic_scholar_client=SemanticScholarClient(
+                cache_dir=REPO_ROOT / "experiments" / "cache" / "semantic_scholar",
+                api_key=(
+                    os.environ.get("S2_API_KEY")
+                    or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+                ),
+                request_delay_seconds=args.request_delay_seconds,
+                refresh_cache=args.refresh_cache,
+                max_retries=args.max_academic_retries,
+                timeout_seconds=args.request_timeout_seconds,
+            ),
+        )
+    except Exception as error:
+        _record_pipeline_stage(
+            run_dir,
+            "construct_workspace",
+            "failed",
+            error=str(error),
+        )
+        raise
+    _record_pipeline_stage(
+        run_dir,
+        "construct_workspace",
+        "completed",
+        artifacts={name: str(path) for name, path in workspace_result.output_paths.items()},
     )
+
+    try:
+        workspace_with_similar_papers, debug = build_similar_papers_from_files(
+            workspace_json_path=workspace_result.output_paths["workspace"],
+            paper_database_json_path=paper_database_json_path,
+            k=args.similar_papers_k,
+            bi_encoder_model=args.bi_encoder_model,
+            cross_encoder_model=args.cross_encoder_model,
+        )
+    except Exception as error:
+        _record_pipeline_stage(
+            run_dir,
+            "enrich_workspace_similar_papers",
+            "failed",
+            error=str(error),
+        )
+        raise
     similar_paths = write_similar_paper_artifacts(
         output_dir=run_dir,
         workspace_with_similar_papers=workspace_with_similar_papers,
         debug=debug,
         run_label=run_dir.name,
     )
+    _record_pipeline_stage(
+        run_dir,
+        "enrich_workspace_similar_papers",
+        "completed",
+        artifacts={name: str(path) for name, path in similar_paths.items()},
+    )
+
+    publish_result: dict[str, object] | None = None
+    if not args.no_publish:
+        _attach_pipeline_provenance(
+            workspace_with_similar_papers,
+            run_dir=run_dir,
+            candidate_json_path=candidate_json_path,
+            paper_database_json_path=paper_database_json_path,
+            workspace_path=workspace_result.output_paths["workspace"],
+            similar_workspace_path=similar_paths["workspace"],
+        )
+        try:
+            publish_result = publish_workspace_version(
+                repository_dir=Path(
+                    args.repository_dir
+                    or os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces")
+                ),
+                workspace=workspace_with_similar_papers,
+                reason="pipeline workspace generation completed",
+                event_type="workspace_pipeline_completed",
+                event_payload={
+                    "run_dir": str(run_dir),
+                    "candidate_json": str(candidate_json_path),
+                    "paper_database_json": str(paper_database_json_path),
+                    "workspace_json": str(workspace_result.output_paths["workspace"]),
+                    "similar_workspace_json": str(similar_paths["workspace"]),
+                },
+            )
+        except Exception as error:
+            _record_pipeline_stage(run_dir, "publish_workspace", "failed", error=str(error))
+            raise
+        _record_pipeline_stage(
+            run_dir,
+            "publish_workspace",
+            "completed",
+            artifacts={"repository_dir": str(publish_result["repository_dir"])},
+        )
 
     print(f"Run directory: {run_dir}")
     print(f"Candidate artifact: {candidate_json_path}")
     print(f"Workspace: {workspace_result.output_paths['workspace']}")
     print(f"Workspace with similar papers: {similar_paths['workspace']}")
+    if publish_result is not None:
+        print(f"Published workspace version: {publish_result['version_hash']}")
     return 0
+
+
+def _record_pipeline_stage(
+    run_dir: Path,
+    stage_name: str,
+    status: str,
+    *,
+    artifacts: dict[str, str] | None = None,
+    error: str | None = None,
+) -> None:
+    manifest_path = run_dir / "pipeline_run.json"
+    if manifest_path.is_file():
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    else:
+        payload = {
+            "schema_version": "research_tree.pipeline_run.v1",
+            "run_dir": str(run_dir),
+            "started_at": datetime.now(UTC).isoformat(),
+            "stages": {},
+        }
+    stages = payload.setdefault("stages", {})
+    stages[stage_name] = {
+        "status": status,
+        "updated_at": datetime.now(UTC).isoformat(),
+        "artifacts": artifacts or {},
+        "error": error,
+    }
+    write_json_file(manifest_path, payload)
+
+
+def _workspace_id_from_candidate(candidate_json_path: Path) -> str:
+    candidate = json.loads(candidate_json_path.read_text(encoding="utf-8"))
+    topic = str(candidate.get("topic") or "workspace") if isinstance(candidate, dict) else "workspace"
+    return re.sub(r"[^a-z0-9]+", "-", topic.casefold()).strip("-") or "workspace"
+
+
+def _attach_pipeline_provenance(
+    workspace: dict[str, object],
+    *,
+    run_dir: Path,
+    candidate_json_path: Path,
+    paper_database_json_path: Path,
+    workspace_path: Path,
+    similar_workspace_path: Path,
+) -> None:
+    provenance = workspace.setdefault("provenance", {})
+    if not isinstance(provenance, dict):
+        return
+    provenance["pipeline_run"] = {
+        "run_dir": str(run_dir),
+        "candidate_json": str(candidate_json_path),
+        "paper_database_json": str(paper_database_json_path),
+        "workspace_json": str(workspace_path),
+        "similar_workspace_json": str(similar_workspace_path),
+        "completed_at": datetime.now(UTC).isoformat(),
+    }
+    provenance["updated_at"] = provenance["pipeline_run"]["completed_at"]
 
 
 def _validate_args(args: argparse.Namespace) -> None:

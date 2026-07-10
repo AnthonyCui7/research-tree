@@ -44,7 +44,7 @@ def write_json_file(
     path.parent.mkdir(parents=True, exist_ok=True)
     if archive_existing:
         archived_path = archive_existing_file(path, run_label=run_label)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _atomic_write(path, json.dumps(payload, indent=2))
     return archived_path
 
 
@@ -59,10 +59,16 @@ def write_text_file(
     path.parent.mkdir(parents=True, exist_ok=True)
     if archive_existing:
         archived_path = archive_existing_file(path, run_label=run_label)
-    path.write_text(payload, encoding="utf-8")
+    _atomic_write(path, payload)
     return archived_path
 
 
 def _safe_label(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
     return cleaned.strip("-") or "previous"
+
+
+def _atomic_write(path: Path, payload: str) -> None:
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text(payload, encoding="utf-8")
+    temporary_path.replace(path)

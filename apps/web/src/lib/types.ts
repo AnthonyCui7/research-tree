@@ -207,6 +207,7 @@ export type RootTreeNode = {
 export type BranchTreeNode = {
   id: TreeNodeId;
   kind: "branch";
+  family: number | "group" | null;
   branchNodeId: string;
   title: string;
   description: string;
@@ -224,6 +225,7 @@ export type BranchTreeNode = {
 export type PaperTreeNode = PaperDetails & {
   id: TreeNodeId;
   kind: "paper";
+  family: number | "group" | null;
   whyReadHere: string;
   pathId: string;
   position: Point;
@@ -240,6 +242,7 @@ export type TreePathLabelViewModel = {
 export type TreeEdgeViewModel = {
   from: Point;
   to: Point;
+  kind: "tree" | "timeline";
 };
 
 export type Point = {

@@ -10,7 +10,10 @@ from research_tree.artifacts import write_json_file
 from research_tree.retrieval.merge import dedupe_papers, stable_paper_key
 from research_tree.retrieval.models import Paper
 from research_tree.retrieval.reranking import LocalCrossEncoderReranker
-from research_tree.retrieval.semantic_scholar import SemanticScholarClient
+from research_tree.retrieval.semantic_scholar import (
+    SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SemanticScholarClient,
+)
 
 
 DEFAULT_TOPIC = "prompting"
@@ -23,7 +26,7 @@ class PipelineConfig:
     k: int = 50
     s2_bulk_citation_multiplier: int = 50
     survey_baseline_count: int = 5
-    request_delay_seconds: float = 1.0
+    request_delay_seconds: float = SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS
     request_timeout_seconds: float = 20.0
     max_academic_retries: int = 2
     refresh_cache: bool = False

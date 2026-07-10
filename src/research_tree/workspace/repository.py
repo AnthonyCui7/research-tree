@@ -207,7 +207,11 @@ class LocalJsonWorkspaceRepository:
                     "updated_at": _workspace_updated_at(workspace),
                 }
             )
-        return summaries
+        return sorted(
+            summaries,
+            key=lambda summary: str(summary.get("updated_at") or ""),
+            reverse=True,
+        )
 
     def get_current_workspace(self, workspace_id: str) -> dict[str, Any]:
         path = self._workspace_dir(workspace_id) / "current.json"
@@ -1089,8 +1093,21 @@ def _list(value: Any) -> list[Any]:
 
 def _workspace_updated_at(workspace: Mapping[str, Any]) -> str | None:
     provenance = workspace.get("provenance")
-    if isinstance(provenance, Mapping) and isinstance(provenance.get("created_at"), str):
-        return provenance["created_at"]
+    if isinstance(provenance, Mapping):
+        for field_name in ("updated_at",):
+            value = provenance.get(field_name)
+            if isinstance(value, str):
+                return value
+        agent_updates = provenance.get("agent_updates")
+        if isinstance(agent_updates, list) and agent_updates:
+            latest_update = agent_updates[-1]
+            if isinstance(latest_update, Mapping):
+                applied_at = latest_update.get("applied_at")
+                if isinstance(applied_at, str):
+                    return applied_at
+        created_at = provenance.get("created_at")
+        if isinstance(created_at, str):
+            return created_at
     return None
 
 
