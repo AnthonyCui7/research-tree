@@ -119,6 +119,7 @@ def paper_path_validator(payload: ValidatorPayload) -> dict[str, Any]:
         if isinstance(node, Mapping) and node.get("node_id")
     )
     visible_ids = set(_mapping(proposed.get("paper_cards")))
+    survey_ids = _survey_ids(payload)
     errors: list[str] = []
     for path in proposed.get("paper_paths") or []:
         if not isinstance(path, Mapping):
@@ -127,10 +128,55 @@ def paper_path_validator(payload: ValidatorPayload) -> dict[str, Any]:
         path_id = str(path.get("path_id") or "<missing>")
         if path.get("branch_node_id") not in tree_ids:
             errors.append(f"paper path {path_id} has invalid branch_node_id.")
-        for paper_id in path.get("paper_ids") or []:
+        paper_ids = _string_list(path.get("paper_ids"))
+        for paper_id in paper_ids:
             if paper_id not in visible_ids:
                 errors.append(f"paper path {path_id} references non-visible paper {paper_id!r}.")
+            elif paper_id in survey_ids:
+                errors.append(
+                    f"paper path {path_id} contains survey paper {paper_id!r}; "
+                    "surveys belong only on overview anchors."
+                )
+        step_paper_ids = _paper_step_ids(path, path_id, visible_ids, survey_ids, errors)
+        if step_paper_ids and paper_ids and step_paper_ids != paper_ids:
+            errors.append(f"paper path {path_id} paper_ids do not match paper_steps order.")
     return _result("paper_path_validator", valid=not errors, errors=errors)
+
+
+def _paper_step_ids(
+    path: Mapping[str, Any],
+    path_id: str,
+    visible_ids: set[str],
+    survey_ids: set[str],
+    errors: list[str],
+) -> list[str]:
+    raw_steps = path.get("paper_steps")
+    if raw_steps is None:
+        return []
+    if not isinstance(raw_steps, list):
+        errors.append(f"paper path {path_id} paper_steps must be a list.")
+        return []
+    paper_ids: list[str] = []
+    seen_paper_ids: set[str] = set()
+    for step in raw_steps:
+        if not isinstance(step, Mapping):
+            errors.append(f"paper path {path_id} contains a non-object paper_step.")
+            continue
+        paper_id = str(step.get("paper_id") or "")
+        if paper_id not in visible_ids:
+            errors.append(f"paper path {path_id} paper_step references non-visible paper {paper_id!r}.")
+        elif paper_id in survey_ids:
+            errors.append(
+                f"paper path {path_id} contains survey paper {paper_id!r}; "
+                "surveys belong only on overview anchors."
+            )
+        if paper_id in seen_paper_ids:
+            errors.append(f"paper path {path_id} repeats paper {paper_id!r}.")
+        seen_paper_ids.add(paper_id)
+        if not str(step.get("why_read_here") or "").strip():
+            errors.append(f"paper path {path_id} paper_step for {paper_id!r} is missing why_read_here.")
+        paper_ids.append(paper_id)
+    return paper_ids
 
 
 def visible_budget_validator(payload: ValidatorPayload) -> dict[str, Any]:
@@ -283,6 +329,15 @@ def _candidate_ids(payload: ValidatorPayload) -> set[str]:
     return ids
 
 
+def _survey_ids(payload: ValidatorPayload) -> set[str]:
+    candidate_artifact = _candidate_artifact_for_validation(payload)
+    return {
+        str(item["paper_id"])
+        for item in candidate_artifact.get("survey_papers") or []
+        if isinstance(item, Mapping) and item.get("paper_id")
+    }
+
+
 def _branch_ids(workspace: Mapping[str, Any]) -> set[str]:
     tree = _mapping(workspace.get("tree"))
     branch_ids = {str(tree.get("root_node_id") or "")}
@@ -298,9 +353,16 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]
+
+
 def _int_or_default(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
-

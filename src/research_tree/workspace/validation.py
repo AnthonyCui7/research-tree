@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from research_tree.workspace.schemas import (
+    PAPER_ROLES,
     WORKSPACE_SCHEMA_VERSION,
     WorkspaceDocument,
     candidate_papers_from_artifact,
@@ -91,6 +92,7 @@ def validate_workspace(
         workspace=workspace,
         tree_ids=tree_ids,
         visible_paper_ids=visible_paper_ids,
+        survey_ids=survey_ids,
         errors=errors,
     )
     _validate_reading_order(
@@ -108,12 +110,19 @@ def validate_workspace(
         candidate_ids=candidate_ids,
         errors=errors,
     )
-    _validate_survey_anchor_ids(
+    _validate_survey_anchors(
         workspace=workspace,
         candidate_ids=candidate_ids,
         survey_ids=survey_ids,
+        visible_paper_ids=visible_paper_ids,
         errors=errors,
         warnings=warnings,
+    )
+    _validate_survey_placement(
+        workspace=workspace,
+        survey_ids=survey_ids,
+        visible_paper_ids=visible_paper_ids,
+        errors=errors,
     )
     _validate_visible_paper_budget(workspace, warnings)
 
@@ -191,6 +200,12 @@ def _validate_paper_cards(
             )
         if paper_id not in candidate_ids:
             continue
+        paper_role = str(card.get("paper_role") or "").strip()
+        if paper_role not in PAPER_ROLES:
+            warnings.append(
+                f"paper card {paper_id} has legacy paper_role {paper_role!r}; "
+                "new workspaces use the compact role vocabulary."
+            )
         location = card.get("primary_tree_location")
         if not isinstance(location, Mapping):
             errors.append(f"paper card {paper_id} is missing primary_tree_location.")
@@ -214,6 +229,7 @@ def _validate_paper_paths(
     workspace: WorkspaceDocument,
     tree_ids: set[str],
     visible_paper_ids: set[str],
+    survey_ids: set[str],
     errors: list[str],
 ) -> None:
     for path in workspace.paper_paths:
@@ -224,12 +240,77 @@ def _validate_paper_paths(
                 f"paper path {path_id or '<missing>'} has invalid branch_node_id "
                 f"{branch_node_id!r}."
             )
-        for paper_id in path.get("paper_ids") or []:
+        paper_ids = _string_list(path.get("paper_ids"))
+        for paper_id in paper_ids:
             if paper_id not in visible_paper_ids:
                 errors.append(
                     f"paper path {path_id or '<missing>'} references paper {paper_id!r} "
                     "without a paper card."
                 )
+            elif paper_id in survey_ids:
+                errors.append(
+                    f"paper path {path_id or '<missing>'} contains survey paper "
+                    f"{paper_id!r}; surveys belong only on overview anchors."
+                )
+        step_paper_ids = _validate_paper_steps(
+            path=path,
+            path_id=path_id or "<missing>",
+            visible_paper_ids=visible_paper_ids,
+            survey_ids=survey_ids,
+            errors=errors,
+        )
+        if step_paper_ids and paper_ids and step_paper_ids != paper_ids:
+            errors.append(
+                f"paper path {path_id or '<missing>'} paper_ids do not match "
+                "paper_steps order."
+            )
+
+
+def _validate_paper_steps(
+    *,
+    path: Mapping[str, Any],
+    path_id: str,
+    visible_paper_ids: set[str],
+    survey_ids: set[str],
+    errors: list[str],
+) -> list[str]:
+    raw_steps = path.get("paper_steps")
+    if raw_steps is None:
+        return []
+    if not isinstance(raw_steps, list):
+        errors.append(f"paper path {path_id} paper_steps must be a list.")
+        return []
+
+    step_paper_ids: list[str] = []
+    seen_paper_ids: set[str] = set()
+    for item in raw_steps:
+        if not isinstance(item, Mapping):
+            errors.append(f"paper path {path_id} has a non-object paper_step.")
+            continue
+        paper_id = str(item.get("paper_id") or "")
+        if not paper_id:
+            errors.append(f"paper path {path_id} has a paper_step missing paper_id.")
+            continue
+        if paper_id not in visible_paper_ids:
+            errors.append(
+                f"paper path {path_id} paper_step references paper {paper_id!r} "
+                "without a paper card."
+            )
+        elif paper_id in survey_ids:
+            errors.append(
+                f"paper path {path_id} contains survey paper {paper_id!r}; "
+                "surveys belong only on overview anchors."
+            )
+        if paper_id in seen_paper_ids:
+            errors.append(f"paper path {path_id} repeats paper {paper_id!r}.")
+        seen_paper_ids.add(paper_id)
+        if not str(item.get("why_read_here") or "").strip():
+            errors.append(
+                f"paper path {path_id} paper_step for {paper_id!r} is missing "
+                "why_read_here."
+            )
+        step_paper_ids.append(paper_id)
+    return step_paper_ids
 
 
 def _validate_reading_order(
@@ -276,19 +357,83 @@ def _validate_discarded_candidates(
             )
 
 
-def _validate_survey_anchor_ids(
+def _validate_survey_anchors(
     workspace: WorkspaceDocument,
     candidate_ids: set[str],
     survey_ids: set[str],
+    visible_paper_ids: set[str],
     errors: list[str],
     warnings: list[str],
 ) -> None:
-    for paper_id in workspace.root.get("survey_anchor_paper_ids") or []:
-        if paper_id not in candidate_ids:
-            errors.append(f"root survey anchor {paper_id!r} is not a candidate paper.")
-        elif paper_id not in survey_ids:
-            warnings.append(
-                f"root survey anchor {paper_id!r} did not come from survey_papers."
+    root_anchor_ids = _string_list(workspace.root.get("survey_anchor_paper_ids"))
+    if len(root_anchor_ids) > 1:
+        warnings.append(
+            "root has multiple survey anchors; new workspaces should select one "
+            "survey for a clearer overview."
+        )
+    for paper_id in root_anchor_ids:
+        _validate_survey_anchor(
+            label="root survey anchor",
+            paper_id=paper_id,
+            candidate_ids=candidate_ids,
+            survey_ids=survey_ids,
+            visible_paper_ids=visible_paper_ids,
+            errors=errors,
+            warnings=warnings,
+        )
+    for node in workspace.tree.get("nodes") or []:
+        if not isinstance(node, Mapping):
+            continue
+        paper_id = str(node.get("survey_anchor_paper_id") or "").strip()
+        if not paper_id:
+            continue
+        _validate_survey_anchor(
+            label=f"branch {node.get('node_id') or '<missing>'} survey anchor",
+            paper_id=paper_id,
+            candidate_ids=candidate_ids,
+            survey_ids=survey_ids,
+            visible_paper_ids=visible_paper_ids,
+            errors=errors,
+            warnings=warnings,
+        )
+
+
+def _validate_survey_anchor(
+    *,
+    label: str,
+    paper_id: str,
+    candidate_ids: set[str],
+    survey_ids: set[str],
+    visible_paper_ids: set[str],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    if paper_id not in candidate_ids:
+        errors.append(f"{label} {paper_id!r} is not a candidate paper.")
+    elif paper_id not in survey_ids:
+        warnings.append(f"{label} {paper_id!r} did not come from survey_papers.")
+    if paper_id not in visible_paper_ids:
+        warnings.append(
+            f"{label} {paper_id!r} has no paper card; the overview cannot show its metadata."
+        )
+
+
+def _validate_survey_placement(
+    *,
+    workspace: WorkspaceDocument,
+    survey_ids: set[str],
+    visible_paper_ids: set[str],
+    errors: list[str],
+) -> None:
+    anchor_ids = set(_string_list(workspace.root.get("survey_anchor_paper_ids")))
+    for node in workspace.tree.get("nodes") or []:
+        if isinstance(node, Mapping) and node.get("survey_anchor_paper_id"):
+            anchor_ids.add(str(node["survey_anchor_paper_id"]))
+    for paper_id in visible_paper_ids & survey_ids:
+        if paper_id not in anchor_ids:
+            errors.append(
+                f"survey paper {paper_id!r} must be a root or branch overview anchor, "
+                "not a standard paper card."
             )
 
 
@@ -325,3 +470,9 @@ def _int_or_default(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]

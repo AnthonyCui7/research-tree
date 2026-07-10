@@ -4,7 +4,7 @@ import json
 from typing import Any, Mapping
 
 
-WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v1"
+WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v3"
 PROMPT_ABSTRACT_MAX_CHARS = 450
 PROMPT_AUTHOR_MAX_COUNT = 6
 
@@ -21,7 +21,7 @@ def build_workspace_prompt(
         _candidate_artifact_for_prompt(candidate_artifact),
         separators=(",", ":"),
     )
-    return _WORKSPACE_CONSTRUCTION_V1_TEMPLATE.format(
+    return _WORKSPACE_CONSTRUCTION_V3_TEMPLATE.format(
         candidate_artifact_json=candidate_artifact_json
     )
 
@@ -85,7 +85,7 @@ def _truncate_text(value: str, max_chars: int) -> str:
     return value[:max_chars].rsplit(" ", 1)[0].rstrip() + "..."
 
 
-_WORKSPACE_CONSTRUCTION_V1_TEMPLATE = """# Identity
+_WORKSPACE_CONSTRUCTION_V3_TEMPLATE = """# Identity
 
 You are Research Tree's workspace construction engine.
 
@@ -120,11 +120,15 @@ The candidate set is intentionally larger than the visible workspace. You must s
 - Use the input metadata as evidence, but do not blindly follow any score.
 - `age_adjusted_citation_score` estimates impact velocity.
 - `cross_encoder_relevance` is a topicality signal, not the final ranking.
-- Survey papers should usually anchor the root or branch overviews, not be mixed into normal method timelines.
+- A survey paper belongs only at the workspace root or, when genuinely useful,
+  as the overview anchor for one branch. Never place a survey paper in a paper
+  timeline.
 - Branch count should be natural. Do not force a fixed number of branches.
 - Split branches only when the child labels are meaningful and useful.
 - Leaf branches should contain one or more paper paths.
 - A paper path should be a learning route through a branch, not a raw date sort.
+- The tree is the main navigation structure. Paper paths define the ordered
+  reading sequence at its leaves.
 
 # Selection rules
 
@@ -166,6 +170,20 @@ Leaf branches should contain paper paths. A leaf branch can have:
 
 Use timelines to explain historical and conceptual development.
 
+# Reading-path rules
+
+For each leaf branch, create one or more paper paths.
+
+A path is not a chronological bibliography. It is a learning sequence. Order
+papers by conceptual dependency first, then historical chronology.
+
+Most paths should contain 3 to 6 papers. If a branch only has one or two papers
+worth reading, keep it small rather than adding filler. If it needs more than
+6, split it into parallel paths or leave narrower work off-path.
+
+For every paper in a path, explain in one short sentence why it comes after the
+previous paper. Do not invent labels for stages or milestones.
+
 # Paper-card rules
 
 For every visible paper, create a structured paper card with:
@@ -180,8 +198,10 @@ For every visible paper, create a structured paper card with:
 - primary tree location
 - secondary tags
 - reading status, default `unread`
-- paper role
-- one-sentence contribution
+- one plain-language paper role: `foundational`, `survey`, `method`,
+  `benchmark`, `evaluation`, `critique`, `application`, or `other`
+- importance: one or two concise sentences explaining why this paper belongs in
+  this branch and why it matters for understanding the topic at this scope
 - problem
 - core idea
 - method
@@ -189,7 +209,6 @@ For every visible paper, create a structured paper card with:
 - datasets or benchmarks
 - results
 - limitations
-- why it belongs in this branch
 - what to read before it
 - what to read after it
 - user notes, default empty string
@@ -252,13 +271,22 @@ Nested shape requirements:
 - `tree.nodes` must be a flat array of branch nodes. Do not use `tree.branches`.
 - Every branch node must use `node_id`, `parent_id`, `label`, `description`,
   `why_it_matters`, `is_leaf`, `child_node_ids`, `primary_paper_ids`,
-  `secondary_paper_ids`, `tags`, and `open_questions`.
+  `secondary_paper_ids`, `survey_anchor_paper_id`, `tags`, and `open_questions`.
+- Set `survey_anchor_paper_id` to a survey paper ID only when the survey is a
+  useful branch overview; otherwise use `null`.
+- Branch `primary_paper_ids` should be a compact index of papers in that branch.
 - Every `paper_paths[]` item must use `path_id`, `branch_node_id`, `path_type`,
-  `label`, `description`, `paper_ids`, and `rationale`.
+  `label`, `description`, `paper_ids`, `paper_steps`, and `rationale`.
+- Keep `paper_ids` in the same order as `paper_steps[].paper_id` for backward
+  compatibility.
+- Every `paper_steps[]` item must use `paper_id` and `why_read_here`.
+- `root.survey_anchor_paper_ids` must contain one strong topic survey when one
+  exists; otherwise it must be empty. Any anchor paper must also have a paper
+  card. Survey papers must not appear in `paper_paths`.
 - Every paper card must be keyed by paper ID and must include `paper_id`.
 - Every paper card's `primary_tree_location` must be an object:
   `{{"node_id":"branch-node-id","path":["Root Label","Branch Label"]}}`.
-- Every paper card must use `why_it_belongs`, `read_before`, and `read_after`.
+- Every paper card must use `importance`, `read_before`, and `read_after`.
 - Every paper card must include `similar_papers: []`.
 
 # Candidate artifact

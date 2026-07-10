@@ -255,9 +255,13 @@ def _similar_paper_output(
     return {
         "paper_id": paper.paper_id,
         "title": paper.title,
+        "authors": paper.authors,
         "year": paper.year,
+        "publication_date": paper.publication_date,
         "venue": paper.venue,
         "primary_link": paper.primary_link,
+        "arxiv_link": paper.arxiv_link,
+        "s2_link": paper.s2_link,
         "similarity_score": _rounded(candidate.similarity_score),
         "cross_encoder_score": _rounded(candidate.cross_encoder_score),
         "reason": "",

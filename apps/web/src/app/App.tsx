@@ -7,7 +7,7 @@ import type { TreeNodeId } from "../lib/types";
 export function App() {
   const { status, workspaces, error } = useWorkspaceCollection();
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<TreeNodeId>("root");
+  const [selectedNodeId, setSelectedNodeId] = useState<TreeNodeId | null>(null);
 
   const activeWorkspace = useMemo(() => {
     if (workspaces.length === 0) {
@@ -30,7 +30,7 @@ export function App() {
 
   function selectWorkspace(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);
-    setSelectedNodeId("root");
+    setSelectedNodeId(null);
   }
 
   return (
@@ -43,6 +43,7 @@ export function App() {
       selectedNodeId={selectedNodeId}
       onSelectWorkspace={selectWorkspace}
       onSelectNode={setSelectedNodeId}
+      onCloseInspector={() => setSelectedNodeId(null)}
     />
   );
 }

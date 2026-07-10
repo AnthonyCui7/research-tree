@@ -181,6 +181,10 @@ def _workspace_mutation_rules() -> list[str]:
         "Existing workspace JSON is the source of truth.",
         "The user instruction is bounded; preserve unrelated branches.",
         "Preserve paper IDs unless the structure intentionally changes them.",
+        "Paper paths are reading sequences; preserve or update paper_steps when moving, adding, or reordering papers.",
+        "Keep paper_ids in the same order as paper_steps[].paper_id.",
+        "Keep the connected tree as the navigation structure and use paper paths only for ordered papers at its leaves.",
+        "Do not place survey papers in paper paths; use them only as root or branch overview anchors.",
         "Similar papers are context only unless explicitly promoted.",
         "New visible papers must come from the candidate artifact.",
         "Prefer minimal valid changes.",
@@ -196,4 +200,3 @@ def _prompt(instruction: str, payload: Mapping[str, Any]) -> str:
         f"# Instruction\n{instruction}\n\n# Payload\n"
         + json.dumps(payload, ensure_ascii=True, separators=(",", ":"), default=str)
     )
-

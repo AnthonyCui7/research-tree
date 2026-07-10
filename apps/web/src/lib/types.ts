@@ -1,6 +1,8 @@
 export type WorkspaceDocument = {
   schema_version: string;
   workspace_id: string;
+  current_workspace_version_hash?: string;
+  workspace_versions?: WorkspaceVersion[];
   topic: string;
   title: string;
   scope: Record<string, unknown>;
@@ -24,6 +26,20 @@ export type WorkspaceSummary = {
   branch_count: number;
   paper_path_count: number;
   updated_at: string | null;
+};
+
+export type WorkspaceVersion = {
+  schema_version: string;
+  workspace_id: string;
+  version_hash: string;
+  parent_version_hash: string | null;
+  actor: string;
+  actor_type?: string;
+  actor_id?: string;
+  reason: string;
+  agent_run_id?: string | null;
+  created_at: string;
+  is_current?: boolean;
 };
 
 export type WorkspaceRoot = {
@@ -53,6 +69,7 @@ export type BranchNode = {
   child_node_ids: string[];
   primary_paper_ids: string[];
   secondary_paper_ids: string[];
+  survey_anchor_paper_id?: string | null;
   tags: string[];
   open_questions: string[];
 };
@@ -64,7 +81,13 @@ export type PaperPath = {
   label: string;
   description: string;
   paper_ids: string[];
+  paper_steps?: PaperStep[];
   rationale: string;
+};
+
+export type PaperStep = {
+  paper_id: string;
+  why_read_here: string;
 };
 
 export type PaperCard = {
@@ -72,10 +95,17 @@ export type PaperCard = {
   title: string;
   authors: string[];
   year: number | null;
+  publication_date?: string | null;
   venue: string;
   primary_link: string | null;
   doi: string | null;
   arxiv_id: string | null;
+  arxiv_link?: string | null;
+  doi_link?: string | null;
+  s2_link?: string | null;
+  citation_count?: number | null;
+  tldr?: string | null;
+  importance?: string;
   abstract: string;
   primary_tree_location: {
     node_id: string;
@@ -84,7 +114,6 @@ export type PaperCard = {
   secondary_tags: string[];
   reading_status: string;
   paper_role: string;
-  one_sentence_contribution: string;
   problem: string;
   core_idea: string;
   method: string;
@@ -92,11 +121,22 @@ export type PaperCard = {
   datasets_or_benchmarks: string;
   results: string;
   limitations: string;
-  why_it_belongs: string;
   read_before: string[];
   read_after: string[];
   user_notes: string;
-  similar_papers: Record<string, unknown>[];
+  similar_papers: SimilarPaper[];
+};
+
+export type SimilarPaper = {
+  paper_id: string;
+  title: string;
+  authors?: string[];
+  year: number | null;
+  publication_date?: string | null;
+  venue?: string;
+  primary_link?: string | null;
+  arxiv_link?: string | null;
+  s2_link?: string | null;
 };
 
 export type ReadingOrderItem = {
@@ -111,16 +151,41 @@ export type TreeViewModel = {
   workspaceId: string;
   title: string;
   paperCount: number;
+  branchCount: number;
+  pathCount: number;
+  currentVersionHash: string | null;
+  versionCount: number;
   canvas: {
     width: number;
     height: number;
   };
+  root: RootTreeNode;
   nodes: TreeNodeViewModel[];
   nodesById: Record<TreeNodeId, TreeNodeViewModel>;
   edges: TreeEdgeViewModel[];
+  pathLabels: TreePathLabelViewModel[];
 };
 
 export type TreeNodeViewModel = RootTreeNode | BranchTreeNode | PaperTreeNode;
+
+export type PaperDetails = {
+  paperId: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  publicationDate: string | null;
+  venue: string;
+  primaryLink: string | null;
+  doi: string | null;
+  arxivId: string | null;
+  arxivLink: string | null;
+  semanticScholarLink: string | null;
+  citationCount: number | null;
+  tldr: string | null;
+  importance: string;
+  abstract: string;
+  similarPapers: SimilarPaper[];
+};
 
 export type RootTreeNode = {
   id: TreeNodeId;
@@ -132,32 +197,43 @@ export type RootTreeNode = {
   keyTerms: string[];
   openQuestions: string[];
   paperCount: number;
+  branchCount: number;
+  pathCount: number;
+  anchorPaper: PaperDetails | null;
   position: Point;
+  size: NodeSize;
 };
 
 export type BranchTreeNode = {
   id: TreeNodeId;
   kind: "branch";
+  branchNodeId: string;
   title: string;
   description: string;
   whyItMatters: string;
+  breadcrumb: string[];
   tags: string[];
   openQuestions: string[];
   paperCount: number;
+  pathCount: number;
+  anchorPaper: PaperDetails | null;
   position: Point;
+  size: NodeSize;
 };
 
-export type PaperTreeNode = {
+export type PaperTreeNode = PaperDetails & {
   id: TreeNodeId;
   kind: "paper";
-  title: string;
-  year: number | null;
-  venue: string;
-  role: string;
-  readingStatus: string;
-  contribution: string;
-  abstractPreview: string;
-  similarPaperCount: number;
+  whyReadHere: string;
+  pathId: string;
+  position: Point;
+  size: NodeSize;
+};
+
+export type TreePathLabelViewModel = {
+  id: TreeNodeId;
+  label: string;
+  description: string;
   position: Point;
 };
 
@@ -169,4 +245,9 @@ export type TreeEdgeViewModel = {
 export type Point = {
   x: number;
   y: number;
+};
+
+export type NodeSize = {
+  width: number;
+  height: number;
 };

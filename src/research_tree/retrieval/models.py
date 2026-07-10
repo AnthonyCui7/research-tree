@@ -19,6 +19,7 @@ class Paper:
     citation_count: int | None = None
     publication_types: list[str] = field(default_factory=list)
     url: str | None = None
+    semantic_scholar_metadata: dict[str, Any] = field(default_factory=dict)
     found_by: set[str] = field(default_factory=set)
     is_survey: bool = False
     cross_encoder_relevance: float = 0.0
@@ -54,6 +55,7 @@ class Paper:
             "arxiv_id": self.arxiv_id,
             "primary_link": self.url,
             "citation_count": self.citation_count,
+            "semantic_scholar_metadata": self.semantic_scholar_metadata,
             "citations_per_year": self.citations_per_year,
             "is_survey": self.is_survey,
             "cross_encoder_relevance": self.cross_encoder_relevance,

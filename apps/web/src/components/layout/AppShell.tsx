@@ -11,9 +11,10 @@ type AppShellProps = {
   workspaces: WorkspaceDocument[];
   activeWorkspaceId: string | null;
   tree: TreeViewModel | null;
-  selectedNodeId: TreeNodeId;
+  selectedNodeId: TreeNodeId | null;
   onSelectWorkspace: (workspaceId: string) => void;
   onSelectNode: (nodeId: TreeNodeId) => void;
+  onCloseInspector: () => void;
 };
 
 export function AppShell({
@@ -25,8 +26,9 @@ export function AppShell({
   selectedNodeId,
   onSelectWorkspace,
   onSelectNode,
+  onCloseInspector,
 }: AppShellProps) {
-  const selectedNode = tree?.nodesById[selectedNodeId] ?? null;
+  const selectedNode = tree && selectedNodeId ? tree.nodesById[selectedNodeId] ?? null : null;
 
   return (
     <div className="app-shell">
@@ -36,7 +38,11 @@ export function AppShell({
         onSelectWorkspace={onSelectWorkspace}
       />
       <main className="workspace-main" aria-label="Research workspace">
-        <TopBar workspaceTitle={tree?.title ?? "Workspace"} />
+        <TopBar
+          workspaceTitle={tree?.title ?? "Workspace"}
+          versionHash={tree?.currentVersionHash ?? null}
+          versionCount={tree?.versionCount ?? 0}
+        />
         <section className="workspace-stage" aria-live={status === "loading" ? "polite" : "off"}>
           {status === "loading" ? (
             <WorkspaceEmptyState title="Loading workspace" detail="Preparing the local workspace tree." />
@@ -61,7 +67,7 @@ export function AppShell({
                 selectedNodeId={selectedNodeId}
                 onSelectNode={onSelectNode}
               />
-              <FloatingInspector node={selectedNode} />
+              <FloatingInspector node={selectedNode} onClose={onCloseInspector} />
             </>
           ) : null}
         </section>

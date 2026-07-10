@@ -1,32 +1,73 @@
 import type {
   BranchNode,
+  BranchTreeNode,
   PaperCard,
+  PaperDetails,
+  PaperPath,
+  PaperStep,
+  PaperTreeNode,
   Point,
+  RootTreeNode,
   TreeEdgeViewModel,
   TreeNodeViewModel,
+  TreePathLabelViewModel,
   TreeViewModel,
   WorkspaceDocument,
 } from "./types";
 
-const ROOT_X = 48;
-const BRANCH_X = 292;
-const PAPER_X = 536;
-const TOP_PADDING = 72;
-const PAPER_ROW_HEIGHT = 88;
-const BRANCH_GAP = 42;
+const ROOT_POSITION_X = 32;
+const ROOT_SIZE = { width: 348, height: 290 };
+const BRANCH_SIZE = { width: 268, height: 138 };
+const BRANCH_WITH_SURVEY_SIZE = { width: 268, height: 220 };
+const PAPER_SIZE = { width: 296, height: 202 };
+const COLUMN_GAP = 70;
+const ROW_GAP = 32;
+const TOP_PADDING = 36;
+const BOTTOM_PADDING = 48;
+
+type LayoutState = {
+  nextY: number;
+  nodes: TreeNodeViewModel[];
+  edges: TreeEdgeViewModel[];
+  pathLabels: TreePathLabelViewModel[];
+  pathStarts: { branchId: string; paperNodeId: string }[];
+  paperCountByBranch: Map<string, number>;
+  maxRight: number;
+};
 
 export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeViewModel {
-  const branches = workspace.tree.nodes.filter((node) => node.parent_id === workspace.tree.root_node_id);
-  const branchPaperIds = new Map<string, string[]>();
+  const branches = workspace.tree.nodes.filter((node) => Boolean(node.node_id));
+  const branchesById = new Map(branches.map((branch) => [branch.node_id, branch]));
+  const childrenByParent = childBranches(branches, workspace.tree.root_node_id);
+  const pathsByBranch = pathsGroupedByBranch(workspace, branches, childrenByParent);
+  const state: LayoutState = {
+    nextY: TOP_PADDING,
+    nodes: [],
+    edges: [],
+    pathLabels: [],
+    pathStarts: [],
+    paperCountByBranch: new Map(),
+    maxRight: ROOT_POSITION_X + ROOT_SIZE.width,
+  };
 
-  for (const branch of branches) {
-    branchPaperIds.set(branch.node_id, paperIdsForBranch(workspace, branch));
-  }
+  const rootId = workspace.tree.root_node_id || workspace.root.node_id || "root";
+  const rootChildren = childrenByParent.get(rootId) ?? [];
+  const childCenters = rootChildren
+    .map((branchId) => layoutBranch({
+      workspace,
+      branchId,
+      depth: 1,
+      branchesById,
+      childrenByParent,
+      pathsByBranch,
+      state,
+    }))
+    .filter((center): center is number => center !== null);
 
-  const branchLayouts = layoutBranches(branches, branchPaperIds);
-  const rootNode = {
-    id: workspace.root.node_id,
-    kind: "root" as const,
+  const rootCenterY = average(childCenters, TOP_PADDING + ROOT_SIZE.height / 2);
+  const rootNode: RootTreeNode = {
+    id: workspace.root.node_id || rootId,
+    kind: "root",
     title: workspace.root.label || workspace.title,
     overview: workspace.root.overview,
     surveyType: workspace.root.root_survey_type,
@@ -34,166 +75,395 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
     keyTerms: workspace.root.key_terms,
     openQuestions: workspace.root.open_questions,
     paperCount: workspace.root.representative_paper_ids.length,
-    position: { x: ROOT_X, y: TOP_PADDING },
+    branchCount: branches.length,
+    pathCount: workspace.paper_paths.length,
+    anchorPaper: anchorPaper(workspace, workspace.root.survey_anchor_paper_ids),
+    position: {
+      x: ROOT_POSITION_X,
+      y: rootCenterY - ROOT_SIZE.height / 2,
+    },
+    size: ROOT_SIZE,
   };
+  state.nodes.unshift(rootNode);
 
-  const nodes: TreeNodeViewModel[] = [rootNode];
-  const edges: TreeEdgeViewModel[] = [];
-
-  for (const layout of branchLayouts) {
-    const branch = layout.branch;
-    const paperIds = branchPaperIds.get(branch.node_id) ?? [];
-    const branchNode = {
-      id: branch.node_id,
-      kind: "branch" as const,
-      title: branch.label,
-      description: branch.description,
-      whyItMatters: branch.why_it_matters,
-      tags: branch.tags,
-      openQuestions: branch.open_questions,
-      paperCount: paperIds.length,
-      position: layout.branchPosition,
-    };
-    nodes.push(branchNode);
-    edges.push(edgeBetween(rootNode.position, branchNode.position, "root", "branch"));
-
-    paperIds.forEach((paperId, paperIndex) => {
-      const paper = workspace.paper_cards[paperId];
-      if (!paper) {
-        return;
-      }
-      const paperNode = paperNodeViewModel(paper, layout.paperPositions[paperIndex]);
-      nodes.push(paperNode);
-      edges.push(edgeBetween(branchNode.position, paperNode.position, "branch", "paper"));
-    });
+  for (const branch of branches) {
+    const branchNode = state.nodes.find(
+      (node): node is BranchTreeNode => node.kind === "branch" && node.branchNodeId === branch.node_id,
+    );
+    if (!branchNode) {
+      continue;
+    }
+    const parentNode =
+      branch.parent_id === rootId || branch.parent_id === "root"
+        ? rootNode
+        : state.nodes.find(
+            (node): node is BranchTreeNode =>
+              node.kind === "branch" && node.branchNodeId === branch.parent_id,
+          );
+    if (parentNode) {
+      state.edges.push(edgeBetween(parentNode, branchNode));
+    }
   }
+  for (const pathStart of state.pathStarts) {
+    const branchNode = state.nodes.find(
+      (node): node is BranchTreeNode =>
+        node.kind === "branch" && node.branchNodeId === pathStart.branchId,
+    );
+    const paperNode = state.nodes.find(
+      (node): node is PaperTreeNode => node.kind === "paper" && node.id === pathStart.paperNodeId,
+    );
+    if (branchNode && paperNode) {
+      state.edges.push(edgeBetween(branchNode, paperNode));
+    }
+  }
+
+  const currentVersion =
+    workspace.current_workspace_version_hash ??
+    workspace.workspace_versions?.find((version) => version.is_current)?.version_hash ??
+    null;
 
   return {
     workspaceId: workspace.workspace_id,
     title: workspace.title,
     paperCount: Object.keys(workspace.paper_cards).length,
+    branchCount: branches.length,
+    pathCount: workspace.paper_paths.length,
+    currentVersionHash: currentVersion,
+    versionCount: workspace.workspace_versions?.length ?? 0,
     canvas: {
-      width: 900,
-      height: Math.max(560, lastLayoutBottom(branchLayouts) + TOP_PADDING),
+      width: Math.max(1040, state.maxRight + 48),
+      height: Math.max(520, state.nextY + BOTTOM_PADDING),
     },
-    nodes,
-    nodesById: Object.fromEntries(nodes.map((node) => [node.id, node])),
-    edges,
+    root: rootNode,
+    nodes: state.nodes,
+    nodesById: Object.fromEntries(state.nodes.map((node) => [node.id, node])),
+    edges: state.edges,
+    pathLabels: state.pathLabels,
   };
 }
 
-function paperIdsForBranch(workspace: WorkspaceDocument, branch: BranchNode): string[] {
-  const ids = new Set<string>();
-  for (const paperId of branch.primary_paper_ids) {
-    ids.add(paperId);
+function layoutBranch({
+  workspace,
+  branchId,
+  depth,
+  branchesById,
+  childrenByParent,
+  pathsByBranch,
+  state,
+}: {
+  workspace: WorkspaceDocument;
+  branchId: string;
+  depth: number;
+  branchesById: Map<string, BranchNode>;
+  childrenByParent: Map<string, string[]>;
+  pathsByBranch: Map<string, PaperPath[]>;
+  state: LayoutState;
+}): number | null {
+  const branch = branchesById.get(branchId);
+  if (!branch) {
+    return null;
   }
-  for (const path of workspace.paper_paths) {
-    if (path.branch_node_id === branch.node_id) {
-      for (const paperId of path.paper_ids) {
-        ids.add(paperId);
-      }
-    }
+
+  const branchX = branchPositionX(depth);
+  const childCenters = (childrenByParent.get(branch.node_id) ?? [])
+    .map((childId) =>
+      layoutBranch({
+        workspace,
+        branchId: childId,
+        depth: depth + 1,
+        branchesById,
+        childrenByParent,
+        pathsByBranch,
+        state,
+      }),
+    )
+    .filter((center): center is number => center !== null);
+  const paths = pathsByBranch.get(branch.node_id) ?? [];
+  const pathCenters = paths
+    .map((path) => layoutPath({ workspace, branch, branchX, path, state }))
+    .filter((center): center is number => center !== null);
+  const childOrPathCenters = [...childCenters, ...pathCenters];
+  const branchAnchor = anchorPaper(
+    workspace,
+    branch.survey_anchor_paper_id ? [branch.survey_anchor_paper_id] : [],
+  );
+  const branchSize = branchAnchor ? BRANCH_WITH_SURVEY_SIZE : BRANCH_SIZE;
+  const fallbackCenterY = state.nextY + branchSize.height / 2;
+  if (childOrPathCenters.length === 0) {
+    state.nextY += branchSize.height + ROW_GAP;
   }
-  for (const [paperId, card] of Object.entries(workspace.paper_cards)) {
-    if (card.primary_tree_location?.node_id === branch.node_id) {
-      ids.add(paperId);
-    }
-  }
-  return Array.from(ids);
+  const centerY = average(childOrPathCenters, fallbackCenterY);
+  const paperCount = state.paperCountByBranch.get(branch.node_id) ?? 0;
+  const branchNode: BranchTreeNode = {
+    id: branch.node_id,
+    kind: "branch",
+    branchNodeId: branch.node_id,
+    title: branch.label,
+    description: branch.description,
+    whyItMatters: branch.why_it_matters,
+    breadcrumb: branchBreadcrumb(branch, branchesById, workspace.root.label || workspace.title),
+    tags: branch.tags,
+    openQuestions: branch.open_questions,
+    paperCount,
+    pathCount: paths.length,
+    anchorPaper: branchAnchor,
+    position: {
+      x: branchX,
+      y: centerY - branchSize.height / 2,
+    },
+    size: branchSize,
+  };
+  state.nodes.push(branchNode);
+  state.maxRight = Math.max(state.maxRight, branchX + BRANCH_SIZE.width);
+  return centerY;
 }
 
-function layoutBranches(
-  branches: BranchNode[],
-  branchPaperIds: Map<string, string[]>,
-): {
+function layoutPath({
+  workspace,
+  branch,
+  branchX,
+  path,
+  state,
+}: {
+  workspace: WorkspaceDocument;
   branch: BranchNode;
-  branchPosition: Point;
-  paperPositions: Point[];
-}[] {
-  let cursorY = TOP_PADDING;
-
-  return branches.map((branch) => {
-    const paperCount = Math.max(1, branchPaperIds.get(branch.node_id)?.length ?? 0);
-    const paperPositions = Array.from({ length: paperCount }, (_, paperIndex) => ({
-      x: PAPER_X,
-      y: cursorY + paperIndex * PAPER_ROW_HEIGHT,
-    }));
-    const branchPosition = {
-      x: BRANCH_X,
-      y: average(
-        paperPositions.map((point) => point.y),
-        cursorY,
-      ),
-    };
-
-    cursorY += paperCount * PAPER_ROW_HEIGHT + BRANCH_GAP;
-
-    return {
-      branch,
-      branchPosition,
-      paperPositions,
-    };
+  branchX: number;
+  path: PaperPath;
+  state: LayoutState;
+}): number | null {
+  const steps = paperSteps(workspace, path).filter((step) => {
+    const paper = workspace.paper_cards[step.paper_id];
+    return paper && !isSurveyPaper(paper);
   });
+  if (steps.length === 0) {
+    return null;
+  }
+
+  const paperY = state.nextY;
+  const paperX = branchX + BRANCH_SIZE.width + COLUMN_GAP;
+  const paperNodes = steps.map((step, index) =>
+    paperNodeViewModel({
+      paper: workspace.paper_cards[step.paper_id],
+      path,
+      step,
+      index,
+      position: {
+        x: paperX + index * (PAPER_SIZE.width + COLUMN_GAP),
+        y: paperY,
+      },
+    }),
+  );
+  state.nodes.push(...paperNodes);
+  state.paperCountByBranch.set(
+    branch.node_id,
+    (state.paperCountByBranch.get(branch.node_id) ?? 0) + paperNodes.length,
+  );
+  state.pathLabels.push({
+    id: `path:${path.path_id}`,
+    label: path.label,
+    description: path.description,
+    position: { x: paperX, y: Math.max(10, paperY - 20) },
+  });
+
+  state.pathStarts.push({ branchId: branch.node_id, paperNodeId: paperNodes[0].id });
+  for (let index = 1; index < paperNodes.length; index += 1) {
+    state.edges.push(edgeBetween(paperNodes[index - 1], paperNodes[index]));
+  }
+
+  state.maxRight = Math.max(
+    state.maxRight,
+    paperNodes[paperNodes.length - 1].position.x + PAPER_SIZE.width,
+  );
+  state.nextY += PAPER_SIZE.height + ROW_GAP;
+  return paperY + PAPER_SIZE.height / 2;
 }
 
-function paperNodeViewModel(paper: PaperCard, position: Point): TreeNodeViewModel {
+function childBranches(
+  branches: BranchNode[],
+  rootId: string,
+): Map<string, string[]> {
+  const children = new Map<string, string[]>();
+  for (const branch of branches) {
+    const parentId = branch.parent_id || rootId;
+    const childIds = children.get(parentId) ?? [];
+    childIds.push(branch.node_id);
+    children.set(parentId, childIds);
+  }
+  return children;
+}
+
+function pathsGroupedByBranch(
+  workspace: WorkspaceDocument,
+  branches: BranchNode[],
+  childrenByParent: Map<string, string[]>,
+): Map<string, PaperPath[]> {
+  const paths = new Map<string, PaperPath[]>();
+  for (const path of workspace.paper_paths) {
+    const branchPaths = paths.get(path.branch_node_id) ?? [];
+    branchPaths.push(path);
+    paths.set(path.branch_node_id, branchPaths);
+  }
+  for (const branch of branches) {
+    if (paths.has(branch.node_id) || (childrenByParent.get(branch.node_id)?.length ?? 0) > 0) {
+      continue;
+    }
+    if (branch.primary_paper_ids.length > 0) {
+      paths.set(branch.node_id, [fallbackPath(branch)]);
+    }
+  }
+  return paths;
+}
+
+function paperSteps(workspace: WorkspaceDocument, path: PaperPath): PaperStep[] {
+  const explicitSteps = Array.isArray(path.paper_steps) ? [...path.paper_steps] : [];
+  if (explicitSteps.length > 0) {
+    return explicitSteps.sort(legacyStepOrder);
+  }
+  return path.paper_ids.map((paperId) => ({
+    paper_id: paperId,
+    why_read_here:
+      workspace.paper_cards[paperId]?.importance ||
+      "Part of this saved reading sequence.",
+  }));
+}
+
+function legacyStepOrder(left: PaperStep, right: PaperStep): number {
+  const leftIndex = Number((left as PaperStep & { step_index?: unknown }).step_index);
+  const rightIndex = Number((right as PaperStep & { step_index?: unknown }).step_index);
+  if (Number.isFinite(leftIndex) && Number.isFinite(rightIndex)) {
+    return leftIndex - rightIndex;
+  }
+  return 0;
+}
+
+function paperNodeViewModel({
+  paper,
+  path,
+  step,
+  index,
+  position,
+}: {
+  paper: PaperCard;
+  path: PaperPath;
+  step: PaperStep;
+  index: number;
+  position: Point;
+}): PaperTreeNode {
   return {
-    id: paper.paper_id,
+    id: `paper:${path.path_id}:${index + 1}:${paper.paper_id}`,
     kind: "paper",
-    title: paper.title,
-    year: paper.year,
-    venue: paper.venue,
-    role: paper.paper_role,
-    readingStatus: paper.reading_status,
-    contribution: paper.one_sentence_contribution,
-    abstractPreview: previewText(paper.abstract),
-    similarPaperCount: paper.similar_papers.length,
+    ...paperDetails(paper),
+    whyReadHere: step.why_read_here,
+    pathId: path.path_id,
     position,
+    size: PAPER_SIZE,
   };
 }
 
-function previewText(text: string): string {
-  if (text.length <= 220) {
-    return text;
+function anchorPaper(workspace: WorkspaceDocument, paperIds: string[]): PaperDetails | null {
+  for (const paperId of paperIds) {
+    const paper = workspace.paper_cards[paperId];
+    if (paper) {
+      return paperDetails(paper);
+    }
   }
-  return `${text.slice(0, 217).trim()}...`;
+  return null;
+}
+
+function paperDetails(paper: PaperCard): PaperDetails {
+  return {
+    paperId: paper.paper_id,
+    title: paper.title,
+    authors: Array.isArray(paper.authors) ? paper.authors : [],
+    year: paper.year ?? null,
+    publicationDate: paper.publication_date ?? null,
+    venue: paper.venue || "",
+    primaryLink: paper.primary_link ?? null,
+    doi: paper.doi ?? null,
+    arxivId: paper.arxiv_id ?? null,
+    arxivLink: paper.arxiv_link ?? arxivLink(paper.arxiv_id),
+    semanticScholarLink: paper.s2_link ?? null,
+    citationCount: paper.citation_count ?? null,
+    tldr: paper.tldr?.trim() || null,
+    importance: paper.importance?.trim() || "",
+    abstract: paper.abstract || "",
+    similarPapers: Array.isArray(paper.similar_papers) ? paper.similar_papers : [],
+  };
+}
+
+function arxivLink(arxivId: string | null): string | null {
+  return arxivId ? `https://arxiv.org/abs/${arxivId}` : null;
+}
+
+function isSurveyPaper(paper: PaperCard): boolean {
+  return paper.paper_role.toLowerCase().includes("survey");
+}
+
+function fallbackPath(branch: BranchNode): PaperPath {
+  return {
+    path_id: `fallback-${branch.node_id}`,
+    branch_node_id: branch.node_id,
+    path_type: "primary_timeline",
+    label: "Reading sequence",
+    description: branch.description,
+    paper_ids: branch.primary_paper_ids,
+    rationale: branch.why_it_matters,
+  };
+}
+
+function branchBreadcrumb(
+  branch: BranchNode,
+  branchesById: Map<string, BranchNode>,
+  rootLabel: string,
+): string[] {
+  const labels = [branch.label];
+  let parentId = branch.parent_id;
+  while (parentId && parentId !== "root") {
+    const parent = branchesById.get(parentId);
+    if (!parent) {
+      break;
+    }
+    labels.unshift(parent.label);
+    parentId = parent.parent_id;
+  }
+  return [rootLabel, ...labels];
+}
+
+function branchPositionX(depth: number): number {
+  return ROOT_POSITION_X + ROOT_SIZE.width + COLUMN_GAP + (depth - 1) * (BRANCH_SIZE.width + COLUMN_GAP);
+}
+
+function edgeBetween(
+  from: Pick<RootTreeNode | BranchTreeNode | PaperTreeNode, "position" | "size">,
+  to: Pick<RootTreeNode | BranchTreeNode | PaperTreeNode, "position" | "size">,
+): TreeEdgeViewModel {
+  return {
+    from: nodeRightCenter(from),
+    to: nodeLeftCenter(to),
+  };
+}
+
+function nodeRightCenter(
+  node: Pick<RootTreeNode | BranchTreeNode | PaperTreeNode, "position" | "size">,
+): Point {
+  return {
+    x: node.position.x + node.size.width,
+    y: node.position.y + node.size.height / 2,
+  };
+}
+
+function nodeLeftCenter(
+  node: Pick<RootTreeNode | BranchTreeNode | PaperTreeNode, "position" | "size">,
+): Point {
+  return {
+    x: node.position.x,
+    y: node.position.y + node.size.height / 2,
+  };
 }
 
 function average(values: number[], fallback: number): number {
   if (values.length === 0) {
     return fallback;
   }
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function lastLayoutBottom(
-  layouts: {
-    paperPositions: Point[];
-    branchPosition: Point;
-  }[],
-): number {
-  return layouts.reduce((bottom, layout) => {
-    const paperBottom = Math.max(...layout.paperPositions.map((point) => point.y), layout.branchPosition.y);
-    return Math.max(bottom, paperBottom);
-  }, TOP_PADDING);
-}
-
-function edgeBetween(
-  from: Point,
-  to: Point,
-  fromKind: "root" | "branch",
-  toKind: "branch" | "paper",
-): TreeEdgeViewModel {
-  const fromWidth = fromKind === "root" ? 178 : 216;
-  const toHeight = toKind === "branch" ? 86 : 76;
-  return {
-    from: {
-      x: from.x + fromWidth,
-      y: from.y + toHeight / 2,
-    },
-    to: {
-      x: to.x,
-      y: to.y + toHeight / 2,
-    },
-  };
+  return values.reduce((total, value) => total + value, 0) / values.length;
 }

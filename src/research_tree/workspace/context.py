@@ -121,6 +121,7 @@ def _branch_summaries(
                 "child_node_ids": node.get("child_node_ids") or [],
                 "primary_paper_ids": node.get("primary_paper_ids") or [],
                 "secondary_paper_ids": node.get("secondary_paper_ids") or [],
+                "survey_anchor_paper_id": node.get("survey_anchor_paper_id"),
                 "tags": node.get("tags") or [],
                 "open_questions": node.get("open_questions") or [],
             }
@@ -147,6 +148,7 @@ def _paper_paths(
                 "label": path.get("label"),
                 "description": path.get("description"),
                 "paper_ids": path.get("paper_ids") or [],
+                "paper_steps": path.get("paper_steps") or [],
                 "rationale": path.get("rationale"),
             }
         )
@@ -176,9 +178,8 @@ def _visible_paper_cards(
             "primary_tree_location": card.get("primary_tree_location"),
             "secondary_tags": card.get("secondary_tags") or [],
             "paper_role": card.get("paper_role"),
-            "one_sentence_contribution": card.get("one_sentence_contribution"),
+            "importance": card.get("importance"),
             "core_idea": card.get("core_idea"),
-            "why_it_belongs": card.get("why_it_belongs"),
             "read_before": card.get("read_before") or [],
             "read_after": card.get("read_after") or [],
         }
@@ -259,4 +260,3 @@ def _paper_summary(paper: Mapping[str, Any]) -> dict[str, Any]:
         "cross_encoder_rank": paper.get("cross_encoder_rank"),
         "is_survey": paper.get("is_survey"),
     }
-

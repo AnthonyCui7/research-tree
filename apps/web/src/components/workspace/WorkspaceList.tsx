@@ -21,7 +21,12 @@ export function WorkspaceList({
           onClick={() => onSelectWorkspace(workspace.workspace_id)}
         >
           <span>{workspace.title}</span>
-          <small>{workspace.paper_paths.length} paper paths</small>
+          <small>
+            {workspace.paper_paths.length} reading paths
+            {workspace.workspace_versions?.length
+              ? ` / ${workspace.workspace_versions.length} versions`
+              : ""}
+          </small>
         </button>
       ))}
     </nav>

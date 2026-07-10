@@ -57,6 +57,9 @@ def merge_papers(existing: Paper, incoming: Paper) -> Paper:
         set(existing.publication_types) | set(incoming.publication_types)
     )
     existing.url = existing.url or incoming.url
+    existing.semantic_scholar_metadata = (
+        existing.semantic_scholar_metadata or incoming.semantic_scholar_metadata
+    )
     existing.found_by.update(incoming.found_by)
     existing.is_survey = existing.is_survey or incoming.is_survey
     return existing

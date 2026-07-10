@@ -4,7 +4,7 @@ import type { TreeNodeId, TreeViewModel } from "../../lib/types";
 
 type TreeCanvasProps = {
   tree: TreeViewModel;
-  selectedNodeId: TreeNodeId;
+  selectedNodeId: TreeNodeId | null;
   onSelectNode: (nodeId: TreeNodeId) => void;
 };
 
@@ -12,10 +12,12 @@ export function TreeCanvas({ tree, selectedNodeId, onSelectNode }: TreeCanvasPro
   return (
     <div className="tree-canvas-shell">
       <div className="canvas-label-row">
-        <span>Tree canvas</span>
-        <span>{tree.paperCount} visible papers</span>
+        <span>Research tree</span>
+        <span>
+          {tree.branchCount} branches / {tree.pathCount} reading paths / {tree.paperCount} papers
+        </span>
       </div>
-      <div className="tree-canvas" tabIndex={-1}>
+      <div className="tree-canvas" aria-label="Research topic tree">
         <div
           className="tree-plane"
           style={{ width: tree.canvas.width, height: tree.canvas.height }}
@@ -26,8 +28,8 @@ export function TreeCanvas({ tree, selectedNodeId, onSelectNode }: TreeCanvasPro
             height={tree.canvas.height}
             aria-hidden="true"
           >
-            {tree.edges.map((edge) => (
-              <TreeEdge key={`${edge.from}-${edge.to}`} edge={edge} />
+            {tree.edges.map((edge, index) => (
+              <TreeEdge key={`${edge.from.x}:${edge.from.y}:${edge.to.x}:${edge.to.y}:${index}`} edge={edge} />
             ))}
           </svg>
           {tree.nodes.map((node) => (

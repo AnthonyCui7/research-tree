@@ -47,8 +47,16 @@ export function useWorkspaceCollection(): WorkspaceCollectionState {
 async function loadRepositoryWorkspaces(): Promise<WorkspaceDocument[]> {
   const summaries = await repositoryWorkspaceGateway.listWorkspaceSummaries();
   return Promise.all(
-    summaries.map((summary) =>
-      repositoryWorkspaceGateway.getWorkspace(summary.workspace_id),
-    ),
+    summaries.map(async (summary) => {
+      const [workspaceResponse, versions] = await Promise.all([
+        repositoryWorkspaceGateway.getWorkspace(summary.workspace_id),
+        repositoryWorkspaceGateway.getWorkspaceVersions(summary.workspace_id),
+      ]);
+      return {
+        ...workspaceResponse.workspace,
+        current_workspace_version_hash: workspaceResponse.workspace_version_hash,
+        workspace_versions: versions,
+      };
+    }),
   );
 }

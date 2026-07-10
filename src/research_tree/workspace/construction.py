@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import re
 import socket
-import copy
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -13,12 +14,25 @@ from pathlib import Path
 from typing import Any, Literal
 
 from research_tree.artifacts import write_json_file, write_text_file
+from research_tree.retrieval.semantic_scholar import (
+    SemanticScholarClient,
+    paper_from_semantic_scholar,
+    semantic_scholar_metadata,
+)
 from research_tree.workspace.prompts import (
     WORKSPACE_CONSTRUCTION_PROMPT_VERSION,
     build_workspace_prompt,
 )
-from research_tree.workspace.schemas import WORKSPACE_SCHEMA_VERSION
-from research_tree.workspace.schemas import candidate_papers_from_artifact
+from research_tree.workspace.prompts.paper_tldr import (
+    PAPER_TLDR_PROMPT_VERSION,
+    build_missing_paper_tldr_prompt,
+)
+from research_tree.workspace.schemas import (
+    CandidatePaperMetadata,
+    PAPER_ROLES,
+    WORKSPACE_SCHEMA_VERSION,
+    candidate_papers_from_artifact,
+)
 from research_tree.workspace.serialization import (
     load_candidate_artifact,
     load_json_artifact,
@@ -167,6 +181,8 @@ def construct_workspace(
     prompt_version: str = WORKSPACE_CONSTRUCTION_PROMPT_VERSION,
     llm_client: OpenAIResponsesWorkspaceClient | None = None,
     raw_llm_output: str | dict[str, Any] | None = None,
+    workspace_id_override: str | None = None,
+    semantic_scholar_client: SemanticScholarClient | None = None,
 ) -> dict[str, Any]:
     """Construct or modify a workspace in memory without writing artifacts."""
 
@@ -233,6 +249,12 @@ def construct_workspace(
     normalize_workspace_payload(workspace)
     if active_candidate_artifact is not None:
         fill_paper_card_source_metadata(workspace, active_candidate_artifact)
+        ensure_survey_anchor_cards(workspace, active_candidate_artifact)
+        if semantic_scholar_client is not None:
+            enrich_workspace_papers_from_semantic_scholar(
+                workspace,
+                semantic_scholar_client,
+            )
     if construction_mode == "initial_workspace" and active_candidate_artifact is not None:
         _fill_workspace_metadata(
             workspace=workspace,
@@ -240,6 +262,7 @@ def construct_workspace(
             candidate_json_path=(candidate_path or Path("<in-memory-candidate-artifact>")),
             model=model,
             prompt_version=prompt_version,
+            workspace_id_override=workspace_id_override,
         )
         validation = validate_workspace(workspace, active_candidate_artifact)
         if not validation.is_valid:
@@ -268,6 +291,8 @@ def construct_workspace_from_candidates(
     max_output_tokens: int | None = DEFAULT_WORKSPACE_LLM_MAX_OUTPUT_TOKENS,
     text_verbosity: str | None = DEFAULT_WORKSPACE_LLM_TEXT_VERBOSITY,
     response_format: str = DEFAULT_WORKSPACE_LLM_RESPONSE_FORMAT,
+    workspace_id_override: str | None = None,
+    semantic_scholar_client: SemanticScholarClient | None = None,
 ) -> WorkspaceConstructionResult:
     candidate_json_path = candidate_json_path.resolve()
     output_dir = output_dir.resolve() if output_dir else candidate_json_path.parent
@@ -309,12 +334,21 @@ def construct_workspace_from_candidates(
         raise
     normalize_workspace_payload(workspace)
     fill_paper_card_source_metadata(workspace, candidate_artifact)
+    ensure_survey_anchor_cards(workspace, candidate_artifact)
+    if semantic_scholar_client is not None:
+        enrich_workspace_papers_from_semantic_scholar(
+            workspace,
+            semantic_scholar_client,
+        )
+    if raw_llm_output_json_path is None:
+        generate_missing_paper_tldrs(workspace)
     _fill_workspace_metadata(
         workspace=workspace,
         candidate_artifact=candidate_artifact,
         candidate_json_path=candidate_json_path,
         model=model,
         prompt_version=prompt_version,
+        workspace_id_override=workspace_id_override,
     )
     validation = validate_workspace(workspace, candidate_artifact)
     if not validation.is_valid:
@@ -450,11 +484,104 @@ def fill_paper_card_source_metadata(
         card["title"] = candidate.title
         card["authors"] = candidate.authors
         card["year"] = candidate.year
+        card["publication_date"] = candidate.publication_date
         card["venue"] = candidate.venue
-        card["primary_link"] = candidate.primary_link
+        card["primary_link"] = candidate.primary_link or candidate.arxiv_link
         card["doi"] = candidate.doi
         card["arxiv_id"] = candidate.arxiv_id
+        card["arxiv_link"] = candidate.arxiv_link
+        card["doi_link"] = candidate.doi_link
+        card["s2_link"] = candidate.s2_link
+        card["citation_count"] = candidate.citation_count
         card["abstract"] = candidate.abstract
+        card["semantic_scholar_metadata"] = candidate.semantic_scholar_metadata
+        if candidate.is_survey:
+            card["paper_role"] = "survey"
+
+
+def ensure_survey_anchor_cards(
+    workspace: dict[str, Any],
+    candidate_artifact: dict[str, Any],
+) -> None:
+    paper_cards = workspace.get("paper_cards")
+    if not isinstance(paper_cards, dict):
+        return
+    candidates = candidate_papers_from_artifact(candidate_artifact)
+    root = workspace.get("root")
+    root = root if isinstance(root, dict) else {}
+    root_label = str(root.get("label") or workspace.get("title") or "Root")
+    root_anchor_ids = _string_list(root.get("survey_anchor_paper_ids"))
+    for paper_id in root_anchor_ids:
+        candidate = candidates.get(paper_id)
+        if candidate and candidate.is_survey:
+            paper_cards.setdefault(
+                paper_id,
+                _survey_anchor_card(
+                    candidate=candidate,
+                    node_id="root",
+                    path=[root_label],
+                ),
+            )
+
+    node_labels = _node_labels(workspace)
+    tree = workspace.get("tree")
+    for node in (tree.get("nodes") or []) if isinstance(tree, dict) else []:
+        if not isinstance(node, dict):
+            continue
+        paper_id = str(node.get("survey_anchor_paper_id") or "").strip()
+        candidate = candidates.get(paper_id)
+        if not paper_id or candidate is None or not candidate.is_survey:
+            continue
+        node_id = str(node.get("node_id") or "")
+        paper_cards.setdefault(
+            paper_id,
+            _survey_anchor_card(
+                candidate=candidate,
+                node_id=node_id,
+                path=_location_path(node_id, node_labels),
+            ),
+        )
+
+
+def _survey_anchor_card(
+    *,
+    candidate: CandidatePaperMetadata,
+    node_id: str,
+    path: list[str],
+) -> dict[str, Any]:
+    return {
+        "paper_id": candidate.paper_id,
+        "title": candidate.title,
+        "authors": candidate.authors,
+        "year": candidate.year,
+        "publication_date": candidate.publication_date,
+        "venue": candidate.venue,
+        "primary_link": candidate.primary_link or candidate.arxiv_link,
+        "doi": candidate.doi,
+        "arxiv_id": candidate.arxiv_id,
+        "arxiv_link": candidate.arxiv_link,
+        "doi_link": candidate.doi_link,
+        "s2_link": candidate.s2_link,
+        "citation_count": candidate.citation_count,
+        "semantic_scholar_metadata": candidate.semantic_scholar_metadata,
+        "abstract": candidate.abstract,
+        "primary_tree_location": {"node_id": node_id, "path": path},
+        "secondary_tags": [],
+        "reading_status": "unread",
+        "paper_role": "survey",
+        "importance": "",
+        "problem": "",
+        "core_idea": "",
+        "method": "",
+        "assumptions": "",
+        "datasets_or_benchmarks": "",
+        "results": "",
+        "limitations": "",
+        "read_before": [],
+        "read_after": [],
+        "user_notes": "",
+        "similar_papers": [],
+    }
 
 
 def _normalize_tree(workspace: dict[str, Any]) -> None:
@@ -503,6 +630,7 @@ def _normalize_tree(workspace: dict[str, Any]) -> None:
                     branch.get("primary_paper_ids") or branch.get("paper_ids")
                 ),
                 "secondary_paper_ids": _string_list(branch.get("secondary_paper_ids")),
+                "survey_anchor_paper_id": branch.get("survey_anchor_paper_id"),
                 "tags": _string_list(branch.get("tags")),
                 "open_questions": _string_list(branch.get("open_questions")),
             }
@@ -526,13 +654,62 @@ def _normalize_paper_paths(workspace: dict[str, Any]) -> None:
             continue
         if "branch_node_id" not in path:
             path["branch_node_id"] = path.get("branch_id") or path.get("node_id") or ""
-        if "paper_ids" not in path:
-            path["paper_ids"] = _string_list(
-                path.get("ordered_paper_ids") or path.get("papers")
-            )
+        paper_steps = _paper_steps(path.get("paper_steps"))
+        if paper_steps:
+            path["paper_steps"] = paper_steps
+            path["paper_ids"] = [step["paper_id"] for step in paper_steps]
+        else:
+            if "paper_ids" not in path:
+                path["paper_ids"] = _string_list(
+                    path.get("ordered_paper_ids") or path.get("papers")
+                )
+            else:
+                path["paper_ids"] = _string_list(path.get("paper_ids"))
+            path["paper_steps"] = _steps_from_paper_ids(path["paper_ids"])
         path.setdefault("path_type", "primary_timeline")
         path.setdefault("description", path.get("learning_goal") or path.get("notes") or "")
         path.setdefault("rationale", path.get("notes") or path.get("learning_goal") or "")
+        for obsolete_field in (
+            "timeline_intent",
+            "recommended_reading_depth",
+        ):
+            path.pop(obsolete_field, None)
+
+
+def _paper_steps(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    legacy_steps: list[tuple[int, dict[str, Any]]] = []
+    for fallback_index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            continue
+        paper_id = str(item.get("paper_id") or "").strip()
+        if not paper_id:
+            continue
+        legacy_steps.append(
+            (
+                _int_or_default(item.get("step_index"), fallback_index),
+                {
+                    "paper_id": paper_id,
+                    "why_read_here": str(
+                        item.get("why_read_here")
+                        or "Read this next in the saved path."
+                    ),
+                },
+            )
+        )
+    legacy_steps.sort(key=lambda item: item[0])
+    return [step for _, step in legacy_steps]
+
+
+def _steps_from_paper_ids(paper_ids: list[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "paper_id": paper_id,
+            "why_read_here": "Read this next in the saved path.",
+        }
+        for paper_id in paper_ids
+    ]
 
 
 def _normalize_paper_cards(workspace: dict[str, Any]) -> None:
@@ -553,8 +730,13 @@ def _normalize_paper_cards(workspace: dict[str, Any]) -> None:
                 "path": _location_path(node_id, node_labels),
             }
         card.setdefault("similar_papers", [])
-        if "why_it_belongs" not in card and "why_it_belongs_in_this_branch" in card:
-            card["why_it_belongs"] = card.get("why_it_belongs_in_this_branch") or ""
+        if "importance" not in card:
+            card["importance"] = (
+                card.get("why_it_belongs")
+                or card.get("why_it_belongs_in_this_branch")
+                or card.get("one_sentence_contribution")
+                or ""
+            )
         if "read_before" not in card and "what_to_read_before_it" in card:
             card["read_before"] = _string_list(card.get("what_to_read_before_it"))
         if "read_after" not in card and "what_to_read_after_it" in card:
@@ -570,6 +752,175 @@ def _normalize_paper_cards(workspace: dict[str, Any]) -> None:
                 continue
             card[field_name] = []
         card.setdefault("user_notes", "")
+        card["paper_role"] = _paper_role(card.get("paper_role"))
+        card.pop("one_sentence_contribution", None)
+        card.pop("why_it_belongs", None)
+        card.pop("why_it_belongs_in_this_branch", None)
+
+
+def enrich_workspace_papers_from_semantic_scholar(
+    workspace: dict[str, Any],
+    semantic_scholar: SemanticScholarClient,
+) -> None:
+    """Attach Semantic Scholar's source TLDR to the curated workspace papers."""
+
+    paper_cards = workspace.get("paper_cards")
+    if not isinstance(paper_cards, dict):
+        return
+    warnings = _workspace_warnings(workspace)
+    details_by_id = semantic_scholar.get_paper_details(
+        [str(paper_id) for paper_id in paper_cards],
+        warnings,
+    )
+    for paper_id, card in paper_cards.items():
+        if not isinstance(card, dict):
+            continue
+        details = details_by_id.get(str(paper_id))
+        if details is None:
+            continue
+        source_paper = paper_from_semantic_scholar(details)
+        _fill_card_with_semantic_scholar_details(card, source_paper)
+        card["semantic_scholar_metadata"] = semantic_scholar_metadata(details)
+        tldr = details.get("tldr")
+        if isinstance(tldr, dict) and isinstance(tldr.get("text"), str):
+            card["tldr"] = tldr["text"].strip() or None
+            card["tldr_model"] = tldr.get("model")
+            card["tldr_source"] = "semantic_scholar"
+
+
+def generate_missing_paper_tldrs(
+    workspace: dict[str, Any],
+    *,
+    model: str = "gpt-5.4-mini",
+    api_key: str | None = None,
+) -> None:
+    """Generate TLDRs only for curated papers without a Semantic Scholar TLDR."""
+
+    paper_cards = workspace.get("paper_cards")
+    if not isinstance(paper_cards, dict):
+        return
+    missing = [
+        {
+            "paper_id": str(paper_id),
+            "title": str(card.get("title") or ""),
+            "abstract": str(card.get("abstract") or ""),
+        }
+        for paper_id, card in paper_cards.items()
+        if isinstance(card, dict) and not str(card.get("tldr") or "").strip()
+    ]
+    if not missing:
+        return
+
+    active_api_key = api_key or os.environ.get("OPENAI_API_KEY")
+    if not active_api_key:
+        _workspace_warnings(workspace).append(
+            "Semantic Scholar had no TLDR for one or more visible papers and "
+            "OPENAI_API_KEY was unavailable for the fallback."
+        )
+        return
+
+    body = {
+        "model": model,
+        "input": build_missing_paper_tldr_prompt(missing),
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "research_tree_paper_tldrs",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "tldrs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "paper_id": {"type": "string"},
+                                    "text": {"type": "string"},
+                                },
+                                "required": ["paper_id", "text"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["tldrs"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "reasoning": {"effort": "minimal"},
+        "max_output_tokens": 2000,
+    }
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {active_api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60.0) as response:
+            raw_response = json.loads(response.read().decode("utf-8"))
+        generated = json.loads(_extract_llm_text(raw_response))
+    except (OSError, ValueError, urllib.error.HTTPError, urllib.error.URLError) as error:
+        _workspace_warnings(workspace).append(
+            f"Generated TLDR fallback failed: {error}"
+        )
+        return
+
+    tldrs = generated.get("tldrs") if isinstance(generated, dict) else []
+    if not isinstance(tldrs, list):
+        tldrs = []
+    for item in tldrs:
+        if not isinstance(item, dict):
+            continue
+        paper_id = str(item.get("paper_id") or "")
+        text = str(item.get("text") or "").strip()
+        card = paper_cards.get(paper_id)
+        if isinstance(card, dict) and text:
+            card["tldr"] = text
+            card["tldr_model"] = model
+            card["tldr_source"] = "generated"
+    provenance = workspace.setdefault("provenance", {})
+    if isinstance(provenance, dict):
+        provenance.setdefault("paper_tldr_prompt_version", PAPER_TLDR_PROMPT_VERSION)
+
+
+def _fill_card_with_semantic_scholar_details(
+    card: dict[str, Any],
+    source_paper: Any,
+) -> None:
+    if source_paper.title:
+        card["title"] = source_paper.title
+    if source_paper.abstract:
+        card["abstract"] = source_paper.abstract
+    if source_paper.year is not None:
+        card["year"] = source_paper.year
+    if source_paper.publication_date is not None:
+        card["publication_date"] = source_paper.publication_date.isoformat()
+    if source_paper.venue:
+        card["venue"] = source_paper.venue
+    if source_paper.authors:
+        card["authors"] = source_paper.authors
+    if source_paper.url:
+        card["primary_link"] = source_paper.url
+    if source_paper.doi:
+        card["doi"] = source_paper.doi
+    if source_paper.arxiv_id:
+        card["arxiv_id"] = source_paper.arxiv_id
+        card["arxiv_link"] = f"https://arxiv.org/abs/{source_paper.arxiv_id}"
+    if source_paper.citation_count is not None:
+        card["citation_count"] = source_paper.citation_count
+
+
+def _workspace_warnings(workspace: dict[str, Any]) -> list[str]:
+    provenance = workspace.setdefault("provenance", {})
+    if not isinstance(provenance, dict):
+        return []
+    warnings = provenance.setdefault("warnings", [])
+    return warnings if isinstance(warnings, list) else []
 
 
 def _node_labels(workspace: dict[str, Any]) -> dict[str, str]:
@@ -601,6 +952,36 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if item is not None]
 
 
+def _int_or_default(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _paper_role(value: Any) -> str:
+    normalized = str(value or "").strip().casefold().replace("_", " ")
+    if normalized in PAPER_ROLES:
+        return normalized
+    if "survey" in normalized:
+        return "survey"
+    if "foundational" in normalized or "precursor" in normalized:
+        return "foundational"
+    if "benchmark" in normalized:
+        return "benchmark"
+    if "evaluat" in normalized:
+        return "evaluation"
+    if "critique" in normalized or "limitation" in normalized:
+        return "critique"
+    if "application" in normalized:
+        return "application"
+    if "method" in normalized or "tuning" in normalized or "alignment" in normalized:
+        return "method"
+    return "other"
+
+
 def _model_supports_reasoning_effort(model: str) -> bool:
     normalized = model.casefold()
     return normalized.startswith("gpt-5") or normalized.startswith(
@@ -626,23 +1007,32 @@ def _fill_workspace_metadata(
     candidate_json_path: Path,
     model: str,
     prompt_version: str,
+    workspace_id_override: str | None,
 ) -> None:
     topic = str(workspace.get("topic") or candidate_artifact.get("topic") or "")
     workspace.setdefault("schema_version", WORKSPACE_SCHEMA_VERSION)
     workspace.setdefault("topic", topic)
     workspace.setdefault("title", _title_from_topic(topic))
-    workspace.setdefault(
-        "workspace_id",
-        f"{_slug(topic or 'workspace')}__{datetime.now(UTC).date().isoformat()}",
-    )
+    if workspace_id_override:
+        workspace["workspace_id"] = workspace_id_override
+    else:
+        workspace.setdefault(
+            "workspace_id",
+            f"{_slug(topic or 'workspace')}__{datetime.now(UTC).date().isoformat()}",
+        )
+    candidate_artifact_hash = _candidate_artifact_hash(candidate_artifact)
     workspace["source_candidate_artifact"] = {
         "path": str(candidate_json_path),
         "schema_version": candidate_artifact.get("schema_version"),
+        "content_hash": candidate_artifact_hash,
+        "input_mode": "existing_candidate_artifact",
         "non_survey_count": len(candidate_artifact.get("non_survey_papers") or []),
         "survey_count": len(candidate_artifact.get("survey_papers") or []),
         "candidate_order": candidate_artifact.get(
             "candidate_pool_order", "age_adjusted_citation_score_desc"
         ),
+        "run_name": candidate_artifact.get("run_name"),
+        "run_dir": candidate_artifact.get("run_dir"),
     }
     scope = workspace.setdefault("scope", {})
     if isinstance(scope, dict):
@@ -655,6 +1045,11 @@ def _fill_workspace_metadata(
         provenance.setdefault("workspace_constructor", "llm")
         provenance["model"] = model
         provenance["prompt_version"] = prompt_version
+        provenance["construction_input"] = {
+            "candidate_artifact_path": str(candidate_json_path),
+            "candidate_artifact_hash": candidate_artifact_hash,
+            "input_mode": "existing_candidate_artifact",
+        }
         provenance.setdefault("created_at", datetime.now(UTC).isoformat())
         provenance.setdefault("warnings", [])
 
@@ -663,6 +1058,17 @@ def _run_label(path: Path) -> str:
     if path.name:
         return path.name
     return "workspace"
+
+
+def _candidate_artifact_hash(candidate_artifact: dict[str, Any]) -> str:
+    payload = json.dumps(
+        candidate_artifact,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _slug(value: str) -> str:

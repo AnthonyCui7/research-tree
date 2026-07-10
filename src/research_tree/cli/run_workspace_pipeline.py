@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from research_tree.retrieval.env import load_dotenv_file
+from research_tree.retrieval.semantic_scholar import SemanticScholarClient
 from research_tree.retrieval.candidate_preparation import (
     DEFAULT_TOPIC,
     PipelineConfig,
@@ -149,6 +151,17 @@ def main(argv: list[str] | None = None) -> int:
             else args.text_verbosity
         ),
         response_format=args.response_format,
+        semantic_scholar_client=SemanticScholarClient(
+            cache_dir=REPO_ROOT / "experiments" / "cache" / "semantic_scholar",
+            api_key=(
+                os.environ.get("S2_API_KEY")
+                or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+            ),
+            request_delay_seconds=args.request_delay_seconds,
+            refresh_cache=args.refresh_cache,
+            max_retries=args.max_academic_retries,
+            timeout_seconds=args.request_timeout_seconds,
+        ),
     )
     workspace_with_similar_papers, debug = build_similar_papers_from_files(
         workspace_json_path=workspace_result.output_paths["workspace"],

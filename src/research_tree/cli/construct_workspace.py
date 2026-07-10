@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from research_tree.retrieval.env import load_dotenv_file
+from research_tree.retrieval.semantic_scholar import SemanticScholarClient
 from research_tree.workspace.construction import (
     DEFAULT_WORKSPACE_LLM_MAX_OUTPUT_TOKENS,
     DEFAULT_WORKSPACE_LLM_REASONING_EFFORT,
@@ -16,6 +18,7 @@ from research_tree.workspace.construction import (
     construct_workspace_from_candidates,
 )
 from research_tree.workspace.prompts import WORKSPACE_CONSTRUCTION_PROMPT_VERSION
+from research_tree.workspace.publishing import publish_workspace_version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -56,6 +59,14 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_WORKSPACE_LLM_TIMEOUT_SECONDS,
     )
     parser.add_argument(
+        "--s2-request-delay-seconds",
+        type=float,
+        default=1.0,
+        help="Minimum delay between Semantic Scholar requests; 1.0 respects its keyed rate guidance.",
+    )
+    parser.add_argument("--s2-request-timeout-seconds", type=float, default=20.0)
+    parser.add_argument("--s2-max-retries", type=int, default=2)
+    parser.add_argument(
         "--reasoning-effort",
         choices=[
             API_DEFAULT_REASONING_EFFORT,
@@ -89,12 +100,53 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(WORKSPACE_LLM_RESPONSE_FORMATS),
         default=DEFAULT_WORKSPACE_LLM_RESPONSE_FORMAT,
     )
+    parser.add_argument(
+        "--publish-to-repository",
+        action="store_true",
+        help=(
+            "Also save the constructed workspace as the current version in the "
+            "local workspace repository."
+        ),
+    )
+    parser.add_argument(
+        "--repository-dir",
+        help=(
+            "Workspace repository directory for --publish-to-repository. Defaults "
+            "to RESEARCH_TREE_DATA_DIR or data/workspaces."
+        ),
+    )
+    parser.add_argument(
+        "--publish-reason",
+        default="constructed workspace from candidate artifact",
+    )
+    parser.add_argument(
+        "--workspace-id",
+        help=(
+            "Override the generated workspace ID. Use the existing ID when "
+            "rebuilding a workspace from the same candidate artifact."
+        ),
+    )
+    parser.add_argument(
+        "--expected-current-version",
+        help=(
+            "Only publish if this workspace version is still current. This "
+            "prevents replacing a workspace that changed during construction."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.request_timeout_seconds <= 0:
         raise ValueError("--request-timeout-seconds must be positive.")
     if args.max_output_tokens < 0:
         raise ValueError("--max-output-tokens cannot be negative.")
+    if args.s2_request_delay_seconds < 0:
+        raise ValueError("--s2-request-delay-seconds cannot be negative.")
+    if args.s2_request_timeout_seconds <= 0:
+        raise ValueError("--s2-request-timeout-seconds must be positive.")
+    if args.s2_max_retries < 0:
+        raise ValueError("--s2-max-retries cannot be negative.")
+    if args.expected_current_version and not args.publish_to_repository:
+        raise ValueError("--expected-current-version requires --publish-to-repository.")
 
     load_dotenv_file(REPO_ROOT / ".env")
     candidate_json_path = (
@@ -112,6 +164,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.text_verbosity == API_DEFAULT_TEXT_VERBOSITY
         else args.text_verbosity
     )
+    semantic_scholar_client = None
+    if not args.llm_output_json:
+        semantic_scholar_client = SemanticScholarClient(
+            cache_dir=REPO_ROOT / "experiments" / "cache" / "semantic_scholar",
+            api_key=(
+                os.environ.get("S2_API_KEY")
+                or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+            ),
+            request_delay_seconds=args.s2_request_delay_seconds,
+            max_retries=args.s2_max_retries,
+            timeout_seconds=args.s2_request_timeout_seconds,
+        )
     result = construct_workspace_from_candidates(
         candidate_json_path=candidate_json_path,
         model=args.model,
@@ -127,10 +191,33 @@ def main(argv: list[str] | None = None) -> int:
         ),
         text_verbosity=text_verbosity,
         response_format=args.response_format,
+        workspace_id_override=args.workspace_id,
+        semantic_scholar_client=semantic_scholar_client,
     )
     print(f"Candidate artifact: {candidate_json_path}")
     print(f"Wrote workspace: {result.output_paths['workspace']}")
     print(f"Wrote validation: {result.output_paths['validation']}")
+    if args.publish_to_repository:
+        publish_result = publish_workspace_version(
+            repository_dir=_repository_dir(args.repository_dir),
+            workspace=result.workspace,
+            reason=args.publish_reason,
+            event_type="workspace_constructed",
+            event_payload={
+                "candidate_artifact": str(candidate_json_path.resolve()),
+                "workspace_artifact": str(result.output_paths["workspace"]),
+                "validation_artifact": str(result.output_paths["validation"]),
+                "model": args.model,
+                "prompt_version": args.prompt_version,
+            },
+            expected_parent_version_hash=args.expected_current_version,
+        )
+        if publish_result["published"]:
+            print(f"Published workspace version: {publish_result['version_hash']}")
+            print(f"Replaced version: {publish_result['parent_version_hash']}")
+            print(f"Published workspace event: {publish_result['event_id']}")
+        else:
+            print(f"Workspace already current: {publish_result['version_hash']}")
     if result.validation.warnings:
         print(f"Validation warnings: {len(result.validation.warnings)}")
     return 0
@@ -158,6 +245,10 @@ def latest_candidate_json_path(output_base_dir: Path) -> Path:
         "No default candidate artifact found. Run candidate preparation first, "
         "or pass --candidate-json explicitly."
     )
+
+
+def _repository_dir(value: str | None) -> Path:
+    return Path(value or os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces"))
 
 
 if __name__ == "__main__":

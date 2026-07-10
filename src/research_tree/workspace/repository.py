@@ -26,6 +26,13 @@ class WorkspaceRepository(Protocol):
     def get_current_workspace(self, workspace_id: str) -> dict[str, Any]:
         ...
 
+    def get_workspace_version(
+        self,
+        workspace_id: str,
+        version_hash: str,
+    ) -> dict[str, Any]:
+        ...
+
     def save_workspace_version(
         self,
         workspace_id: str,
@@ -53,6 +60,18 @@ class WorkspaceRepository(Protocol):
         after_hash: str | None,
         payload: dict[str, Any],
     ) -> str:
+        ...
+
+    def restore_workspace_version(
+        self,
+        workspace_id: str,
+        version_hash: str,
+        *,
+        actor: str,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        reason: str,
+    ) -> dict[str, Any]:
         ...
 
     def save_pending_review(
@@ -199,6 +218,20 @@ class LocalJsonWorkspaceRepository:
             raise ValueError(f"current workspace must be a JSON object: {path}")
         return payload
 
+    def get_workspace_version(
+        self,
+        workspace_id: str,
+        version_hash: str,
+    ) -> dict[str, Any]:
+        safe_version_hash = _safe_version_hash(version_hash)
+        path = self._workspace_dir(workspace_id) / "versions" / f"{safe_version_hash}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"workspace version does not exist: {path}")
+        payload = _read_json(path)
+        if not isinstance(payload, dict):
+            raise ValueError(f"workspace version must be a JSON object: {path}")
+        return payload
+
     def save_workspace_version(
         self,
         workspace_id: str,
@@ -232,8 +265,12 @@ class LocalJsonWorkspaceRepository:
             "agent_run_id": agent_run_id,
             "created_at": _now(),
         }
-        _write_json_atomic(version_path, workspace)
-        _write_json_atomic(metadata_path, metadata)
+        # Content-addressed snapshots are immutable. Reusing an older snapshot
+        # (for example during a restore) must not rewrite its original lineage.
+        if not version_path.is_file():
+            _write_json_atomic(version_path, workspace)
+        if not metadata_path.is_file():
+            _write_json_atomic(metadata_path, metadata)
         _write_json_atomic(workspace_dir / "current.json", workspace)
         return version_hash
 
@@ -271,6 +308,55 @@ class LocalJsonWorkspaceRepository:
         }
         self._append_jsonl(self._workspace_dir(workspace_id) / "events.jsonl", event)
         return event_id
+
+    def restore_workspace_version(
+        self,
+        workspace_id: str,
+        version_hash: str,
+        *,
+        actor: str,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        reason: str,
+    ) -> dict[str, Any]:
+        if actor not in {"user", "agent", "system"}:
+            raise ValueError(f"unsupported workspace actor: {actor!r}")
+        target_workspace = self.get_workspace_version(workspace_id, version_hash)
+        target_hash = workspace_version_hash(target_workspace)
+        try:
+            current_workspace = self.get_current_workspace(workspace_id)
+            current_hash = workspace_version_hash(current_workspace)
+        except FileNotFoundError:
+            current_hash = None
+
+        if current_hash == target_hash:
+            return {
+                "workspace_id": workspace_id,
+                "before_hash": current_hash,
+                "version_hash": target_hash,
+                "event_id": None,
+                "restored": False,
+            }
+
+        _write_json_atomic(self._workspace_dir(workspace_id) / "current.json", target_workspace)
+        event_id = self.append_workspace_event(
+            workspace_id,
+            actor=actor,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            event_type="workspace_restored",
+            target_ids={"workspace_id": workspace_id, "version_hash": target_hash},
+            before_hash=current_hash,
+            after_hash=target_hash,
+            payload={"reason": reason, "restored_version_hash": target_hash},
+        )
+        return {
+            "workspace_id": workspace_id,
+            "before_hash": current_hash,
+            "version_hash": target_hash,
+            "event_id": event_id,
+            "restored": True,
+        }
 
     def append_agent_run_event(
         self,
@@ -815,10 +901,17 @@ class LocalJsonWorkspaceRepository:
         versions_dir = self._workspace_dir(workspace_id) / "versions"
         if not versions_dir.is_dir():
             return []
+        current_hash = None
+        current_path = self._workspace_dir(workspace_id) / "current.json"
+        if current_path.is_file():
+            current = _read_json(current_path)
+            if isinstance(current, dict):
+                current_hash = workspace_version_hash(current)
         versions: list[dict[str, Any]] = []
         for metadata_path in sorted(versions_dir.glob("*.metadata.json")):
             metadata = _read_json(metadata_path)
             if isinstance(metadata, dict):
+                metadata["is_current"] = metadata.get("version_hash") == current_hash
                 versions.append(metadata)
         return versions
 
@@ -1054,6 +1147,13 @@ def _safe_workspace_id(workspace_id: str) -> str:
     if not cleaned or cleaned in {".", ".."}:
         raise ValueError("workspace_id must contain at least one safe path character.")
     return cleaned[:180]
+
+
+def _safe_version_hash(version_hash: str) -> str:
+    normalized = version_hash.strip().casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise ValueError("version_hash must be a 64-character SHA-256 hash.")
+    return normalized
 
 
 def _now() -> str:

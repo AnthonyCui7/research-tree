@@ -19,6 +19,7 @@ dependencies = [
 research-tree-prepare-candidates = "research_tree.cli.prepare_workspace_candidates:main"
 research-tree-construct-workspace = "research_tree.cli.construct_workspace:main"
 research-tree-enrich-similar-papers = "research_tree.cli.enrich_workspace_similar_papers:main"
+research-tree-restore-workspace-version = "research_tree.cli.restore_workspace_version:main"
 research-tree-run-pipeline = "research_tree.cli.run_workspace_pipeline:main"
 
 [project.optional-dependencies]

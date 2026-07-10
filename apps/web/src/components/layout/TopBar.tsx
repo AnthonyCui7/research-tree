@@ -1,13 +1,19 @@
 type TopBarProps = {
   workspaceTitle: string;
+  versionHash: string | null;
+  versionCount: number;
 };
 
-export function TopBar({ workspaceTitle }: TopBarProps) {
+export function TopBar({ workspaceTitle, versionHash, versionCount }: TopBarProps) {
   return (
     <header className="top-bar">
       <div className="top-bar-title">
         <span className="eyebrow">Workspace</span>
         <strong>{workspaceTitle}</strong>
+        <span className="version-line">
+          {versionHash ? `current ${versionHash.slice(0, 10)}` : "unversioned"}
+          {versionCount > 0 ? ` / ${versionCount} saved versions` : ""}
+        </span>
       </div>
       <div className="top-bar-actions">
         <label className="search-control">

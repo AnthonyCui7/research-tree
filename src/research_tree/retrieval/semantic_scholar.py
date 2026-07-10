@@ -25,8 +25,22 @@ SEMANTIC_SCHOLAR_PAPER_FIELDS = [
     "citationCount",
     "publicationTypes",
     "url",
+    "corpusId",
+    "referenceCount",
+    "influentialCitationCount",
+    "isOpenAccess",
+    "openAccessPdf",
+    "fieldsOfStudy",
+    "s2FieldsOfStudy",
+    "publicationVenue",
+    "journal",
+    "citationStyles",
 ]
 SEMANTIC_SCHOLAR_SEARCH_FIELDS = ",".join(SEMANTIC_SCHOLAR_PAPER_FIELDS)
+SEMANTIC_SCHOLAR_DETAIL_FIELDS = ",".join([
+    *SEMANTIC_SCHOLAR_PAPER_FIELDS,
+    "tldr",
+])
 
 
 class SemanticScholarClient:
@@ -94,6 +108,39 @@ class SemanticScholarClient:
                 break
         return papers
 
+    def get_paper_details(
+        self,
+        paper_ids: list[str],
+        warnings: list[str] | None,
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch source metadata for the small visible workspace set.
+
+        Paper batch accepts at most 500 IDs, while a workspace intentionally stays
+        below 30 papers. Keeping this as one cached request avoids generating a
+        summary when Semantic Scholar already supplies a TLDR.
+        """
+
+        ids = list(dict.fromkeys(paper_id for paper_id in paper_ids if paper_id))
+        if not ids:
+            return {}
+        try:
+            payload = self.client.post_json(
+                f"{self.base_url}/paper/batch?fields={SEMANTIC_SCHOLAR_DETAIL_FIELDS}",
+                {"ids": ids},
+            )
+        except JsonRequestError as error:
+            _append_warning(
+                warnings,
+                f"Semantic Scholar paper metadata enrichment failed: {error}",
+            )
+            return {}
+
+        return {
+            str(item.get("paperId")): item
+            for item in payload
+            if isinstance(item, dict) and item.get("paperId")
+        }
+
 
 def paper_from_semantic_scholar(item: dict[str, Any]) -> Paper:
     external_ids = item.get("externalIds") or {}
@@ -118,9 +165,24 @@ def paper_from_semantic_scholar(item: dict[str, Any]) -> Paper:
         citation_count=item.get("citationCount"),
         publication_types=publication_types,
         url=item.get("url"),
+        semantic_scholar_metadata=_paper_metadata(item),
     )
     paper.is_survey = looks_like_survey(paper.title, paper.publication_types)
     return paper
+
+
+def semantic_scholar_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    """Return the documented bulk-search fields without discarding provider data."""
+
+    return _paper_metadata(item)
+
+
+def _paper_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: item.get(field)
+        for field in [*SEMANTIC_SCHOLAR_PAPER_FIELDS, "tldr"]
+        if field in item
+    }
 
 
 def _append_warning(warnings: list[str] | None, message: str) -> None:

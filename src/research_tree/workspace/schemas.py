@@ -8,6 +8,21 @@ WORKSPACE_SCHEMA_VERSION = "research_tree_workspace.v1"
 CANDIDATE_ARTIFACT_SCHEMA_VERSION = "llm_candidate_papers.v1"
 PAPER_DATABASE_SCHEMA_VERSION = "s2_bulk_deduped_paper_database.v1"
 
+# These are deliberately broad. Roles support construction and reading-path
+# decisions; source metadata and the concise importance note orient the reader.
+PAPER_ROLES = frozenset(
+    {
+        "foundational",
+        "survey",
+        "method",
+        "benchmark",
+        "evaluation",
+        "critique",
+        "application",
+        "other",
+    }
+)
+
 
 @dataclass(frozen=True)
 class CandidatePaperMetadata:
@@ -25,6 +40,7 @@ class CandidatePaperMetadata:
     s2_link: str | None = None
     doi_link: str | None = None
     citation_count: int | None = None
+    semantic_scholar_metadata: dict[str, Any] = field(default_factory=dict)
     raw_citation_rank: int | None = None
     age_adjusted_rank: int | None = None
     cross_encoder_rank: int | None = None
@@ -59,6 +75,7 @@ class CandidatePaperMetadata:
             s2_link=_optional_str(payload.get("s2_link")),
             doi_link=_optional_str(payload.get("doi_link")),
             citation_count=_optional_int(payload.get("citation_count")),
+            semantic_scholar_metadata=_dict(payload.get("semantic_scholar_metadata")),
             raw_citation_rank=_optional_int(payload.get("raw_citation_rank")),
             age_adjusted_rank=_optional_int(payload.get("age_adjusted_rank")),
             cross_encoder_rank=_optional_int(payload.get("cross_encoder_rank")),
@@ -99,6 +116,7 @@ class CandidatePaperMetadata:
             "s2_link": self.s2_link,
             "doi_link": self.doi_link,
             "citation_count": self.citation_count,
+            "semantic_scholar_metadata": self.semantic_scholar_metadata,
             "raw_citation_rank": self.raw_citation_rank,
             "age_adjusted_rank": self.age_adjusted_rank,
             "cross_encoder_rank": self.cross_encoder_rank,
