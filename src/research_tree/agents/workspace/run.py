@@ -36,10 +36,7 @@ def run_workspace_agent(
     run_input = dict(input)
     run_input["thread_id"] = active_thread_id
     config = {"configurable": {"thread_id": active_thread_id}}
-    return _drain_workspace_agent_stream(
-        active_graph.stream_events(run_input, config=config, version="v3"),
-        thread_id=active_thread_id,
-    )
+    return _run_graph(active_graph, run_input, config, thread_id=active_thread_id)
 
 
 def resume_workspace_agent(
@@ -51,13 +48,46 @@ def resume_workspace_agent(
 ) -> WorkspaceAgentRunResult:
     active_graph = graph or _default_graph(workspace_repository=workspace_repository)
     config = {"configurable": {"thread_id": thread_id}}
-    return _drain_workspace_agent_stream(
-        active_graph.stream_events(
-            Command(resume=resume_value),
-            config=config,
-            version="v3",
-        ),
+    return _run_graph(
+        active_graph,
+        Command(resume=resume_value),
+        config,
         thread_id=thread_id,
+    )
+
+
+def _run_graph(
+    graph: Any,
+    graph_input: Any,
+    config: dict[str, Any],
+    *,
+    thread_id: str,
+) -> WorkspaceAgentRunResult:
+    # LangGraph 0.6 exposes stream(); newer releases add the v3 event stream.
+    # Supporting both keeps the declared dependency floor honest.
+    if hasattr(graph, "stream_events"):
+        return _drain_workspace_agent_stream(
+            graph.stream_events(graph_input, config=config, version="v3"),
+            thread_id=thread_id,
+        )
+
+    updates: list[dict[str, Any]] = []
+    final_output: dict[str, Any] | None = None
+    interrupts: list[dict[str, Any]] = []
+    for snapshot in graph.stream(graph_input, config=config, stream_mode="values"):
+        if not isinstance(snapshot, dict):
+            continue
+        updates.append(snapshot)
+        final_output = snapshot
+        for item in snapshot.get("__interrupt__") or []:
+            value = getattr(item, "value", item)
+            interrupts.append(value if isinstance(value, dict) else {"value": value})
+    return WorkspaceAgentRunResult(
+        thread_id=thread_id,
+        final_output=final_output,
+        interrupted=bool(interrupts),
+        interrupt_payloads=interrupts,
+        state_updates=updates,
     )
 
 

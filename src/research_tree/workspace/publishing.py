@@ -15,6 +15,7 @@ def publish_workspace_version(
     event_type: str,
     event_payload: dict[str, Any],
     expected_parent_version_hash: str | None = None,
+    pipeline_run_id: str | None = None,
 ) -> dict[str, Any]:
     workspace_id = str(workspace.get("workspace_id") or "").strip()
     if not workspace_id:
@@ -37,14 +38,18 @@ def publish_workspace_version(
             f"expected {expected_parent_version_hash}, found {parent_hash}."
         )
 
-    if current_workspace is not None:
-        repository.save_workspace_version(
-            workspace_id,
-            current_workspace,
-            actor="system",
-            parent_version_hash=None,
-            reason="snapshot before publishing a replacement",
-        )
+    if current_workspace is not None and parent_hash is not None:
+        try:
+            repository.get_workspace_version(workspace_id, parent_hash)
+        except FileNotFoundError:
+            repository.save_workspace_version(
+                workspace_id,
+                current_workspace,
+                actor="system",
+                parent_version_hash=None,
+                reason="imported legacy current workspace",
+                pipeline_run_id=pipeline_run_id,
+            )
 
     version_hash = workspace_version_hash(workspace)
     if version_hash == parent_hash:
@@ -63,6 +68,7 @@ def publish_workspace_version(
         actor="system",
         parent_version_hash=parent_hash,
         reason=reason,
+        pipeline_run_id=pipeline_run_id,
     )
     event_id = repository.append_workspace_event(
         workspace_id,

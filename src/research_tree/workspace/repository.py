@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
+import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any, Mapping, Protocol
 
 from research_tree.workspace.context import workspace_version_hash
@@ -17,6 +20,9 @@ DEFAULT_ACTOR_IDS = {
     "agent": "workspace_agent",
     "system": "workspace_agent",
 }
+
+_REPOSITORY_LOCKS: dict[str, RLock] = {}
+_REPOSITORY_LOCKS_GUARD = RLock()
 
 
 class WorkspaceRepository(Protocol):
@@ -44,6 +50,7 @@ class WorkspaceRepository(Protocol):
         parent_version_hash: str | None,
         reason: str,
         agent_run_id: str | None = None,
+        pipeline_run_id: str | None = None,
     ) -> str:
         ...
 
@@ -170,10 +177,59 @@ class WorkspaceRepository(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def list_workspace_versions(self, workspace_id: str) -> list[dict[str, Any]]:
+        ...
+
+    def list_workspace_events(self, workspace_id: str) -> list[dict[str, Any]]:
+        ...
+
+    def list_workspace_reviews(self, workspace_id: str) -> list[dict[str, Any]]:
+        ...
+
+    def get_review(self, workspace_id: str, review_id: str) -> dict[str, Any]:
+        ...
+
+    def delete_workspace(
+        self,
+        workspace_id: str,
+        *,
+        expected_version_hash: str | None = None,
+    ) -> dict[str, Any]:
+        ...
+
+    def save_pipeline_run(self, pipeline_run: Mapping[str, Any]) -> None:
+        ...
+
+    def reserve_new_workspace_run(self, pipeline_run: Mapping[str, Any]) -> None:
+        ...
+
+    def reserve_pipeline_rerun(self, pipeline_run: Mapping[str, Any]) -> None:
+        ...
+
+    def get_pipeline_run(self, run_id: str) -> dict[str, Any]:
+        ...
+
+    def list_pipeline_runs(self, workspace_id: str) -> list[dict[str, Any]]:
+        ...
+
+    def cancel_pipeline_runs(self, workspace_id: str) -> list[str]:
+        ...
+
+    def save_paper_content(
+        self, workspace_id: str, paper_id: str, content: Mapping[str, Any]
+    ) -> str:
+        ...
+
+    def get_paper_content(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
+        ...
+
 
 class LocalJsonWorkspaceRepository:
     def __init__(self, base_dir: Path | str) -> None:
         self.base_dir = Path(base_dir)
+        lock_key = str(self.base_dir.resolve())
+        with _REPOSITORY_LOCKS_GUARD:
+            self._lock = _REPOSITORY_LOCKS.setdefault(lock_key, RLock())
 
     def list_workspaces(self) -> list[dict[str, Any]]:
         if not self.base_dir.is_dir():
@@ -207,11 +263,23 @@ class LocalJsonWorkspaceRepository:
                     "updated_at": _workspace_updated_at(workspace),
                 }
             )
-        return sorted(
+        ordered = sorted(
             summaries,
             key=lambda summary: str(summary.get("updated_at") or ""),
             reverse=True,
         )
+        # Older pipeline runs could publish the same normalized topic under
+        # different IDs. Keep the newest visible without deleting either copy.
+        visible: list[dict[str, Any]] = []
+        seen_topics: set[str] = set()
+        for summary in ordered:
+            topic_key = _topic_key(str(summary.get("topic") or summary.get("title") or ""))
+            if topic_key and topic_key in seen_topics:
+                continue
+            if topic_key:
+                seen_topics.add(topic_key)
+            visible.append(summary)
+        return visible
 
     def get_current_workspace(self, workspace_id: str) -> dict[str, Any]:
         path = self._workspace_dir(workspace_id) / "current.json"
@@ -247,36 +315,43 @@ class LocalJsonWorkspaceRepository:
         parent_version_hash: str | None,
         reason: str,
         agent_run_id: str | None = None,
+        pipeline_run_id: str | None = None,
     ) -> str:
         if actor not in {"user", "agent", "system"}:
             raise ValueError(f"unsupported workspace actor: {actor!r}")
         actor_fields = _actor_fields(actor_type or actor, actor_id)
-        workspace_dir = self._workspace_dir(workspace_id)
-        versions_dir = workspace_dir / "versions"
-        versions_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            if pipeline_run_id:
+                active_run = self.get_pipeline_run(pipeline_run_id)
+                if active_run.get("status") != "running":
+                    raise RuntimeError("pipeline run no longer owns this workspace publication.")
+            workspace_dir = self._workspace_dir(workspace_id)
+            versions_dir = workspace_dir / "versions"
+            versions_dir.mkdir(parents=True, exist_ok=True)
 
-        version_hash = workspace_version_hash(workspace)
-        version_path = versions_dir / f"{version_hash}.json"
-        metadata_path = versions_dir / f"{version_hash}.metadata.json"
-        metadata = {
-            "schema_version": "research_tree.workspace_version_metadata.v1",
-            "workspace_id": workspace_id,
-            "version_hash": version_hash,
-            "parent_version_hash": parent_version_hash,
-            "actor": actor,
-            **actor_fields,
-            "reason": reason,
-            "agent_run_id": agent_run_id,
-            "created_at": _now(),
-        }
-        # Content-addressed snapshots are immutable. Reusing an older snapshot
-        # (for example during a restore) must not rewrite its original lineage.
-        if not version_path.is_file():
-            _write_json_atomic(version_path, workspace)
-        if not metadata_path.is_file():
-            _write_json_atomic(metadata_path, metadata)
-        _write_json_atomic(workspace_dir / "current.json", workspace)
-        return version_hash
+            version_hash = workspace_version_hash(workspace)
+            version_path = versions_dir / f"{version_hash}.json"
+            metadata_path = versions_dir / f"{version_hash}.metadata.json"
+            metadata = {
+                "schema_version": "research_tree.workspace_version_metadata.v1",
+                "workspace_id": workspace_id,
+                "version_hash": version_hash,
+                "parent_version_hash": parent_version_hash,
+                "actor": actor,
+                **actor_fields,
+                "reason": reason,
+                "agent_run_id": agent_run_id,
+                "created_at": _now(),
+            }
+            # Content-addressed snapshots are immutable. Browser-style navigation
+            # is stored separately so restoring a snapshot never rewrites lineage.
+            if not version_path.is_file():
+                _write_json_atomic(version_path, workspace)
+            if not metadata_path.is_file():
+                _write_json_atomic(metadata_path, metadata)
+            _write_json_atomic(workspace_dir / "current.json", workspace)
+            self._record_new_navigation_head(workspace_id, version_hash)
+            return version_hash
 
     def append_workspace_event(
         self,
@@ -342,18 +417,32 @@ class LocalJsonWorkspaceRepository:
                 "restored": False,
             }
 
-        _write_json_atomic(self._workspace_dir(workspace_id) / "current.json", target_workspace)
-        event_id = self.append_workspace_event(
-            workspace_id,
-            actor=actor,
-            actor_type=actor_type,
-            actor_id=actor_id,
-            event_type="workspace_restored",
-            target_ids={"workspace_id": workspace_id, "version_hash": target_hash},
-            before_hash=current_hash,
-            after_hash=target_hash,
-            payload={"reason": reason, "restored_version_hash": target_hash},
-        )
+        with self._lock:
+            navigation = self._workspace_navigation(workspace_id)
+            if target_hash not in navigation["version_hashes"]:
+                navigation["version_hashes"].append(target_hash)
+            navigation["current_index"] = max(
+                index
+                for index, item in enumerate(navigation["version_hashes"])
+                if item == target_hash
+            )
+            navigation["updated_at"] = _now()
+            _write_json_atomic(self._navigation_path(workspace_id), navigation)
+            _write_json_atomic(
+                self._workspace_dir(workspace_id) / "current.json",
+                target_workspace,
+            )
+            event_id = self.append_workspace_event(
+                workspace_id,
+                actor=actor,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                event_type="workspace_restored",
+                target_ids={"workspace_id": workspace_id, "version_hash": target_hash},
+                before_hash=current_hash,
+                after_hash=target_hash,
+                payload={"reason": reason, "restored_version_hash": target_hash},
+            )
         return {
             "workspace_id": workspace_id,
             "before_hash": current_hash,
@@ -911,13 +1000,161 @@ class LocalJsonWorkspaceRepository:
             current = _read_json(current_path)
             if isinstance(current, dict):
                 current_hash = workspace_version_hash(current)
-        versions: list[dict[str, Any]] = []
+        metadata_by_hash: dict[str, dict[str, Any]] = {}
         for metadata_path in sorted(versions_dir.glob("*.metadata.json")):
             metadata = _read_json(metadata_path)
             if isinstance(metadata, dict):
-                metadata["is_current"] = metadata.get("version_hash") == current_hash
-                versions.append(metadata)
+                metadata_by_hash[str(metadata.get("version_hash") or "")] = metadata
+        navigation = self._workspace_navigation(workspace_id)
+        versions: list[dict[str, Any]] = []
+        for index, version_hash in enumerate(navigation["version_hashes"]):
+            metadata = dict(metadata_by_hash.get(version_hash) or {
+                "schema_version": "research_tree.workspace_version_metadata.v1",
+                "workspace_id": workspace_id,
+                "version_hash": version_hash,
+                "parent_version_hash": None,
+                "actor": "system",
+                "actor_type": "system",
+                "actor_id": "workspace_agent",
+                "reason": "saved workspace",
+                "created_at": None,
+            })
+            metadata["navigation_index"] = index
+            metadata["is_current"] = index == navigation["current_index"]
+            versions.append(metadata)
         return versions
+
+    def delete_workspace(
+        self,
+        workspace_id: str,
+        *,
+        expected_version_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Soft-delete a workspace by atomically moving it into repository trash."""
+
+        with self._lock:
+            workspace_dir = self._workspace_dir(workspace_id)
+            current = self.get_current_workspace(workspace_id)
+            current_hash = workspace_version_hash(current)
+            if expected_version_hash and current_hash != expected_version_hash:
+                raise ValueError(
+                    "workspace changed before deletion; refresh and try again."
+                )
+            self._cancel_pipeline_runs_locked(workspace_id)
+            trash_dir = self.base_dir / ".trash"
+            trash_dir.mkdir(parents=True, exist_ok=True)
+            deleted_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+            destination = trash_dir / f"{workspace_dir.name}--{deleted_at}"
+            workspace_dir.replace(destination)
+            return {
+                "workspace_id": workspace_id,
+                "workspace_version_hash": current_hash,
+                "deleted": True,
+                "deleted_at": _now(),
+            }
+
+    def save_pipeline_run(self, pipeline_run: Mapping[str, Any]) -> None:
+        run_id = _safe_workspace_id(str(pipeline_run.get("run_id") or ""))
+        with self._lock:
+            _write_json_atomic(
+                self.base_dir / ".pipeline_runs" / f"{run_id}.json",
+                pipeline_run,
+            )
+
+    def reserve_new_workspace_run(self, pipeline_run: Mapping[str, Any]) -> None:
+        """Atomically reject duplicate topics across active workspaces and jobs."""
+
+        topic_key = _topic_key(str(pipeline_run.get("topic") or ""))
+        if not topic_key:
+            raise ValueError("pipeline run topic cannot be empty.")
+        with self._lock:
+            if any(
+                _topic_key(str(item.get("topic") or item.get("title") or "")) == topic_key
+                for item in self.list_workspaces()
+            ):
+                raise ValueError("a workspace for this topic already exists.")
+            runs_dir = self.base_dir / ".pipeline_runs"
+            if runs_dir.is_dir():
+                for path in runs_dir.glob("*.json"):
+                    item = _read_json(path)
+                    if not isinstance(item, dict):
+                        continue
+                    if _reclaim_dead_pipeline_run(path, item):
+                        continue
+                    if (
+                        item.get("status") in {"queued", "running"}
+                        and _topic_key(str(item.get("topic") or "")) == topic_key
+                    ):
+                        raise ValueError("a workspace for this topic is already being built.")
+            self.save_pipeline_run(pipeline_run)
+
+    def reserve_pipeline_rerun(self, pipeline_run: Mapping[str, Any]) -> None:
+        """Reserve one active rerun per workspace without touching current data."""
+
+        workspace_id = _safe_workspace_id(str(pipeline_run.get("workspace_id") or ""))
+        with self._lock:
+            runs_dir = self.base_dir / ".pipeline_runs"
+            if runs_dir.is_dir():
+                for path in runs_dir.glob("*.json"):
+                    item = _read_json(path)
+                    if not isinstance(item, dict):
+                        continue
+                    if _reclaim_dead_pipeline_run(path, item):
+                        continue
+                    if (
+                        item.get("workspace_id") == workspace_id
+                        and item.get("status") in {"queued", "running"}
+                    ):
+                        raise ValueError("a pipeline run for this workspace is already active.")
+            self.save_pipeline_run(pipeline_run)
+
+    def get_pipeline_run(self, run_id: str) -> dict[str, Any]:
+        path = self.base_dir / ".pipeline_runs" / f"{_safe_workspace_id(run_id)}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"pipeline run does not exist: {path}")
+        payload = _read_json(path)
+        if not isinstance(payload, dict):
+            raise ValueError(f"pipeline run must be a JSON object: {path}")
+        return payload
+
+    def list_pipeline_runs(self, workspace_id: str) -> list[dict[str, Any]]:
+        runs_dir = self.base_dir / ".pipeline_runs"
+        if not runs_dir.is_dir():
+            return []
+        runs = []
+        for path in runs_dir.glob("*.json"):
+            payload = _read_json(path)
+            if isinstance(payload, dict) and payload.get("workspace_id") == workspace_id:
+                runs.append(payload)
+        return sorted(runs, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+    def cancel_pipeline_runs(self, workspace_id: str) -> list[str]:
+        with self._lock:
+            return self._cancel_pipeline_runs_locked(workspace_id)
+
+    def _cancel_pipeline_runs_locked(self, workspace_id: str) -> list[str]:
+        runs_dir = self.base_dir / ".pipeline_runs"
+        if not runs_dir.is_dir():
+            return []
+        cancelled: list[str] = []
+        for path in runs_dir.glob("*.json"):
+            run = _read_json(path)
+            if not isinstance(run, dict):
+                continue
+            if run.get("workspace_id") != workspace_id or run.get("status") not in {"queued", "running"}:
+                continue
+            run.update(
+                {
+                    "status": "cancelled",
+                    "current_stage": None,
+                    "error": None,
+                    "cancelled_at": _now(),
+                    "updated_at": _now(),
+                }
+            )
+            _write_json_atomic(path, run)
+            cancelled.append(str(run.get("run_id") or ""))
+        return cancelled
 
     def list_workspace_reviews(self, workspace_id: str) -> list[dict[str, Any]]:
         reviews_dir = self._workspace_dir(workspace_id) / "reviews"
@@ -930,9 +1167,81 @@ class LocalJsonWorkspaceRepository:
                 reviews.append(review)
         return reviews
 
+    def save_paper_content(
+        self, workspace_id: str, paper_id: str, content: Mapping[str, Any]
+    ) -> str:
+        content_key = _paper_content_key(paper_id)
+        path = self._workspace_dir(workspace_id) / "paper_content" / f"{content_key}.json"
+        payload = dict(content)
+        payload["paper_id"] = paper_id
+        with self._lock:
+            _write_json_atomic(path, payload)
+        return content_key
+
+    def get_paper_content(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
+        path = (
+            self._workspace_dir(workspace_id)
+            / "paper_content"
+            / f"{_paper_content_key(paper_id)}.json"
+        )
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        payload = _read_json(path)
+        if not isinstance(payload, dict) or payload.get("paper_id") != paper_id:
+            raise ValueError(f"invalid paper content artifact: {path}")
+        return payload
+
     def _workspace_dir(self, workspace_id: str) -> Path:
         safe_workspace_id = _safe_workspace_id(workspace_id)
         return self.base_dir / safe_workspace_id
+
+    def _navigation_path(self, workspace_id: str) -> Path:
+        return self._workspace_dir(workspace_id) / "navigation.json"
+
+    def _record_new_navigation_head(self, workspace_id: str, version_hash: str) -> None:
+        navigation = self._workspace_navigation(workspace_id)
+        hashes = navigation["version_hashes"][: navigation["current_index"] + 1]
+        if not hashes or hashes[-1] != version_hash:
+            hashes.append(version_hash)
+        navigation["version_hashes"] = hashes
+        navigation["current_index"] = len(hashes) - 1
+        navigation["updated_at"] = _now()
+        _write_json_atomic(self._navigation_path(workspace_id), navigation)
+
+    def _workspace_navigation(self, workspace_id: str) -> dict[str, Any]:
+        path = self._navigation_path(workspace_id)
+        if path.is_file():
+            payload = _read_json(path)
+            if (
+                isinstance(payload, dict)
+                and isinstance(payload.get("version_hashes"), list)
+                and isinstance(payload.get("current_index"), int)
+            ):
+                return payload
+        versions_dir = self._workspace_dir(workspace_id) / "versions"
+        metadata = []
+        if versions_dir.is_dir():
+            for metadata_path in versions_dir.glob("*.metadata.json"):
+                item = _read_json(metadata_path)
+                if isinstance(item, dict) and item.get("version_hash"):
+                    metadata.append(item)
+        ordered = _ordered_version_hashes(metadata)
+        current_hash = None
+        current_path = self._workspace_dir(workspace_id) / "current.json"
+        if current_path.is_file():
+            current = _read_json(current_path)
+            if isinstance(current, dict):
+                current_hash = workspace_version_hash(current)
+        if current_hash and current_hash not in ordered:
+            ordered.append(current_hash)
+        current_index = ordered.index(current_hash) if current_hash in ordered else max(0, len(ordered) - 1)
+        return {
+            "schema_version": "research_tree.workspace_navigation.v1",
+            "workspace_id": workspace_id,
+            "version_hashes": ordered,
+            "current_index": current_index,
+            "updated_at": _now(),
+        }
 
     def _review_path(self, workspace_id: str, review_id: str) -> Path:
         return (
@@ -1111,15 +1420,88 @@ def _workspace_updated_at(workspace: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _paper_content_key(paper_id: str) -> str:
+    return hashlib.sha256(paper_id.encode("utf-8")).hexdigest()
+
+
+def _ordered_version_hashes(metadata: list[dict[str, Any]]) -> list[str]:
+    """Recover a stable browser history for repositories created before v1 navigation."""
+
+    by_hash = {
+        str(item.get("version_hash")): item
+        for item in metadata
+        if item.get("version_hash")
+    }
+    children: dict[str | None, list[str]] = {}
+    for version_hash, item in by_hash.items():
+        parent = item.get("parent_version_hash")
+        parent_hash = str(parent) if parent else None
+        children.setdefault(parent_hash, []).append(version_hash)
+    for values in children.values():
+        values.sort(key=lambda version_hash: str(by_hash[version_hash].get("created_at") or ""))
+
+    ordered: list[str] = []
+    roots = children.get(None, [])
+    if not roots:
+        roots = sorted(by_hash, key=lambda value: str(by_hash[value].get("created_at") or ""))[:1]
+    current = roots[0] if roots else None
+    while current and current not in ordered:
+        ordered.append(current)
+        descendants = children.get(current, [])
+        current = descendants[-1] if descendants else None
+    for version_hash in sorted(
+        by_hash,
+        key=lambda value: str(by_hash[value].get("created_at") or ""),
+    ):
+        if version_hash not in ordered:
+            ordered.append(version_hash)
+    return ordered
+
+
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    with temp_path.open("w", encoding="utf-8") as file:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as file:
+        temp_path = Path(file.name)
         json.dump(dict(payload), file, indent=2, sort_keys=True)
         file.write("\n")
         file.flush()
         os.fsync(file.fileno())
-    temp_path.replace(path)
+    try:
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _reclaim_dead_pipeline_run(path: Path, run: dict[str, Any]) -> bool:
+    if run.get("status") not in {"queued", "running"}:
+        return False
+    runner_pid = run.get("runner_pid")
+    if not isinstance(runner_pid, int) or runner_pid <= 0:
+        return False
+    try:
+        os.kill(runner_pid, 0)
+    except ProcessLookupError:
+        run.update(
+            {
+                "status": "failed",
+                "current_stage": None,
+                "error": "Local backend stopped before this pipeline run completed.",
+                "completed_at": _now(),
+                "updated_at": _now(),
+            }
+        )
+        _write_json_atomic(path, run)
+        return True
+    except PermissionError:
+        return False
+    return False
 
 
 def _actor_fields(actor_type: str, actor_id: str | None) -> dict[str, str]:
@@ -1171,6 +1553,10 @@ def _safe_version_hash(version_hash: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", normalized):
         raise ValueError("version_hash must be a 64-character SHA-256 hash.")
     return normalized
+
+
+def _topic_key(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
 
 
 def _now() -> str:

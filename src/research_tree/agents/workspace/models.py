@@ -9,6 +9,8 @@ class AgentIntent(BaseModel):
     intent_type: Literal[
         "chat",
         "explain_paper",
+        "explain_branch",
+        "explain_workspace",
         "recommend_papers",
         "critique_workspace",
         "modify_workspace",
@@ -55,6 +57,7 @@ class WorkspaceOperation(BaseModel):
         "mark_off_path",
         "update_root_overview",
         "update_workspace_subtree",
+        "refresh_similar_papers",
     ]
     target_ids: dict[str, Any] = Field(default_factory=dict)
     before: dict[str, Any] | None = None

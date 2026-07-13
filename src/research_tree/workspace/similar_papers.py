@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -19,6 +21,13 @@ class ScoredSimilarPaperCandidate:
     paper: CandidatePaperMetadata
     similarity_score: float
     cross_encoder_score: float | None = None
+
+
+DEFAULT_SIMILAR_PAPERS_K = 10
+DEFAULT_SIMILAR_BI_ENCODER_TOP_N = 100
+DEFAULT_SIMILAR_CITATION_AGE_EXPONENT = 1.25
+DEFAULT_SIMILAR_CITATION_SCORE_FLOOR = 10.0
+DEFAULT_SIMILAR_PAPER_WORKERS = 4
 
 
 class SimilarPaperRetriever(Protocol):
@@ -137,20 +146,34 @@ def build_similar_papers(
     *,
     workspace: dict[str, Any],
     paper_database: list[CandidatePaperMetadata],
-    k: int = 10,
+    k: int = DEFAULT_SIMILAR_PAPERS_K,
+    bi_encoder_top_n: int = DEFAULT_SIMILAR_BI_ENCODER_TOP_N,
+    citation_age_exponent: float = DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+    citation_score_floor: float = DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
     retriever: SimilarPaperRetriever | None = None,
     reranker: SimilarPaperReranker | None = None,
+    paper_ids: set[str] | None = None,
+    max_workers: int = DEFAULT_SIMILAR_PAPER_WORKERS,
     bi_encoder_model: str = "all-MiniLM-L6-v2",
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if k <= 0:
         raise ValueError("k must be positive.")
+    if bi_encoder_top_n < k:
+        raise ValueError("bi_encoder_top_n must be at least k.")
+    if citation_age_exponent <= 0:
+        raise ValueError("citation_age_exponent must be positive.")
+    if citation_score_floor < 0:
+        raise ValueError("citation_score_floor cannot be negative.")
+    if max_workers <= 0:
+        raise ValueError("max_workers must be positive.")
 
     enriched_workspace = copy.deepcopy(workspace)
     paper_cards = enriched_workspace.get("paper_cards") or {}
     if not isinstance(paper_cards, dict):
         raise ValueError("workspace paper_cards must be an object.")
     workspace_paper_ids = {str(paper_id) for paper_id in paper_cards}
+    as_of = datetime.now(UTC).date()
 
     active_retriever = retriever or LocalBiEncoderSimilarPaperRetriever(
         model_name=bi_encoder_model
@@ -163,33 +186,59 @@ def build_similar_papers(
     debug: dict[str, Any] = {
         "schema_version": "research_tree_similar_papers_debug.v1",
         "k": k,
+        "bi_encoder_top_n": bi_encoder_top_n,
+        "citation_age_exponent": citation_age_exponent,
+        "citation_score_floor": citation_score_floor,
+        "max_workers": max_workers,
         "paper_count": len(paper_cards),
         "papers": {},
     }
 
-    for paper_id, card in paper_cards.items():
-        if not isinstance(card, dict):
-            continue
-        query = _paper_card_query(card)
-        candidates = [
-            paper
-            for paper in paper_database
-            if paper.paper_id not in workspace_paper_ids and paper.document_text().strip()
-        ]
-        top_n = min(len(candidates), k * 10)
-        bi_encoder_candidates = active_retriever.rank(query, candidates, top_n)
-        reranked_candidates = active_reranker.rerank(query, bi_encoder_candidates)
-        selected = reranked_candidates[:k]
-        card["similar_papers"] = [
-            _similar_paper_output(candidate) for candidate in selected
-        ]
-        debug["papers"][paper_id] = {
-            "query": query,
-            "current_paper_in_database": paper_id in background_by_id,
-            "bi_encoder_candidate_count": len(bi_encoder_candidates),
-            "selected_count": len(selected),
-            "selected_paper_ids": [candidate.paper.paper_id for candidate in selected],
-        }
+    unfiltered_candidates = [
+        paper
+        for paper in paper_database
+        if paper.paper_id not in workspace_paper_ids and paper.document_text().strip()
+    ]
+    citation_scores = {
+        paper.paper_id: _age_adjusted_citation_score(
+            paper, as_of=as_of, citation_age_exponent=citation_age_exponent
+        )
+        for paper in unfiltered_candidates
+    }
+    candidates = [
+        paper
+        for paper in unfiltered_candidates
+        if citation_scores[paper.paper_id] >= citation_score_floor
+    ]
+    targets = [
+        (str(paper_id), card)
+        for paper_id, card in paper_cards.items()
+        if isinstance(card, dict)
+        and (paper_ids is None or str(paper_id) in paper_ids)
+    ]
+    worker_count = min(max_workers, len(targets) or 1)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = executor.map(
+            lambda target: _build_similar_papers_for_card(
+                paper_id=target[0],
+                card=target[1],
+                retriever=active_retriever,
+                reranker=active_reranker,
+                candidates=candidates,
+                citation_scores=citation_scores,
+                unfiltered_candidate_count=len(unfiltered_candidates),
+                filtered_by_citation_floor=len(unfiltered_candidates) - len(candidates),
+                current_paper_in_database=target[0] in background_by_id,
+                k=k,
+                bi_encoder_top_n=bi_encoder_top_n,
+            ),
+            targets,
+        )
+    for paper_id, similar_papers, paper_debug in results:
+        card = paper_cards.get(paper_id)
+        if isinstance(card, dict):
+            card["similar_papers"] = similar_papers
+        debug["papers"][paper_id] = paper_debug
 
     return enriched_workspace, debug
 
@@ -198,7 +247,10 @@ def build_similar_papers_from_files(
     *,
     workspace_json_path: Path,
     paper_database_json_path: Path,
-    k: int = 10,
+    k: int = DEFAULT_SIMILAR_PAPERS_K,
+    bi_encoder_top_n: int = DEFAULT_SIMILAR_BI_ENCODER_TOP_N,
+    citation_age_exponent: float = DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+    citation_score_floor: float = DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
     bi_encoder_model: str = "all-MiniLM-L6-v2",
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -211,6 +263,9 @@ def build_similar_papers_from_files(
         workspace=workspace,
         paper_database=paper_database,
         k=k,
+        bi_encoder_top_n=bi_encoder_top_n,
+        citation_age_exponent=citation_age_exponent,
+        citation_score_floor=citation_score_floor,
         bi_encoder_model=bi_encoder_model,
         cross_encoder_model=cross_encoder_model,
     )
@@ -249,8 +304,53 @@ def _paper_card_query(card: dict[str, Any]) -> str:
     return title
 
 
+def _build_similar_papers_for_card(
+    *,
+    paper_id: str,
+    card: dict[str, Any],
+    retriever: SimilarPaperRetriever,
+    reranker: SimilarPaperReranker,
+    candidates: list[CandidatePaperMetadata],
+    citation_scores: dict[str, float],
+    unfiltered_candidate_count: int,
+    filtered_by_citation_floor: int,
+    current_paper_in_database: bool,
+    k: int,
+    bi_encoder_top_n: int,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    query = _paper_card_query(card)
+    top_n = min(len(candidates), bi_encoder_top_n)
+    bi_encoder_candidates = retriever.rank(query, candidates, top_n)
+    reranked_candidates = reranker.rerank(query, bi_encoder_candidates)
+    selected = reranked_candidates[:k]
+    similar_papers = [
+        _similar_paper_output(
+            candidate,
+            rank=rank,
+            age_adjusted_citation_score=citation_scores[candidate.paper.paper_id],
+        )
+        for rank, candidate in enumerate(selected, start=1)
+    ]
+    return (
+        paper_id,
+        similar_papers,
+        {
+            "query": query,
+            "current_paper_in_database": current_paper_in_database,
+            "candidate_pool_count": unfiltered_candidate_count,
+            "filtered_by_citation_floor": filtered_by_citation_floor,
+            "bi_encoder_candidate_count": len(bi_encoder_candidates),
+            "selected_count": len(selected),
+            "selected_paper_ids": [candidate.paper.paper_id for candidate in selected],
+        },
+    )
+
+
 def _similar_paper_output(
     candidate: ScoredSimilarPaperCandidate,
+    *,
+    rank: int,
+    age_adjusted_citation_score: float,
 ) -> dict[str, Any]:
     paper = candidate.paper
     return {
@@ -263,6 +363,10 @@ def _similar_paper_output(
         "primary_link": paper.primary_link,
         "arxiv_link": paper.arxiv_link,
         "s2_link": paper.s2_link,
+        "provider": "initial_candidate_pool",
+        "rank": rank,
+        "citation_count": paper.citation_count,
+        "age_adjusted_citation_score": _rounded(age_adjusted_citation_score),
         "similarity_score": _rounded(candidate.similarity_score),
         "cross_encoder_score": _rounded(candidate.cross_encoder_score),
         "reason": "",
@@ -273,6 +377,32 @@ def _rounded(value: float | None) -> float | None:
     if value is None:
         return None
     return round(float(value), 4)
+
+
+def _age_adjusted_citation_score(
+    paper: CandidatePaperMetadata,
+    *,
+    as_of: date,
+    citation_age_exponent: float,
+) -> float:
+    age_years = _paper_age_years(paper, as_of=as_of)
+    if age_years is None:
+        return 0.0
+    return max(paper.citation_count or 0, 0) / max(age_years, 0.5) ** citation_age_exponent
+
+
+def _paper_age_years(paper: CandidatePaperMetadata, *, as_of: date) -> float | None:
+    publication_date = None
+    if paper.publication_date:
+        try:
+            publication_date = date.fromisoformat(paper.publication_date)
+        except ValueError:
+            publication_date = None
+    if publication_date is None and paper.year is not None:
+        publication_date = date(paper.year, 7, 1)
+    if publication_date is None:
+        return None
+    return max((as_of - publication_date).days, 1) / 365.25
 
 
 def _float_vector(value: Any) -> list[float]:

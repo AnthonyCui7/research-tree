@@ -7,6 +7,8 @@ from fastapi import Depends
 
 from research_tree.services.agent import WorkspaceAgentService
 from research_tree.services.reviews import WorkspaceReviewService
+from research_tree.services.pipeline import WorkspacePipelineService
+from research_tree.services.topics import TopicReviewService
 from research_tree.services.workspaces import WorkspaceQueryService
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 
@@ -32,3 +34,16 @@ def get_workspace_review_service(
     repository: LocalJsonWorkspaceRepository = Depends(get_repository),
 ) -> WorkspaceReviewService:
     return WorkspaceReviewService(repository)
+
+
+def get_topic_review_service(
+    repository: LocalJsonWorkspaceRepository = Depends(get_repository),
+) -> TopicReviewService:
+    return TopicReviewService(repository)
+
+
+def get_workspace_pipeline_service(
+    repository: LocalJsonWorkspaceRepository = Depends(get_repository),
+) -> WorkspacePipelineService:
+    repo_root = Path(__file__).resolve().parents[3]
+    return WorkspacePipelineService(repository, repo_root=repo_root)

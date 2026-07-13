@@ -149,6 +149,7 @@ def _workspace_json_schema() -> dict[str, Any]:
                     "node_id": {"type": "string"},
                     "label": {"type": "string"},
                     "overview": {"type": "string"},
+                    "why_it_matters": {"type": "string"},
                     "root_survey_type": {"type": "string"},
                     "survey_anchor_paper_ids": {
                         "type": "array",
@@ -164,6 +165,7 @@ def _workspace_json_schema() -> dict[str, Any]:
                     "node_id",
                     "label",
                     "overview",
+                    "why_it_matters",
                     "root_survey_type",
                     "survey_anchor_paper_ids",
                     "representative_paper_ids",

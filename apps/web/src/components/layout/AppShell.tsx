@@ -3,7 +3,11 @@ import { TopBar } from "./TopBar";
 import { TreeCanvas } from "../tree/TreeCanvas";
 import { FloatingInspector } from "../tree/FloatingInspector";
 import { WorkspaceEmptyState } from "../workspace/WorkspaceEmptyState";
-import type { TreeNodeId, TreeViewModel, WorkspaceDocument } from "../../lib/types";
+import { WorkspaceCreator } from "../workspace/WorkspaceCreator";
+import { WorkspaceHistory } from "../workspace/WorkspaceHistory";
+import { WorkspaceAgent } from "../workspace/WorkspaceAgent";
+import agentIcon from "../../assets/lucide-message-square-text.svg";
+import type { PipelineRun, TreeNodeId, TreeViewModel, WorkspaceDocument } from "../../lib/types";
 
 type AppShellProps = {
   status: "loading" | "ready" | "error";
@@ -11,10 +15,26 @@ type AppShellProps = {
   workspaces: WorkspaceDocument[];
   activeWorkspaceId: string | null;
   tree: TreeViewModel | null;
+  activeWorkspace: WorkspaceDocument | null;
   selectedNodeId: TreeNodeId | null;
   onSelectWorkspace: (workspaceId: string) => void;
   onSelectNode: (nodeId: TreeNodeId) => void;
   onCloseInspector: () => void;
+  creatorOpen: boolean;
+  utilityPanel: "history" | "agent" | null;
+  sidebarCollapsed: boolean;
+  buildingRun: PipelineRun | null;
+  onOpenCreator: () => void;
+  onCloseCreator: () => void;
+  onCreated: (workspaceId: string, run: PipelineRun) => Promise<void>;
+  onOpenUtility: (panel: "history" | "agent" | null) => void;
+  onCloseUtility: () => void;
+  onWorkspaceChanged: () => Promise<void>;
+  onWorkspaceDeleted: () => Promise<void>;
+  onToggleSidebar: () => void;
+  onResumeBuild: () => void;
+  onPipelineStarted: (run: PipelineRun) => void;
+  onPipelineFinished: (runId: string) => void;
 };
 
 export function AppShell({
@@ -23,41 +43,81 @@ export function AppShell({
   workspaces,
   activeWorkspaceId,
   tree,
+  activeWorkspace,
   selectedNodeId,
   onSelectWorkspace,
   onSelectNode,
   onCloseInspector,
+  creatorOpen,
+  utilityPanel,
+  sidebarCollapsed,
+  buildingRun,
+  onOpenCreator,
+  onCloseCreator,
+  onCreated,
+  onOpenUtility,
+  onCloseUtility,
+  onWorkspaceChanged,
+  onWorkspaceDeleted,
+  onToggleSidebar,
+  onResumeBuild,
+  onPipelineStarted,
+  onPipelineFinished,
 }: AppShellProps) {
   const selectedNode = tree && selectedNodeId ? tree.nodesById[selectedNodeId] ?? null : null;
+  const activePipelineRunning =
+    buildingRun?.workspace_id === activeWorkspaceId &&
+    (buildingRun.status === "queued" || buildingRun.status === "running");
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-sidebar-collapsed={sidebarCollapsed}>
       <Sidebar
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         onSelectWorkspace={onSelectWorkspace}
+        onNewWorkspace={onOpenCreator}
+        collapsed={sidebarCollapsed}
+        onToggleSidebar={onToggleSidebar}
+        buildingRun={buildingRun}
+        onResumeBuild={onResumeBuild}
       />
+      <button
+        className="persistent-assistant-launcher agent-launcher"
+        type="button"
+        onClick={() => onOpenUtility("agent")}
+        disabled={!tree || activePipelineRunning}
+        aria-label="Open Assistant"
+        title="Assistant"
+      >
+        <img src={agentIcon} alt="" aria-hidden="true" />
+      </button>
+
       <main className="workspace-main" aria-label="Research workspace">
         <TopBar
           workspaceTitle={tree?.title ?? "Workspace"}
-          versionHash={tree?.currentVersionHash ?? null}
-          versionCount={tree?.versionCount ?? 0}
+          tree={tree}
+          onSelectNode={onSelectNode}
+          onOpenHistory={() => onOpenUtility("history")}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={onToggleSidebar}
         />
         <section className="workspace-stage" aria-live={status === "loading" ? "polite" : "off"}>
           {status === "loading" ? (
-            <WorkspaceEmptyState title="Loading workspace" detail="Preparing the local workspace tree." />
+            <WorkspaceEmptyState title="Loading workspace" detail="Loading…" />
           ) : null}
           {status === "error" ? (
             <WorkspaceEmptyState
               title="Workspace unavailable"
-              detail={error ?? "The workspace fixture could not be loaded."}
+              detail={error ?? "Your workspaces could not be loaded. Refresh and try again."}
               tone="error"
             />
           ) : null}
           {status === "ready" && !tree ? (
             <WorkspaceEmptyState
               title="No workspaces"
-              detail="Create or import a topic workspace to begin mapping papers."
+              detail="Enter a topic to build a workspace."
+              actionLabel="Create workspace"
+              onAction={onOpenCreator}
             />
           ) : null}
           {status === "ready" && tree ? (
@@ -67,11 +127,42 @@ export function AppShell({
                 selectedNodeId={selectedNodeId}
                 onSelectNode={onSelectNode}
               />
-              <FloatingInspector node={selectedNode} onClose={onCloseInspector} />
+              {utilityPanel === null ? (
+                <FloatingInspector node={selectedNode} onClose={onCloseInspector} />
+              ) : null}
+              {activeWorkspace && tree?.currentVersionHash ? (
+                <WorkspaceHistory
+                  open={utilityPanel === "history"}
+                  workspaceId={activeWorkspace.workspace_id}
+                  workspaceTitle={activeWorkspace.title}
+                  currentVersionHash={tree.currentVersionHash}
+                  versions={activeWorkspace.workspace_versions ?? []}
+                  onClose={onCloseUtility}
+                  onChanged={onWorkspaceChanged}
+                  onDeleted={onWorkspaceDeleted}
+                />
+              ) : null}
+              {activeWorkspace ? (
+                <WorkspaceAgent
+                  open={utilityPanel === "agent"}
+                  workspaceId={activeWorkspace.workspace_id}
+                  onClose={onCloseUtility}
+                  onWorkspaceChanged={onWorkspaceChanged}
+                />
+              ) : null}
             </>
           ) : null}
         </section>
       </main>
+      <WorkspaceCreator
+        open={creatorOpen}
+        onClose={onCloseCreator}
+        onCreated={onCreated}
+        onOpenExisting={onSelectWorkspace}
+        activeRun={buildingRun}
+        onRunStarted={onPipelineStarted}
+        onRunFinished={onPipelineFinished}
+      />
     </div>
   );
 }

@@ -69,7 +69,7 @@ function PaperNodeContent({ paper }: { paper: Extract<TreeNodeViewModel, { kind:
       <span className="paper-date">{publicationDate(paper)}</span>
       <span className="paper-tldr">
         <b>TLDR</b>
-        {paper.tldr || "Unavailable from Semantic Scholar."}
+        {paper.tldr || "Unavailable"}
       </span>
     </>
   );

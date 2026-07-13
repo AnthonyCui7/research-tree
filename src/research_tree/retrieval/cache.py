@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 
@@ -32,6 +33,7 @@ class CachedJsonClient:
         self.max_retries = max(max_retries, 0)
         self.timeout_seconds = max(timeout_seconds, 1.0)
         self._last_request_at = 0.0
+        self._request_start_lock = Lock()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
@@ -111,13 +113,14 @@ class CachedJsonClient:
         raise JsonRequestError(str(last_error))
 
     def _wait_for_delay(self) -> None:
-        if self.request_delay_seconds <= 0:
+        with self._request_start_lock:
+            if self.request_delay_seconds <= 0:
+                self._last_request_at = time.monotonic()
+                return
+            elapsed = time.monotonic() - self._last_request_at
+            if elapsed < self.request_delay_seconds:
+                time.sleep(self.request_delay_seconds - elapsed)
             self._last_request_at = time.monotonic()
-            return
-        elapsed = time.monotonic() - self._last_request_at
-        if elapsed < self.request_delay_seconds:
-            time.sleep(self.request_delay_seconds - elapsed)
-        self._last_request_at = time.monotonic()
 
     def _cache_path(
         self,

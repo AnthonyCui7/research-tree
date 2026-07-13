@@ -35,6 +35,58 @@ class WorkspaceVersionsResponse(BaseModel):
     versions: list[dict[str, Any]]
 
 
+class TopicReviewRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=240)
+
+
+class TopicReviewResponse(BaseModel):
+    submitted_topic: str
+    normalized_topic: str
+    is_research_topic: bool
+    guidance: str
+    existing_workspace: dict[str, str] | None = None
+    can_create: bool
+    model: str | None = None
+    source_paper: dict[str, str] | None = None
+    topic_review_token: str | None = None
+
+
+class CreateWorkspaceRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=240)
+    topic_review_token: str = Field(min_length=1, max_length=128)
+    model: str = "gpt-5.6-luna"
+
+
+class PipelineRerunApiRequest(BaseModel):
+    start_stage: str
+    model: str = "gpt-5.6-luna"
+    expected_version_hash: str | None = None
+
+
+class PipelineRunResponse(BaseModel):
+    pipeline_run: dict[str, Any]
+
+
+class PipelineRunsResponse(BaseModel):
+    workspace_id: str
+    pipeline_runs: list[dict[str, Any]]
+
+
+class RestoreWorkspaceRequest(BaseModel):
+    expected_version_hash: str | None = None
+    reason: str = "restored from workspace history"
+
+
+class DeleteWorkspaceRequest(BaseModel):
+    expected_version_hash: str | None = None
+
+
+class WorkspaceMutationResponse(BaseModel):
+    workspace_id: str
+    workspace_version_hash: str
+    changed: bool
+
+
 class WorkspaceEventsResponse(BaseModel):
     workspace_id: str
     events: list[dict[str, Any]]
@@ -52,10 +104,11 @@ class WorkspaceReviewResponse(BaseModel):
 
 
 class AgentRunRequest(BaseModel):
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=20_000)
     thread_id: str | None = None
     allow_pipeline_rerun: bool = False
     require_approval: bool = True
+    model: str = Field(default="gpt-5.6-luna", min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class AgentRunResponse(BaseModel):

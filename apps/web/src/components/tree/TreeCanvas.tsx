@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TreeEdge } from "./TreeEdge";
 import { TreeNode } from "./TreeNode";
 import type { TreeNodeId, TreeViewModel } from "../../lib/types";
@@ -12,36 +12,45 @@ type TreeCanvasProps = {
 export function TreeCanvas({ tree, selectedNodeId, onSelectNode }: TreeCanvasProps) {
   const [zoom, setZoom] = useState(1);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const zoomAnchorRef = useRef<{ x: number; y: number } | null>(null);
   const zoomPercent = Math.round(zoom * 100);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setZoom(1);
+    zoomAnchorRef.current = null;
+    canvas.scrollLeft = Math.max(0, tree.root.position.x - 20);
+    canvas.scrollTop = Math.max(0, tree.root.position.y - 36);
+  }, [tree.workspaceId]);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    const anchor = zoomAnchorRef.current;
+    if (!canvas || !anchor) return;
+    canvas.scrollLeft = Math.max(0, anchor.x * zoom - canvas.clientWidth / 2);
+    canvas.scrollTop = Math.max(0, anchor.y * zoom - canvas.clientHeight / 2);
+    zoomAnchorRef.current = null;
+  }, [zoom]);
 
   function adjustZoom(amount: number) {
     const nextZoom = Math.min(1.4, Math.max(0.6, Number((zoom + amount).toFixed(2))));
-    if (nextZoom === zoom) {
-      return;
-    }
-
     const canvas = canvasRef.current;
-    const centerX = canvas ? canvas.scrollLeft + canvas.clientWidth / 2 : 0;
-    const centerY = canvas ? canvas.scrollTop + canvas.clientHeight / 2 : 0;
-    const scale = nextZoom / zoom;
-
+    if (!canvas || nextZoom === zoom) return;
+    zoomAnchorRef.current = {
+      x: (canvas.scrollLeft + canvas.clientWidth / 2) / zoom,
+      y: (canvas.scrollTop + canvas.clientHeight / 2) / zoom,
+    };
     setZoom(nextZoom);
-    requestAnimationFrame(() => {
-      if (!canvas) {
-        return;
-      }
-      canvas.scrollLeft = Math.max(0, centerX * scale - canvas.clientWidth / 2);
-      canvas.scrollTop = Math.max(0, centerY * scale - canvas.clientHeight / 2);
-    });
   }
 
   return (
     <div className="tree-canvas-shell">
       <div className="canvas-label-row">
-        <span>Research tree</span>
+        <span>Workspace</span>
         <div className="canvas-controls">
           <span>
-            {tree.branchCount} branches / {tree.pathCount} reading paths / {tree.paperCount} papers
+            {tree.branchCount} branches / {tree.paperCount} papers
           </span>
           <div className="canvas-zoom" aria-label="Canvas zoom">
             <button

@@ -30,11 +30,19 @@ from research_tree.workspace.construction import (
 )
 from research_tree.workspace.prompts import WORKSPACE_CONSTRUCTION_PROMPT_VERSION
 from research_tree.workspace.publishing import publish_workspace_version
-from research_tree.workspace.similar_papers import (
-    build_similar_papers_from_files,
-    write_similar_paper_artifacts,
+from research_tree.workspace.enrichment import (
+    hydrate_workspace_papers,
 )
+from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 from research_tree.artifacts import write_json_file
+from research_tree.workspace.schemas import paper_database_from_artifact
+from research_tree.workspace.serialization import load_json_artifact
+from research_tree.workspace.similar_papers import (
+    DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+    DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+    DEFAULT_SIMILAR_PAPERS_K,
+    build_similar_papers,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -78,8 +86,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--survey-baseline-count", type=int, default=5)
     parser.add_argument("--alpha", type=float, default=1.25)
     parser.add_argument("--s2-bulk-citation-multiplier", type=int, default=50)
-    parser.add_argument("--similar-papers-k", type=int, default=10)
-    parser.add_argument("--model", default="gpt-5.4-mini")
+    parser.add_argument("--similar-papers-k", type=int, default=DEFAULT_SIMILAR_PAPERS_K)
+    parser.add_argument(
+        "--similar-papers-alpha",
+        type=float,
+        default=DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+        help="Age exponent for related-paper citation scoring.",
+    )
+    parser.add_argument(
+        "--similar-papers-citation-floor",
+        type=float,
+        default=DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+        help="Minimum age-adjusted citation score for a related paper.",
+    )
+    parser.add_argument("--model", default="gpt-5.6-luna")
     parser.add_argument(
         "--prompt-version",
         default=WORKSPACE_CONSTRUCTION_PROMPT_VERSION,
@@ -148,6 +168,10 @@ def main(argv: list[str] | None = None) -> int:
     _validate_args(args)
 
     load_dotenv_file(REPO_ROOT / ".env")
+    repository_dir = Path(
+        args.repository_dir
+        or os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces")
+    )
     if args.candidate_json:
         candidate_json_path = Path(args.candidate_json).resolve()
         if not candidate_json_path.is_file():
@@ -193,6 +217,20 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
 
+    content_repository = LocalJsonWorkspaceRepository(
+        run_dir / "local_workspace_data" if args.no_publish else repository_dir
+    )
+    semantic_scholar = SemanticScholarClient(
+        cache_dir=repository_dir.parent / "cache" / "semantic_scholar",
+        api_key=(
+            os.environ.get("S2_API_KEY")
+            or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+        ),
+        request_delay_seconds=args.request_delay_seconds,
+        refresh_cache=args.refresh_cache,
+        max_retries=args.max_academic_retries,
+        timeout_seconds=args.request_timeout_seconds,
+    )
     try:
         workspace_result = construct_workspace_from_candidates(
             candidate_json_path=candidate_json_path,
@@ -220,17 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace_id_override=args.workspace_id or _workspace_id_from_candidate(
                 candidate_json_path
             ),
-            semantic_scholar_client=SemanticScholarClient(
-                cache_dir=REPO_ROOT / "experiments" / "cache" / "semantic_scholar",
-                api_key=(
-                    os.environ.get("S2_API_KEY")
-                    or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
-                ),
-                request_delay_seconds=args.request_delay_seconds,
-                refresh_cache=args.refresh_cache,
-                max_retries=args.max_academic_retries,
-                timeout_seconds=args.request_timeout_seconds,
-            ),
+            semantic_scholar_client=semantic_scholar,
         )
     except Exception as error:
         _record_pipeline_stage(
@@ -248,32 +276,45 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        workspace_with_similar_papers, debug = build_similar_papers_from_files(
-            workspace_json_path=workspace_result.output_paths["workspace"],
-            paper_database_json_path=paper_database_json_path,
-            k=args.similar_papers_k,
-            bi_encoder_model=args.bi_encoder_model,
-            cross_encoder_model=args.cross_encoder_model,
+        hydrated_workspace, hydration_warnings = hydrate_workspace_papers(
+            workspace=workspace_result.workspace,
+            repository=content_repository,
+            semantic_scholar=semantic_scholar,
         )
+        hydrated_path = run_dir / "workspace_with_paper_content.json"
+        write_json_file(hydrated_path, hydrated_workspace)
+        paper_database = paper_database_from_artifact(
+            load_json_artifact(paper_database_json_path)
+        )
+        workspace_with_similar_papers, debug = (
+            build_similar_papers(
+                workspace=hydrated_workspace,
+                paper_database=paper_database,
+                k=args.similar_papers_k,
+                citation_age_exponent=args.similar_papers_alpha,
+                citation_score_floor=args.similar_papers_citation_floor,
+            )
+        )
+        similar_path = run_dir / "workspace_with_related_papers.json"
+        debug_path = run_dir / "related_papers_debug.json"
+        write_json_file(similar_path, workspace_with_similar_papers)
+        write_json_file(debug_path, debug)
+        similar_paths = {"workspace": similar_path, "debug": debug_path}
+        stage_warnings = hydration_warnings
     except Exception as error:
         _record_pipeline_stage(
             run_dir,
-            "enrich_workspace_similar_papers",
+            "hydrate_and_recommend_papers",
             "failed",
             error=str(error),
         )
         raise
-    similar_paths = write_similar_paper_artifacts(
-        output_dir=run_dir,
-        workspace_with_similar_papers=workspace_with_similar_papers,
-        debug=debug,
-        run_label=run_dir.name,
-    )
     _record_pipeline_stage(
         run_dir,
-        "enrich_workspace_similar_papers",
-        "completed",
+        "hydrate_and_recommend_papers",
+        "completed_with_warnings" if stage_warnings else "completed",
         artifacts={name: str(path) for name, path in similar_paths.items()},
+        error="; ".join(stage_warnings) if stage_warnings else None,
     )
 
     publish_result: dict[str, object] | None = None
@@ -288,10 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         try:
             publish_result = publish_workspace_version(
-                repository_dir=Path(
-                    args.repository_dir
-                    or os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces")
-                ),
+                repository_dir=repository_dir,
                 workspace=workspace_with_similar_papers,
                 reason="pipeline workspace generation completed",
                 event_type="workspace_pipeline_completed",
@@ -392,6 +430,10 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--s2-bulk-citation-multiplier must be positive.")
     if args.similar_papers_k <= 0:
         raise ValueError("--similar-papers-k must be positive.")
+    if args.similar_papers_alpha <= 0:
+        raise ValueError("--similar-papers-alpha must be positive.")
+    if args.similar_papers_citation_floor < 0:
+        raise ValueError("--similar-papers-citation-floor cannot be negative.")
     if args.request_delay_seconds < 0:
         raise ValueError("--request-delay-seconds cannot be negative.")
     if args.request_timeout_seconds <= 0:

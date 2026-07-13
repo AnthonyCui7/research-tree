@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
             "experiments/output/workspace_candidate_preparation/runN artifact."
         ),
     )
-    parser.add_argument("--model", default="gpt-5.4-mini")
+    parser.add_argument("--model", default="gpt-5.6-luna")
     parser.add_argument(
         "--prompt-version",
         default=WORKSPACE_CONSTRUCTION_PROMPT_VERSION,

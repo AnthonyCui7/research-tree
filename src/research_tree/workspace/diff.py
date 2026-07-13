@@ -179,6 +179,23 @@ def _paper_card_operations(
                 )
             )
         if before != after:
+            changed_fields = {
+                key
+                for key in set(before) | set(after)
+                if before.get(key) != after.get(key)
+            }
+            if changed_fields == {"similar_papers"}:
+                operations.append(
+                    _operation(
+                        "refresh_similar_papers",
+                        {"paper_id": paper_id},
+                        before={"similar_papers": before.get("similar_papers") or []},
+                        after={"similar_papers": after.get("similar_papers") or []},
+                        rationale="Proposal refreshes related papers for this workspace paper.",
+                        confidence=0.8,
+                    )
+                )
+                continue
             operations.append(
                 _operation(
                     "update_paper_card",

@@ -91,10 +91,7 @@ def validate_pipeline_rerun_request(
         for query in request.get("query_overrides") or []
         if str(query).strip()
     ]
-    if query_overrides:
-        warnings.append(
-            "query_overrides are recorded for provenance; the current candidate pipeline derives S2 query variants from topic."
-        )
+    query_overrides = query_overrides[:8]
 
     config = PipelineConfig(
         repo_root=repo_root,
@@ -109,6 +106,7 @@ def validate_pipeline_rerun_request(
         cross_encoder_model=defaults.cross_encoder_model,
         citation_age_exponent=citation_age_exponent,
         verbose=defaults.verbose,
+        query_overrides=tuple(query_overrides),
     )
     normalized_args = asdict(config)
     normalized_args["repo_root"] = str(config.repo_root)
@@ -151,6 +149,7 @@ def pipeline_config_from_normalized_args(args: Mapping[str, Any]) -> PipelineCon
         ),
         citation_age_exponent=float(args.get("citation_age_exponent") or 1.25),
         verbose=bool(args.get("verbose", True)),
+        query_overrides=tuple(str(value) for value in args.get("query_overrides") or []),
     )
 
 
@@ -203,4 +202,3 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-

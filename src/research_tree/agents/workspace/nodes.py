@@ -7,6 +7,12 @@ from uuid import uuid4
 from langgraph.types import Command, interrupt
 
 from research_tree.agents.workspace.llm import (
+    AGENT_ACTION_PROFILE,
+    AGENT_CHAT_PROFILE,
+    AGENT_CRITIQUE_PROFILE,
+    AGENT_INTENT_PROFILE,
+    AgentRequestProfile,
+    OpenAIResponsesAgentClient,
     WorkspaceAgentLlmClient,
     default_workspace_agent_llm_client,
 )
@@ -40,9 +46,19 @@ from research_tree.workspace.context import (
     workspace_version_hash,
 )
 from research_tree.workspace.diff import derive_operations_and_diff_summary
+from research_tree.workspace.enrichment import (
+    load_paper_content_context,
+)
 from research_tree.workspace.operations import apply_workspace_patch_in_memory
 from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.serialization import load_candidate_artifact, load_json_artifact
+from research_tree.workspace.schemas import paper_database_from_artifact
+from research_tree.workspace.similar_papers import (
+    DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+    DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+    DEFAULT_SIMILAR_PAPERS_K,
+    build_similar_papers,
+)
 from research_tree.workspace.validators import (
     run_workspace_validator,
     select_workspace_validators,
@@ -67,6 +83,14 @@ class WorkspaceAgentNodes:
         self.retrieval_runner = retrieval_runner
         self.workspace_repository = workspace_repository
         self.repo_root = repo_root
+
+    def _request_profile_kwargs(
+        self,
+        request_profile: AgentRequestProfile,
+    ) -> dict[str, AgentRequestProfile]:
+        if isinstance(self.llm_client, OpenAIResponsesAgentClient):
+            return {"request_profile": request_profile}
+        return {}
 
     def load_workspace(self, state: WorkspaceAgentState) -> dict[str, Any]:
         workspace = state.get("workspace")
@@ -110,6 +134,7 @@ class WorkspaceAgentNodes:
             "agent_run_id": state.get("agent_run_id") or f"agent_run_{uuid4().hex}",
             "allow_pipeline_rerun": bool(state.get("allow_pipeline_rerun", False)),
             "require_approval": bool(state.get("require_approval", True)),
+            "agent_model": str(state.get("agent_model") or "gpt-5.6-luna"),
             "approval_required": False,
             "repair_attempts": int(state.get("repair_attempts", 0)),
             "max_repair_attempts": int(state.get("max_repair_attempts", 2)),
@@ -133,6 +158,8 @@ class WorkspaceAgentNodes:
         intent = self.llm_client.complete_structured(
             prompt=prompt,
             response_model=AgentIntent,
+            model_name=state.get("agent_model"),
+            **self._request_profile_kwargs(AGENT_INTENT_PROFILE),
         )
         return Command(
             update={
@@ -154,20 +181,38 @@ class WorkspaceAgentNodes:
             set(intent.get("target_paper_ids") or [])
             | set(next_action.get("target_paper_ids") or [])
         )
+        include_similar_context = _is_similar_paper_adjustment(state) or bool(
+            target_paper_ids
+        )
         context = build_workspace_chat_context(
             workspace=workspace,
             candidate_artifact=state.get("candidate_artifact"),
-            include_similar_papers=True,
-            max_similar_per_paper=10,
+            include_similar_papers=include_similar_context,
+            max_similar_per_paper=5,
             target_branch_id=target_branch_id,
             target_paper_ids=target_paper_ids,
         )
+        content_warnings: list[str] = []
+        if self.workspace_repository is not None:
+            content_paper_ids = _paper_ids_for_explanation(
+                workspace,
+                target_branch_id=str(target_branch_id) if target_branch_id else None,
+                target_paper_ids=target_paper_ids,
+            )
+            paper_contents, content_warnings = load_paper_content_context(
+                self.workspace_repository,
+                workspace_id=_workspace_id(state),
+                paper_ids=content_paper_ids,
+            )
+            context["paper_full_text"] = _bounded_full_text_context(paper_contents)
+            context["requested_full_text_paper_ids"] = content_paper_ids
         return {
             "chat_context": context,
             "modification_context": context,
             "similar_papers_context": context.get("similar_papers_context") or {},
             "off_path_papers": context.get("off_path_papers") or [],
             "workspace_summary": build_workspace_summary(workspace),
+            "warnings": content_warnings,
             "node_trace": [_trace("build_workspace_context")],
         }
 
@@ -189,7 +234,7 @@ class WorkspaceAgentNodes:
             return Command(
                 update={
                     "status": "failed",
-                    "errors": ["workspace agent exceeded max action iterations."],
+                    "errors": ["Assistant exceeded max action iterations."],
                     "node_trace": [_trace("plan_next_action")],
                 },
                 goto="finalize_response",
@@ -206,6 +251,8 @@ class WorkspaceAgentNodes:
         action = self.llm_client.complete_structured(
             prompt=prompt,
             response_model=AgentNextAction,
+            model_name=state.get("agent_model"),
+            **self._request_profile_kwargs(AGENT_ACTION_PROFILE),
         )
         action_type = action.action_type
         if state.get("retrieval_result") and action_type == "prepare_retrieval_rerun":
@@ -238,7 +285,11 @@ class WorkspaceAgentNodes:
             user_message=state.get("user_message", ""),
             workspace_context=state.get("chat_context") or {},
         )
-        answer = self.llm_client.complete_text(prompt=prompt)
+        answer = self.llm_client.complete_text(
+            prompt=prompt,
+            model_name=state.get("agent_model"),
+            **self._request_profile_kwargs(AGENT_CHAT_PROFILE),
+        )
         return {
             "final_response": answer,
             "status": "completed",
@@ -254,6 +305,8 @@ class WorkspaceAgentNodes:
         critique = self.llm_client.complete_structured(
             prompt=prompt,
             response_model=WorkspaceCritique,
+            model_name=state.get("agent_model"),
+            **self._request_profile_kwargs(AGENT_CRITIQUE_PROFILE),
         )
         final_response = _format_critique(critique)
         return {
@@ -372,6 +425,8 @@ class WorkspaceAgentNodes:
 
     def construct_workspace_modification(self, state: WorkspaceAgentState) -> dict[str, Any]:
         next_action = state.get("next_action") or {}
+        if _is_similar_paper_adjustment(state):
+            return self._adjust_similar_papers(state, next_action)
         proposed = self.workspace_constructor(
             candidate_artifact=state.get("candidate_artifact"),
             base_workspace=state.get("workspace"),
@@ -382,11 +437,62 @@ class WorkspaceAgentNodes:
             target_paper_ids=next_action.get("target_paper_ids") or [],
             similar_papers_context=state.get("similar_papers_context") or {},
             run_metadata={"user_message": state.get("user_message", "")},
+            model=str(state.get("agent_model") or "gpt-5.6-luna"),
         )
         return {
             "proposed_workspace": proposed,
             "status": "constructing",
             "node_trace": [_trace("construct_workspace_modification")],
+        }
+
+    def _adjust_similar_papers(
+        self,
+        state: WorkspaceAgentState,
+        next_action: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        workspace = _required_mapping(state.get("workspace"), "workspace")
+        target_ids = _similar_paper_target_ids(workspace, next_action)
+        if not target_ids:
+            return {
+                "proposed_workspace": workspace,
+                "status": "failed",
+                "errors": ["No workspace papers matched the requested similar-paper scope."],
+                "node_trace": [_trace("adjust_similar_papers")],
+            }
+        policy = _similar_paper_policy(workspace, str(state.get("user_message") or ""))
+        paper_database_path = _paper_database_path_for_workspace(
+            workspace,
+            self.workspace_repository,
+            self.repo_root,
+        )
+        if paper_database_path is None:
+            return {
+                "proposed_workspace": workspace,
+                "status": "failed",
+                "errors": [
+                    "Similar-paper refresh requires the original candidate paper database."
+                ],
+                "node_trace": [_trace("adjust_similar_papers")],
+            }
+        paper_database = paper_database_from_artifact(
+            load_json_artifact(paper_database_path)
+        )
+        proposed, _debug = build_similar_papers(
+            workspace=workspace,
+            paper_database=paper_database,
+            paper_ids=target_ids,
+            **policy,
+        )
+        provenance = proposed.setdefault("provenance", {})
+        if isinstance(provenance, dict):
+            provenance["similar_papers_policy"] = {
+                **policy,
+                "target_paper_ids": sorted(target_ids),
+            }
+        return {
+            "proposed_workspace": proposed,
+            "status": "constructing",
+            "node_trace": [_trace("adjust_similar_papers")],
         }
 
     def derive_operations_and_diff(self, state: WorkspaceAgentState) -> dict[str, Any]:
@@ -546,6 +652,7 @@ class WorkspaceAgentNodes:
                 "validation_errors": validation_summary.get("errors") or [],
                 "operation_history": state.get("action_history") or [],
             },
+            model=str(state.get("agent_model") or "gpt-5.6-luna"),
         )
         return {
             "proposed_workspace": proposed,
@@ -739,9 +846,9 @@ class WorkspaceAgentNodes:
             elif state.get("retrieval_result"):
                 final_response = "Candidate retrieval completed and workspace context was refreshed."
             elif state.get("errors"):
-                final_response = "Workspace agent stopped with errors."
+                final_response = "Assistant stopped with errors."
             else:
-                final_response = "Workspace agent completed."
+                final_response = "Assistant completed."
         return {
             "final_response": final_response,
             "status": "completed" if not state.get("errors") else state.get("status", "failed"),
@@ -985,6 +1092,189 @@ def _operation_target_ids(operations: list[dict[str, Any]]) -> dict[str, Any]:
         "paper_ids": sorted(paper_ids),
         "path_ids": sorted(path_ids),
     }
+
+
+def _paper_ids_for_explanation(
+    workspace: Mapping[str, Any],
+    *,
+    target_branch_id: str | None,
+    target_paper_ids: list[str],
+) -> list[str]:
+    cards = workspace.get("paper_cards")
+    visible_ids = set(cards) if isinstance(cards, Mapping) else set()
+    selected = {paper_id for paper_id in target_paper_ids if paper_id in visible_ids}
+    if not target_branch_id:
+        return sorted(selected)
+
+    tree = workspace.get("tree")
+    nodes = tree.get("nodes") if isinstance(tree, Mapping) else []
+    nodes_by_id = {
+        str(node.get("node_id")): node
+        for node in nodes or []
+        if isinstance(node, Mapping) and node.get("node_id")
+    }
+    pending = [target_branch_id]
+    visited: set[str] = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        node = nodes_by_id.get(node_id)
+        if not isinstance(node, Mapping):
+            continue
+        selected.update(str(item) for item in node.get("primary_paper_ids") or [])
+        selected.update(str(item) for item in node.get("secondary_paper_ids") or [])
+        pending.extend(str(item) for item in node.get("child_node_ids") or [])
+    for path in workspace.get("paper_paths") or []:
+        if isinstance(path, Mapping) and str(path.get("branch_node_id")) in visited:
+            selected.update(str(item) for item in path.get("paper_ids") or [])
+    return sorted(paper_id for paper_id in selected if paper_id in visible_ids)
+
+
+def _is_similar_paper_adjustment(state: Mapping[str, Any]) -> bool:
+    message = str(state.get("user_message") or "").casefold()
+    next_action = state.get("next_action")
+    instruction = (
+        str(next_action.get("modification_instruction") or "").casefold()
+        if isinstance(next_action, Mapping)
+        else ""
+    )
+    text = f"{message} {instruction}"
+    return "similar paper" in text or "related paper" in text
+
+
+def _similar_paper_target_ids(
+    workspace: Mapping[str, Any],
+    next_action: Mapping[str, Any],
+) -> set[str]:
+    cards = workspace.get("paper_cards")
+    visible_ids = set(cards) if isinstance(cards, Mapping) else set()
+    requested = {
+        str(paper_id)
+        for paper_id in next_action.get("target_paper_ids") or []
+        if str(paper_id) in visible_ids
+    }
+    if requested:
+        return requested
+    branch_id = str(next_action.get("target_branch_id") or "")
+    if not branch_id:
+        return visible_ids
+    tree = workspace.get("tree")
+    nodes_by_id = {
+        str(node.get("node_id")): node
+        for node in ((tree.get("nodes") or []) if isinstance(tree, Mapping) else [])
+        if isinstance(node, Mapping) and node.get("node_id")
+    }
+    branch_ids = {branch_id}
+    pending = [branch_id]
+    while pending:
+        node = nodes_by_id.get(pending.pop())
+        if not isinstance(node, Mapping):
+            continue
+        for child_id in node.get("child_node_ids") or []:
+            child_id = str(child_id)
+            if child_id not in branch_ids:
+                branch_ids.add(child_id)
+                pending.append(child_id)
+    return {
+        paper_id
+        for paper_id, card in cards.items()
+        if isinstance(card, Mapping)
+        and isinstance(card.get("primary_tree_location"), Mapping)
+        and str(card["primary_tree_location"].get("node_id") or "") in branch_ids
+    }
+
+
+def _similar_paper_policy(
+    workspace: Mapping[str, Any],
+    user_message: str,
+) -> dict[str, float | int]:
+    provenance = workspace.get("provenance")
+    prior = (
+        provenance.get("similar_papers_policy")
+        if isinstance(provenance, Mapping)
+        and isinstance(provenance.get("similar_papers_policy"), Mapping)
+        else {}
+    )
+    alpha = float(prior.get("citation_age_exponent") or DEFAULT_SIMILAR_CITATION_AGE_EXPONENT)
+    floor = float(prior.get("citation_score_floor") or DEFAULT_SIMILAR_CITATION_SCORE_FLOOR)
+    k = int(prior.get("k") or DEFAULT_SIMILAR_PAPERS_K)
+    request = user_message.casefold()
+    if any(term in request for term in ("newer", "newest", "recent", "recency")):
+        alpha = max(alpha, 1.75)
+    if any(term in request for term in ("well-known", "well known", "established", "highly cited")):
+        floor = max(floor, 25.0)
+    return {"k": k, "citation_age_exponent": alpha, "citation_score_floor": floor}
+
+
+def _paper_database_path_for_workspace(
+    workspace: Mapping[str, Any],
+    repository: WorkspaceRepository | None,
+    repo_root: Path,
+) -> Path | None:
+    provenance = workspace.get("provenance")
+    if isinstance(provenance, Mapping):
+        pipeline_run = provenance.get("pipeline_run")
+        if isinstance(pipeline_run, Mapping):
+            path = _existing_artifact_path(pipeline_run.get("paper_database_json"), repo_root)
+            if path is not None:
+                return path
+
+    workspace_id = str(workspace.get("workspace_id") or "")
+    if not workspace_id or repository is None:
+        return None
+    for run in repository.list_pipeline_runs(workspace_id):
+        if run.get("status") not in {"completed", "completed_with_warnings"}:
+            continue
+        artifacts = run.get("artifacts")
+        if not isinstance(artifacts, Mapping):
+            continue
+        path = _existing_artifact_path(artifacts.get("paper_database_json"), repo_root)
+        if path is not None:
+            return path
+    return None
+
+
+def _existing_artifact_path(value: Any, repo_root: Path) -> Path | None:
+    if not value:
+        return None
+    path = Path(str(value))
+    if not path.is_absolute():
+        path = repo_root / path
+    path = path.resolve()
+    return path if path.is_file() else None
+
+
+def _bounded_full_text_context(
+    contents: Mapping[str, Mapping[str, Any]],
+    *,
+    max_characters: int = 180_000,
+) -> dict[str, dict[str, Any]]:
+    """Bound a model request without ever disguising truncation as full text."""
+
+    total = 0
+    result: dict[str, dict[str, Any]] = {}
+    for paper_id, content in contents.items():
+        text = str(content.get("full_text") or "")
+        if total + len(text) > max_characters:
+            result[paper_id] = {
+                "status": "omitted_context_limit",
+                "source_status": content.get("status"),
+                "source_url": content.get("source_url"),
+                "full_text": "",
+                "error": "Full text was not sent because this branch exceeds the agent context safety limit.",
+            }
+            continue
+        total += len(text)
+        result[paper_id] = {
+            "status": content.get("status"),
+            "source_url": content.get("source_url"),
+            "page_count": content.get("page_count"),
+            "truncated": bool(content.get("truncated")),
+            "full_text": text,
+        }
+    return result
 
 
 def _decision_choice(decision: Any) -> str:

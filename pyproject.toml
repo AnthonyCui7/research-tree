@@ -11,14 +11,17 @@ dependencies = [
   "fastapi>=0.115.0",
   "langchain-core>=0.3.0",
   "langgraph>=0.6.0",
+  "pypdf>=5.0.0",
   "pydantic>=2.0.0",
   "uvicorn>=0.30.0",
 ]
 
 [project.scripts]
 research-tree-prepare-candidates = "research_tree.cli.prepare_workspace_candidates:main"
+research-tree-probe-citation-cutoff = "research_tree.cli.probe_citation_cutoff:main"
 research-tree-construct-workspace = "research_tree.cli.construct_workspace:main"
 research-tree-enrich-similar-papers = "research_tree.cli.enrich_workspace_similar_papers:main"
+research-tree-hydrate-papers = "research_tree.cli.hydrate_workspace_papers:main"
 research-tree-restore-workspace-version = "research_tree.cli.restore_workspace_version:main"
 research-tree-run-pipeline = "research_tree.cli.run_workspace_pipeline:main"
 

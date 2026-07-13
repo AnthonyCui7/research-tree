@@ -33,6 +33,7 @@ class PipelineConfig:
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
     citation_age_exponent: float = 1.25
     verbose: bool = True
+    query_overrides: tuple[str, ...] = ()
 
 
 def run_workspace_candidate_preparation_pipeline(
@@ -50,7 +51,7 @@ def run_workspace_candidate_preparation_pipeline(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     cross_encoder_query = ranking_query(config.topic)
-    queries = citation_search_query_variants(config.topic)
+    queries = list(config.query_overrides) or citation_search_query_variants(config.topic)
     warnings: list[str] = []
     semantic_scholar = _semantic_scholar_client(config, cache_dir)
     bulk_citation_target_per_query = config.k * config.s2_bulk_citation_multiplier
@@ -188,11 +189,19 @@ def run_workspace_candidate_preparation_pipeline(
             f"{len(selected_surveys)} selected for target {config.survey_baseline_count}."
         )
 
-    _write_stage_status(output_dir, "cross_encoder_metadata_scoring")
-    cross_encoder = LocalCrossEncoderReranker(config.cross_encoder_model)
     llm_candidate_papers = [*selected_non_survey, *selected_surveys]
-    cross_encoder.rerank(cross_encoder_query, llm_candidate_papers)
-    cross_encoder_rank_by_key = _rank_by_key(_rank_by_cross_encoder(llm_candidate_papers))
+    _write_stage_status(output_dir, "cross_encoder_metadata_scoring")
+    try:
+        cross_encoder = LocalCrossEncoderReranker(config.cross_encoder_model)
+        cross_encoder.rerank(cross_encoder_query, llm_candidate_papers)
+        cross_encoder_rank_by_key = _rank_by_key(
+            _rank_by_cross_encoder(llm_candidate_papers)
+        )
+    except (ImportError, RuntimeError, OSError) as error:
+        # This score is diagnostic metadata only. Citation-based selection is
+        # already complete, so an unavailable local model must not abort a run.
+        cross_encoder_rank_by_key = {}
+        warnings.append(f"Optional cross-encoder scoring was skipped: {error}")
 
     final_output = _workspace_candidate_final_output(
         non_survey_papers=selected_non_survey,
@@ -429,7 +438,7 @@ def _workspace_candidate_final_output(
         "citation_age_exponent": config.citation_age_exponent,
         "s2_bulk_citation_target_per_query": bulk_citation_target_per_query,
         "cross_encoder_query": cross_encoder_query,
-        "cross_encoder_scores_included": True,
+        "cross_encoder_scores_included": bool(cross_encoder_rank_by_key),
         "llm_curation_complete": False,
         "as_of": as_of.isoformat(),
         "retrieval_complete": not warnings,

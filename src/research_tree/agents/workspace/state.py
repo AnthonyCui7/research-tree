@@ -34,6 +34,7 @@ class WorkspaceAgentState(TypedDict, total=False):
     status: WorkspaceAgentStatus
     allow_pipeline_rerun: bool
     require_approval: bool
+    agent_model: str
 
     workspace: dict[str, Any] | None
     workspace_version_hash: str | None
@@ -92,6 +93,7 @@ class WorkspaceAgentInput(TypedDict, total=False):
     thread_id: str | None
     allow_pipeline_rerun: bool
     require_approval: bool
+    agent_model: str
     max_repair_attempts: int
 
 

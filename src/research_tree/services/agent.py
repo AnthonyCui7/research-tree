@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.agents.workspace.run import run_workspace_agent
-from research_tree.services.errors import WorkspaceNotFoundError
+from research_tree.services.errors import ReviewConflictError, WorkspaceNotFoundError
 from research_tree.services.validation import validate_resource_id
 from research_tree.workspace.repository import WorkspaceRepository
 
 
 GraphFactory = Callable[[WorkspaceRepository], Any]
+logger = logging.getLogger("uvicorn.error")
 
 
 class WorkspaceAgentService:
@@ -30,6 +32,7 @@ class WorkspaceAgentService:
         thread_id: str | None = None,
         allow_pipeline_rerun: bool = False,
         require_approval: bool = True,
+        model: str = "gpt-5.6-luna",
     ) -> dict[str, Any]:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
         try:
@@ -38,6 +41,18 @@ class WorkspaceAgentService:
             raise WorkspaceNotFoundError(
                 f"workspace does not exist: {safe_workspace_id}"
             ) from error
+        active_pipeline_run = next(
+            (
+                run
+                for run in self.repository.list_pipeline_runs(safe_workspace_id)
+                if run.get("status") in {"queued", "running"}
+            ),
+            None,
+        )
+        if active_pipeline_run is not None:
+            raise ReviewConflictError(
+                "Assistant is unavailable while the workspace pipeline is still running."
+            )
 
         try:
             graph = self.graph_factory(self.repository)
@@ -48,14 +63,18 @@ class WorkspaceAgentService:
                     "thread_id": thread_id,
                     "allow_pipeline_rerun": allow_pipeline_rerun,
                     "require_approval": require_approval,
+                    "agent_model": model,
                 },
                 graph=graph,
             )
         except Exception as error:  # API callers get a structured agent failure.
+            logger.exception(
+                "workspace assistant failed workspace_id=%s", safe_workspace_id
+            )
             return {
                 "workspace_id": safe_workspace_id,
                 "status": "failed_exception",
-                "final_response": "Workspace agent failed before completing the request.",
+                "final_response": "Assistant failed before completing the request.",
                 "errors": [str(error)],
                 "warnings": [],
             }
@@ -115,4 +134,3 @@ def _interrupt_payload(
         return interrupt_payloads[0]
     payload = output.get("approval_payload")
     return payload if isinstance(payload, dict) else None
-

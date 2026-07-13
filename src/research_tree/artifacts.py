@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,19 @@ def _safe_label(value: str) -> str:
 
 
 def _atomic_write(path: Path, payload: str) -> None:
-    temporary_path = path.with_name(f".{path.name}.tmp")
-    temporary_path.write_text(payload, encoding="utf-8")
-    temporary_path.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as file:
+        temporary_path = Path(file.name)
+        file.write(payload)
+        file.flush()
+    try:
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)

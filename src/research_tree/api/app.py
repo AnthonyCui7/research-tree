@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from research_tree.api.routes import agent, health, reviews, workspaces
+from research_tree.retrieval.env import load_dotenv_file
 from research_tree.services.errors import WorkspaceServiceError
+
+
+load_dotenv_file(Path(__file__).resolve().parents[3] / ".env")
 
 
 def create_app() -> FastAPI:
@@ -21,7 +27,10 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": exc.message, "error_code": exc.error_code},
+            content={
+                "detail": _public_service_error_message(exc.error_code),
+                "error_code": exc.error_code,
+            },
         )
 
     return app
@@ -29,3 +38,10 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+
+def _public_service_error_message(error_code: str) -> str:
+    if error_code in {"workspace_not_found", "review_not_found"}:
+        return "That workspace is no longer available. Refresh and try again."
+    if error_code in {"review_conflict", "stale_workspace"}:
+        return "This workspace changed. Refresh and try again."
+    return "We could not complete that request. Please try again."

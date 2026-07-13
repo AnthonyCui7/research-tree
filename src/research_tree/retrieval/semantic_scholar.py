@@ -14,8 +14,9 @@ from research_tree.retrieval.text import (
 
 
 # Semantic Scholar's introductory keyed limit is one request per second across
-# endpoints. CachedJsonClient also honors Retry-After for temporary throttling.
-SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.0
+# endpoints. A 1.5-second spacing stays below that shared limit and leaves room
+# for retries without creating burst traffic.
+SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.5
 
 
 SEMANTIC_SCHOLAR_PAPER_FIELDS = [
@@ -146,7 +147,6 @@ class SemanticScholarClient:
             if isinstance(item, dict) and item.get("paperId")
         }
 
-
 def paper_from_semantic_scholar(item: dict[str, Any]) -> Paper:
     external_ids = item.get("externalIds") or {}
     authors = [
@@ -162,7 +162,7 @@ def paper_from_semantic_scholar(item: dict[str, Any]) -> Paper:
         abstract=(item.get("abstract") or "").strip(),
         year=item.get("year"),
         publication_date=parse_iso_date(item.get("publicationDate")),
-        venue=(item.get("venue") or "").strip(),
+        venue=_normalized_venue(item.get("venue")),
         authors=authors,
         doi=normalize_doi(external_ids.get("DOI")),
         arxiv_id=normalize_arxiv_id(external_ids.get("ArXiv")),
@@ -188,6 +188,11 @@ def _paper_metadata(item: dict[str, Any]) -> dict[str, Any]:
         for field in [*SEMANTIC_SCHOLAR_PAPER_FIELDS, "tldr"]
         if field in item
     }
+
+
+def _normalized_venue(value: Any) -> str:
+    venue = str(value or "").strip()
+    return "N/A" if venue.casefold() in {"arxiv", "arxiv.org"} else venue
 
 
 def _append_warning(warnings: list[str] | None, message: str) -> None:

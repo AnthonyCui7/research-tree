@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import inspect
+import os
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from research_tree.api.app import create_app
@@ -14,7 +17,11 @@ from research_tree.api.dependencies import (
 from research_tree.api.routes import agent, health, reviews, workspaces
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.services.agent import WorkspaceAgentService
+from research_tree.services.errors import InvalidPayloadError
+from research_tree.services.pipeline import WorkspacePipelineService
+from research_tree.services.topics import TopicReviewService
 from research_tree.workspace.context import workspace_version_hash
+from research_tree.workspace.publishing import publish_workspace_version
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 
 
@@ -25,6 +32,39 @@ def test_health() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_topic_review_approval_is_single_use() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    service = TopicReviewService(repository)
+    reviewed = {
+        "normalized_topic": "Prompting",
+        "is_research_topic": True,
+        "guidance": "",
+        "existing_workspace_id": None,
+    }
+    with patch("research_tree.services.topics._review_with_model", return_value=reviewed):
+        result = service.review("prompting")
+
+    token = result["topic_review_token"]
+    assert isinstance(token, str)
+    assert service.consume_approved_topic(token=token, topic="Prompting") == "Prompting"
+    assert service.consume_approved_topic(token=token, topic="Prompting") is None
+
+
+def test_paper_content_is_stored_outside_versioned_workspace_json() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    _seed_current(repository)
+
+    content_key = repository.save_paper_content(
+        "workspace-1",
+        "doi:10.1/example",
+        {"status": "available", "full_text": "complete paper text"},
+    )
+
+    assert len(content_key) == 64
+    assert repository.get_paper_content("workspace-1", "doi:10.1/example")["full_text"] == "complete paper text"
+    assert "full_text" not in str(repository.get_current_workspace("workspace-1"))
 
 
 def test_workspace_current_versions_events_and_reviews() -> None:
@@ -80,6 +120,121 @@ def test_list_workspaces_returns_repository_summaries() -> None:
     }
 
 
+@patch.dict(os.environ, {"OPENAI_API_KEY": ""})
+def test_topic_review_fails_closed_without_an_llm_key() -> None:
+    client, repository = _client_with_repository()
+    _seed_current(repository)
+
+    response = client.post("/workspaces/topic-review", json={"topic": "  Test   Topic "})
+
+    assert response.status_code == 200
+    assert response.json()["can_create"] is False
+    assert response.json()["existing_workspace"] is None
+    assert response.json()["is_research_topic"] is False
+
+
+@patch.dict(os.environ, {"OPENAI_API_KEY": "configured-for-test"})
+def test_topic_review_uses_model_duplicate_selection() -> None:
+    client, repository = _client_with_repository()
+    _seed_current(repository)
+
+    with patch(
+        "research_tree.services.topics._review_with_model",
+        return_value={
+            "normalized_topic": "Test Topic",
+            "is_research_topic": True,
+            "guidance": "",
+            "existing_workspace_id": "workspace-1",
+        },
+    ) as review_model:
+        response = client.post("/workspaces/topic-review", json={"topic": "Test Topic"})
+
+    assert response.status_code == 200
+    assert response.json()["can_create"] is False
+    assert response.json()["existing_workspace"]["workspace_id"] == "workspace-1"
+    assert review_model.call_args.kwargs["existing_workspaces"] == [
+        {"workspace_id": "workspace-1", "topic": "test topic", "title": "Test Topic"}
+    ]
+
+
+@patch.dict(os.environ, {"OPENAI_API_KEY": "configured-for-test"})
+def test_topic_review_rejects_an_unreadable_paper_link() -> None:
+    client, _repository = _client_with_repository()
+
+    with patch(
+        "research_tree.services.topics._linked_paper_metadata",
+        return_value=None,
+    ), patch("research_tree.services.topics._review_with_model") as review_model:
+        response = client.post(
+            "/workspaces/topic-review",
+            json={"topic": "https://arxiv.org/abs/9999.99999"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["can_create"] is False
+    assert "could not identify a paper" in response.json()["guidance"]
+    review_model.assert_not_called()
+
+
+def test_restore_and_delete_workspace_lifecycle() -> None:
+    client, repository = _client_with_repository()
+    first_hash = _seed_current(repository)
+    second = {**repository.get_current_workspace("workspace-1"), "title": "Second"}
+    second_hash = repository.save_workspace_version(
+        "workspace-1",
+        second,
+        actor="user",
+        parent_version_hash=first_hash,
+        reason="second",
+    )
+
+    restore = client.post(
+        f"/workspaces/workspace-1/versions/{first_hash}/restore",
+        json={"expected_version_hash": second_hash},
+    )
+    delete = client.request(
+        "DELETE",
+        "/workspaces/workspace-1",
+        json={"expected_version_hash": first_hash},
+    )
+
+    assert restore.status_code == 200
+    assert restore.json()["workspace_version_hash"] == first_hash
+    assert delete.status_code == 200
+    assert client.get("/workspaces/workspace-1").status_code == 404
+
+
+def test_deleting_workspace_cancels_active_pipeline_and_blocks_late_publication() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    _seed_current(repository)
+    stale_workspace = repository.get_current_workspace("workspace-1")
+    repository.save_pipeline_run(
+        {
+            "run_id": "pipeline-active",
+            "workspace_id": "workspace-1",
+            "status": "running",
+            "topic": "test topic",
+            "created_at": "2026-07-12T00:00:00+00:00",
+        }
+    )
+
+    repository.delete_workspace("workspace-1")
+
+    assert repository.get_pipeline_run("pipeline-active")["status"] == "cancelled"
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        publish_workspace_version(
+            repository_dir=repository.base_dir,
+            workspace=stale_workspace,
+            reason="late pipeline publication",
+            event_type="workspace_pipeline_completed",
+            event_payload={},
+            pipeline_run_id="pipeline-active",
+        )
+    with pytest.raises(FileNotFoundError):
+        repository.get_current_workspace("workspace-1")
+
+
+@patch.dict(os.environ, {"OPENAI_API_KEY": ""})
 def test_chat_agent_request_returns_completed() -> None:
     client, repository = _client_with_repository()
     _seed_current(repository)
@@ -96,6 +251,7 @@ def test_chat_agent_request_returns_completed() -> None:
     assert payload["review_id"] is None
 
 
+@patch.dict(os.environ, {"OPENAI_API_KEY": ""})
 def test_modify_agent_request_returns_pending_review_and_persists_review() -> None:
     client, repository = _client_with_repository()
     _seed_current(repository)
@@ -253,6 +409,7 @@ def test_edit_review_validation_failure_returns_failed_validation() -> None:
     assert repository.get_review("workspace-1", "review-edit-invalid")["status"] == "edited"
 
 
+@patch.dict(os.environ, {"OPENAI_API_KEY": ""})
 def test_guardrail_rejection_returns_failed_guardrail_and_skips_retrieval_runner() -> None:
     repository = LocalJsonWorkspaceRepository(_temp_dir())
     _seed_current(repository)
@@ -299,6 +456,149 @@ def test_route_modules_do_not_perform_low_level_file_writes() -> None:
     ]
     for forbidden_call in forbidden_calls:
         assert forbidden_call not in route_source
+
+
+@patch.dict(os.environ, {"OPENAI_API_KEY": ""})
+def test_failed_pipeline_does_not_publish_a_partial_workspace() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    service = WorkspacePipelineService(
+        repository,
+        repo_root=_temp_dir(),
+        dispatch=lambda callback, _name: callback(),
+    )
+
+    with (
+        patch(
+            "research_tree.services.pipeline.TopicReviewService.review",
+            return_value={
+                "normalized_topic": "Failure-Safe RAG",
+                "is_research_topic": True,
+                "guidance": "",
+                "existing_workspace": None,
+            },
+        ),
+        patch(
+            "research_tree.services.pipeline.run_workspace_candidate_preparation_pipeline",
+            side_effect=RuntimeError("Semantic Scholar is unavailable"),
+        ),
+    ):
+        run = service.start_new_workspace(topic="Failure-Safe RAG")
+
+    saved_run = repository.get_pipeline_run(run["run_id"])
+    assert saved_run["status"] == "failed"
+    assert saved_run["stages"]["candidates"]["status"] == "failed"
+    assert saved_run["stages"]["candidates"]["error"] == "Semantic Scholar is unavailable"
+    with pytest.raises(FileNotFoundError):
+        repository.get_current_workspace(run["workspace_id"])
+
+
+def test_failed_partial_rerun_keeps_source_artifacts_unchanged() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    current_hash = _seed_current(repository)
+    repo_root = _temp_dir()
+    source_dir = repo_root / "source-run"
+    source_dir.mkdir()
+    candidate_json = source_dir / "llm_candidate_papers.json"
+    candidate_json.write_text("{}", encoding="utf-8")
+    source_run = {
+        "run_id": "pipeline_source",
+        "workspace_id": "workspace-1",
+        "status": "completed",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "artifacts": {
+            "run_dir": str(source_dir),
+            "candidate_json": str(candidate_json),
+        },
+    }
+    repository.save_pipeline_run(source_run)
+    service = WorkspacePipelineService(
+        repository,
+        repo_root=repo_root,
+        dispatch=lambda callback, _name: callback(),
+    )
+
+    with patch(
+        "research_tree.services.pipeline.construct_workspace_from_candidates",
+        side_effect=RuntimeError("invalid model response"),
+    ):
+        run = service.rerun(
+            "workspace-1",
+            start_stage="construct",
+            expected_version_hash=current_hash,
+        )
+
+    saved_run = repository.get_pipeline_run(run["run_id"])
+    assert saved_run["status"] == "failed"
+    assert saved_run["stages"]["construct"]["status"] == "failed"
+    assert saved_run["artifacts"]["run_dir"] != str(source_dir)
+    assert candidate_json.read_text(encoding="utf-8") == "{}"
+
+
+def test_unpublished_paper_content_does_not_block_workspace_retry_id() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    service = WorkspacePipelineService(repository, repo_root=_temp_dir())
+    (repository.base_dir / "retrieval-augmented-generation" / "paper_content").mkdir(
+        parents=True
+    )
+
+    assert service._available_workspace_id("retrieval-augmented-generation") == (
+        "retrieval-augmented-generation"
+    )
+
+
+def test_pipeline_rerun_rejects_another_active_run_for_the_workspace() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    _seed_current(repository)
+    repository.save_pipeline_run(
+        {
+            "run_id": "pipeline_source",
+            "workspace_id": "workspace-1",
+            "status": "completed",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "artifacts": {},
+        }
+    )
+    repository.save_pipeline_run(
+        {
+            "run_id": "pipeline_active",
+            "workspace_id": "workspace-1",
+            "status": "running",
+            "runner_pid": os.getpid(),
+            "created_at": "2026-01-02T00:00:00+00:00",
+        }
+    )
+    service = WorkspacePipelineService(repository, repo_root=_temp_dir())
+
+    with pytest.raises(InvalidPayloadError, match="already active"):
+        service.rerun("workspace-1", start_stage="related")
+
+
+def test_dead_pipeline_owner_is_reclaimed_before_a_new_run_is_reserved() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    stale_run = {
+        "run_id": "pipeline_stale",
+        "workspace_id": "workspace-1",
+        "status": "running",
+        "runner_pid": 12345,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    new_run = {
+        "run_id": "pipeline_new",
+        "workspace_id": "workspace-1",
+        "status": "queued",
+        "runner_pid": os.getpid(),
+        "created_at": "2026-01-02T00:00:00+00:00",
+    }
+    repository.save_pipeline_run(stale_run)
+
+    with patch(
+        "research_tree.workspace.repository.os.kill",
+        side_effect=ProcessLookupError,
+    ):
+        repository.reserve_pipeline_rerun(new_run)
+
+    assert repository.get_pipeline_run("pipeline_stale")["status"] == "failed"
+    assert repository.get_pipeline_run("pipeline_new")["status"] == "queued"
 
 
 def _client_with_repository() -> tuple[TestClient, LocalJsonWorkspaceRepository]:

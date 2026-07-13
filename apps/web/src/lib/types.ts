@@ -40,18 +40,59 @@ export type WorkspaceVersion = {
   agent_run_id?: string | null;
   created_at: string;
   is_current?: boolean;
+  navigation_index?: number;
 };
 
 export type WorkspaceRoot = {
   node_id: string;
   label: string;
   overview: string;
+  why_it_matters?: string;
   root_survey_type: string;
   survey_anchor_paper_ids: string[];
   representative_paper_ids: string[];
   key_terms: string[];
   open_questions: string[];
   suggested_reading_direction: string;
+};
+
+export type TopicReview = {
+  submitted_topic: string;
+  normalized_topic: string;
+  is_research_topic: boolean;
+  guidance: string;
+  existing_workspace: { workspace_id: string; title: string } | null;
+  can_create: boolean;
+  model: string | null;
+  source_paper: { provider: string; title: string; abstract: string } | null;
+  topic_review_token: string | null;
+};
+
+export type PipelineRun = {
+  run_id: string;
+  workspace_id: string;
+  topic: string;
+  model: string;
+  status: "queued" | "running" | "completed" | "completed_with_warnings" | "failed" | "cancelled";
+  current_stage: string | null;
+  requested_stages: string[];
+  stages: Record<string, { status: string; updated_at: string; error?: string | null }>;
+  warnings: string[];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentRunResult = {
+  workspace_id: string;
+  status: string;
+  thread_id: string | null;
+  agent_run_id: string | null;
+  review_id: string | null;
+  final_response: string | null;
+  diff_summary: Record<string, unknown> | null;
+  warnings: string[];
+  errors: string[];
 };
 
 export type WorkspaceTree = {
@@ -192,6 +233,7 @@ export type RootTreeNode = {
   kind: "root";
   title: string;
   overview: string;
+  whyItMatters: string;
   surveyType: string;
   suggestedReadingDirection: string;
   keyTerms: string[];

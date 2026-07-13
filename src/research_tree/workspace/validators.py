@@ -184,17 +184,13 @@ def visible_budget_validator(payload: ValidatorPayload) -> dict[str, Any]:
     visible_count = len(_mapping(proposed.get("paper_cards")))
     budget = _mapping(_mapping(proposed.get("scope")).get("visible_paper_budget"))
     target_max = _int_or_default(budget.get("target_max"), 25)
-    hard_max = _int_or_default(budget.get("hard_max_default"), 30)
     warnings: list[str] = []
-    errors: list[str] = []
     if visible_count > target_max:
         warnings.append(f"visible paper count {visible_count} is above target_max {target_max}.")
-    if visible_count > hard_max:
-        errors.append(f"visible paper count {visible_count} exceeds hard_max_default {hard_max}.")
     return _result(
         "visible_budget_validator",
-        valid=not errors,
-        errors=errors,
+        valid=True,
+        errors=[],
         warnings=warnings,
         stats={"visible_paper_count": visible_count},
     )

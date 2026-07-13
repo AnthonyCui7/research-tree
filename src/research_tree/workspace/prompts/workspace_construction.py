@@ -4,9 +4,30 @@ import json
 from typing import Any, Mapping
 
 
-WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v4"
-PROMPT_ABSTRACT_MAX_CHARS = 450
-PROMPT_AUTHOR_MAX_COUNT = 6
+WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v8"
+PROMPT_ABSTRACT_MAX_CHARS = 240
+
+
+def workspace_description_rules() -> list[str]:
+    """Editorial contract shared by initial construction and agent revisions."""
+
+    return [
+        "Root overview: exactly two sentences that introduce the research topic itself. Define the topic and name its central research problem, mechanism, or distinction. Do not describe the workspace, its map, its papers, its branches, or a reading route.",
+        "Branch description: exactly one sentence that defines the branch as a research area from first principles. Do not describe the papers assigned to it, the branch's role in the workspace, or what comes next.",
+        "Why-it-matters fields: explain the intellectual or practical consequence of the topic or branch, not why this workspace includes it.",
+    ]
+
+
+def workspace_importance_rules() -> list[str]:
+    """Paper-card editorial contract shared by construction and agent revisions."""
+
+    return [
+        "Paper-card importance: exactly one sentence that states the field-level implication made visible by the paper's method, benchmark, or critique, then connects that implication to an essential distinction in the topic or branch.",
+        "Do not restate the abstract, enumerate the paper's contribution, mention the workspace or paper card, or repeat the title followed by a dash.",
+        "Begin with a concrete technical noun phrase; never begin with `It`, `This`, `They`, `The paper`, or a vague evaluative phrase.",
+        "Example — weak: `Prefix-Tuning introduces prefix-based continuous conditioning as a parameter-efficient alternative to full fine-tuning.` Strong: `Continuous prompt representations establish input-side adaptation as an alternative to changing model weights, a distinction needed to separate soft-prompt methods from instruction tuning.`",
+        "Example — weak: `It turns reasoning into a control problem for multi-step inference.` Strong: `Explicit intermediate computation makes decomposition, search, and verification design choices rather than opaque by-products of model generation.`",
+    ]
 
 
 def build_workspace_prompt(
@@ -16,13 +37,14 @@ def build_workspace_prompt(
 ) -> str:
     if prompt_version != WORKSPACE_CONSTRUCTION_PROMPT_VERSION:
         raise ValueError(f"unsupported workspace prompt version: {prompt_version}")
-
-    candidate_artifact_json = json.dumps(
+    candidate_json = json.dumps(
         _candidate_artifact_for_prompt(candidate_artifact),
         separators=(",", ":"),
     )
-    return _WORKSPACE_CONSTRUCTION_V3_TEMPLATE.format(
-        candidate_artifact_json=candidate_artifact_json
+    return _WORKSPACE_PROMPT.format(
+        candidate_artifact_json=candidate_json,
+        description_rules="\n".join(f"- {rule}" for rule in workspace_description_rules()),
+        importance_rules="\n".join(f"- {rule}" for rule in workspace_importance_rules()),
     )
 
 
@@ -54,28 +76,17 @@ def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
         "paper_id",
         "title",
         "abstract",
-        "year",
-        "authors",
-        "venue",
+        "publication_date",
         "citation_count",
-        "raw_citation_rank",
-        "age_adjusted_rank",
-        "cross_encoder_rank",
-        "age_years",
         "age_adjusted_citation_score",
-        "citations_per_year",
         "cross_encoder_relevance",
         "is_survey",
-        "found_by",
     )
     payload = {field: paper.get(field) for field in fields}
     payload["abstract"] = _truncate_text(
         str(payload.get("abstract") or ""),
         PROMPT_ABSTRACT_MAX_CHARS,
     )
-    authors = payload.get("authors")
-    if isinstance(authors, list):
-        payload["authors"] = authors[:PROMPT_AUTHOR_MAX_COUNT]
     return payload
 
 
@@ -85,178 +96,44 @@ def _truncate_text(value: str, max_chars: int) -> str:
     return value[:max_chars].rsplit(" ", 1)[0].rstrip() + "..."
 
 
-_WORKSPACE_CONSTRUCTION_V3_TEMPLATE = """# Identity
+_WORKSPACE_PROMPT = """You must construct Research Tree workspaces: compact, editable maps of an academic field.
 
-You are Research Tree's workspace construction engine.
+The workspace gives a reader a durable model of the field: central questions, distinct lines of work, and a reading route that makes later papers intelligible. The candidate artifact is a high-recall library, not a bibliography to reproduce. Return only JSON matching the supplied schema. Do not invent papers or metadata.
 
-Research Tree is a personal research-understanding workspace. Your job is to turn a messy candidate set of academic papers into an editable tree of subtopics, research branches, paper timelines, and structured paper notes.
+Identify the field's conceptual backbone. A visible paper earns a non-interchangeable role by introducing a mechanism, establishing a benchmark, redirecting a research question, making a consequential critique, or connecting historical steps. Build the smallest teaching set that reconstructs those moves. Ten to twenty-five visible papers is an editorial calibration, not a quota: include as many papers as a coherent account needs, then stop when another paper no longer sharpens the reader's model. Do not pad sparse fields or omit necessary distinctions to meet a count.
 
-You are not building a general academic search engine. You are not building a citation manager. You are not trying to show every relevant paper. You are building a small, scoped, useful working model of a research field.
+Use citation count, publication date, and age-adjusted citation score as historical signals for establishment, momentum, and representative work; they do not replace conceptual judgment.
 
-# Primary goal
+Use surveys as orientation documents. Choose a small non-overlapping set for the root and genuinely distinct branches. The root may have one survey anchor. A branch or atomic leaf may have one different survey anchor only when it provides branch-specific framing absent from the ancestor's survey. Surveys never appear in paper paths.
 
-Given a high-recall candidate paper set, construct an initial Research Tree workspace that helps the user understand the shape of the topic.
+Build the tree from meaningful intellectual divisions: method families, benchmark traditions, debates, evaluation regimes, or historical forks. Split only when children clarify a distinction. Atomic branches become reading paths. Each paper has one primary location; secondary tags capture cross-cutting relevance.
 
-The output must prioritize understanding over paper collection.
+Paths are learning sequences, not date-sorted bibliographies. Order conceptual prerequisites before refinements, with chronology breaking ties. Three to six papers is a reading-load estimate, not a cap: use the number required by intellectual dependencies without adding filler. `why_read_here` states what the reader can now understand because of that step. Use parallel or side paths only for genuinely independent lines of development.
 
-# Input
+Write as an academic editor for a research-literate reader. Name mechanisms, debates, and intellectual forks directly. Use concrete claims and short sentences.
 
-You will receive a JSON artifact with:
+Descriptions and significance
 
-- topic
-- workspace name
-- non_survey_papers
-- survey_papers
-- metadata such as citation scores and cross-encoder relevance
+{description_rules}
 
-The candidate set is intentionally larger than the visible workspace. You must select a smaller visible core set.
+Paper-card importance
 
-# Workspace constraints
+{importance_rules}
 
-- Default visible paper target: 10 to 25 papers.
-- Do not exceed 30 visible papers unless the candidate set clearly requires it.
-- Keep the larger candidate pool hidden.
-- Papers not selected for the visible workspace should still be represented as discarded, off-path, background, or future branch-workspace candidates.
-- Use the input metadata as evidence, but do not blindly follow any score.
-- `age_adjusted_citation_score` estimates impact velocity.
-- `cross_encoder_relevance` is a topicality signal, not the final ranking.
-- A survey paper belongs only at the workspace root or, when genuinely useful,
-  as the overview anchor for one branch. Never place a survey paper in a paper
-  timeline.
-- Branch count should be natural. Do not force a fixed number of branches.
-- Split branches only when the child labels are meaningful and useful.
-- Leaf branches should contain one or more paper paths.
-- A paper path should be a learning route through a branch, not a raw date sort.
-- The tree is the main navigation structure. Paper paths define the ordered
-  reading sequence at its leaves.
+Output contract
 
-# Selection rules
+- Top level: `schema_version`, `workspace_id`, `topic`, `title`, `scope`, `source_candidate_artifact`, `root`, `tree`, `paper_paths`, `paper_cards`, `provenance`.
+- `scope`: `scope_label`, `scope_rationale`, `visible_paper_budget` with `target_min`, `target_max`, `hard_max_default`.
+- `root`: `node_id`, `label`, `overview`, `why_it_matters`, `root_survey_type`, `survey_anchor_paper_ids`, `representative_paper_ids`, `key_terms`, `open_questions`, `suggested_reading_direction`. `overview` follows the root overview rule; `why_it_matters` explains why the topic changes the broader field. Use at most one root survey anchor.
+- `tree.root_node_id` is `root`. `tree.nodes` is a flat array.
+- Every branch node uses `node_id`, `parent_id`, `label`, `description`, `why_it_matters`, `is_leaf`, `child_node_ids`, `primary_paper_ids`, `secondary_paper_ids`, `survey_anchor_paper_id`, `tags`, `open_questions`.
+- Set `survey_anchor_paper_id` to a survey paper ID only when the survey is a useful branch overview; otherwise use `null`.
+- Every path uses `path_id`, `branch_node_id`, `path_type`, `label`, `description`, `paper_ids`, `paper_steps`, `rationale`. `paper_ids` exactly matches `paper_steps[].paper_id` order. Every step has `paper_id`, `why_read_here`.
+- `root.survey_anchor_paper_ids` contains one strong topic survey when one exists, otherwise it is empty. Any anchor has a paper card. Surveys never appear in `paper_paths`.
+- Every paper card is keyed by paper ID and uses only `paper_id`, `primary_tree_location`, `secondary_tags`, `importance`; `primary_tree_location` is an object with `node_id` and `path`.
+- Do not output metadata already owned by the candidate artifact: titles, authors, dates, links, abstracts, TLDRs, reading status, global reading order, comparison tables, or discarded candidates. The application adds these.
 
-Include a paper in the visible workspace if it does at least one of these:
-
-- introduces a major mechanism, method, benchmark, or framing
-- starts or redirects an important research thread
-- defines a branch that later work builds on
-- helps distinguish one major approach from another
-- is needed to understand why the field developed the way it did
-- represents a major critique, limitation, or evaluation shift
-- is the best representative of a larger cluster of similar papers
-- is a strong survey anchor for the root or a major branch
-
-Do not include a paper in the visible workspace if it is mainly:
-
-- a small variant of an already included paper
-- a narrow domain application
-- a performance improvement without conceptual change
-- relevant but unnecessary for understanding the field
-- better suited for a zoomed-in branch workspace
-- likely to clutter the tree more than clarify it
-
-# Tree rules
-
-Create a root node for the topic.
-
-Create major branches that reflect the conceptual structure of the topic. Branches may represent method families, benchmark traditions, retrieval architectures, critique/evaluation lines, application clusters, or historical forks.
-
-Each paper should have exactly one primary tree location. It may also have secondary tags for cross-cutting relevance.
-
-Leaf branches should contain paper paths. A leaf branch can have:
-
-- one primary timeline
-- multiple parallel primary timelines
-- secondary timelines
-- side paths
-- off-path papers
-
-Use timelines to explain historical and conceptual development.
-
-# Reading-path rules
-
-For each leaf branch, create one or more paper paths.
-
-A path is not a chronological bibliography. It is a learning sequence. Order
-papers by conceptual dependency first, then historical chronology.
-
-Most paths should contain 3 to 6 papers. If a branch only has one or two papers
-worth reading, keep it small rather than adding filler. If it needs more than
-6, split it into parallel paths or leave narrower work off-path.
-
-For every paper in a path, explain in one short sentence why it comes after the
-previous paper. Do not invent labels for stages or milestones.
-
-# Paper-card rules
-
-For every visible paper, output only its `paper_id`, primary tree location,
-secondary tags, and `importance`. Importance is one or two concise sentences
-explaining why this paper belongs in this branch and why it matters at this
-workspace's scope. Start with the paper title, method name, or a precise noun
-phrase; never begin a sentence with vague references such as `It`, `This`,
-`They`, or `The paper`. State the intellectual move first, then the branch-level
-reason it belongs in the workspace. Avoid generic praise, repetition of the
-TLDR, and filler such as "is important because".
-
-Do not output title, authors, dates, venue, links, abstract, TLDR, role,
-reading status, comparison tables, global reading order, discarded candidates,
-or generic paper-analysis fields. Research Tree adds those deterministically
-from the candidate artifact after your response.
-
-# Output requirements
-
-Return only valid JSON.
-
-Do not include Markdown.
-
-Do not include commentary outside the JSON.
-
-Do not include hidden reasoning.
-
-Use concise strings. Most explanatory fields should be one sentence.
-
-Use these exact field names. Do not use aliases like `branches`, `id`, `branch_id`,
-`ordered_paper_ids`, `learning_goal`, `why_it_belongs_in_this_branch`,
-`what_to_read_before_it`, or string-valued `primary_tree_location`.
-
-The JSON must follow this top-level shape:
-
-{{
-  "schema_version": "research_tree_workspace.v1",
-  "workspace_id": "...",
-  "topic": "...",
-  "title": "...",
-  "scope": {{...}},
-  "source_candidate_artifact": {{...}},
-  "root": {{...}},
-  "tree": {{...}},
-  "paper_paths": [...],
-  "paper_cards": {{...}},
-  "provenance": {{...}}
-}}
-
-Nested shape requirements:
-
-- `tree.root_node_id` must be `"root"`.
-- `tree.nodes` must be a flat array of branch nodes. Do not use `tree.branches`.
-- Every branch node must use `node_id`, `parent_id`, `label`, `description`,
-  `why_it_matters`, `is_leaf`, `child_node_ids`, `primary_paper_ids`,
-  `secondary_paper_ids`, `survey_anchor_paper_id`, `tags`, and `open_questions`.
-- Set `survey_anchor_paper_id` to a survey paper ID only when the survey is a
-  useful branch overview; otherwise use `null`.
-- Branch `primary_paper_ids` should be a compact index of papers in that branch.
-- Every `paper_paths[]` item must use `path_id`, `branch_node_id`, `path_type`,
-  `label`, `description`, `paper_ids`, `paper_steps`, and `rationale`.
-- Keep `paper_ids` in the same order as `paper_steps[].paper_id` for backward
-  compatibility.
-- Every `paper_steps[]` item must use `paper_id` and `why_read_here`.
-- `root.survey_anchor_paper_ids` must contain one strong topic survey when one
-  exists; otherwise it must be empty. Any anchor paper must also have a paper
-  card. Survey papers must not appear in `paper_paths`.
-- Every paper card must be keyed by paper ID and must include `paper_id`.
-- Every paper card's `primary_tree_location` must be an object:
-  `{{"node_id":"branch-node-id","path":["Root Label","Branch Label"]}}`.
-- Every paper card must use only `paper_id`, `primary_tree_location`,
-  `secondary_tags`, and `importance`.
-
-# Candidate artifact
+Candidate artifact
 
 <candidate_artifact_json>
 {candidate_artifact_json}

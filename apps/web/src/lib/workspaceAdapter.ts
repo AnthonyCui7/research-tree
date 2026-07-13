@@ -24,6 +24,11 @@ const ROW_GAP = 32;
 const TOP_PADDING = 36;
 const BOTTOM_PADDING = 48;
 const BRANCH_FAMILY_COUNT = 8;
+const NODE_PADDING = 14;
+const NODE_BORDER = 2;
+const NODE_GAP = 6;
+const NODE_FONT_FAMILY = "Inter, sans-serif";
+let cachedTextMeasureContext: CanvasRenderingContext2D | null | undefined;
 
 type LayoutState = {
   nextY: number;
@@ -77,6 +82,7 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
     kind: "root",
     title: workspace.root.label || workspace.title,
     overview: workspace.root.overview,
+    whyItMatters: workspace.root.why_it_matters || workspace.root.overview,
     surveyType: workspace.root.root_survey_type,
     suggestedReadingDirection: workspace.root.suggested_reading_direction,
     keyTerms: workspace.root.key_terms,
@@ -462,43 +468,169 @@ function branchPositionX(depth: number): number {
 }
 
 function rootNodeSize(root: WorkspaceDocument["root"], anchor: PaperDetails | null) {
-  const titleHeight = textHeight(root.label, 31, 24);
-  const overviewHeight = textHeight(root.overview, 54, 18);
-  const anchorHeight = anchor ? 41 + textHeight(anchor.title, 46, 15) : 0;
+  const contentWidth = nodeContentWidth(ROOT_WIDTH);
+  const contentHeights = [
+    textHeight("Research topic", contentWidth, 14.3, `600 11px ${NODE_FONT_FAMILY}`, 31),
+    textHeight(root.label, contentWidth, 23.52, `700 21px ${NODE_FONT_FAMILY}`, 31),
+    textHeight(root.overview, contentWidth, 17.4, `400 12px ${NODE_FONT_FAMILY}`, 54),
+    ...(anchor ? [anchorSummaryHeight(anchor.title, contentWidth, 46)] : []),
+  ];
   return {
     width: ROOT_WIDTH,
-    height: Math.max(178, 52 + titleHeight + overviewHeight + anchorHeight),
+    height: stackedNodeHeight(contentHeights),
   };
 }
 
 function branchNodeSize(branch: BranchNode, anchor: PaperDetails | null) {
-  const titleHeight = textHeight(branch.label, 34, 18);
-  const descriptionHeight = textHeight(branch.description, 43, 18);
-  const anchorHeight = anchor ? 41 + textHeight(anchor.title, 40, 15) : 0;
+  const contentWidth = nodeContentWidth(BRANCH_WIDTH);
+  const contentHeights = [
+    textHeight("Research branch", contentWidth, 14.3, `600 11px ${NODE_FONT_FAMILY}`, 34),
+    textHeight(branch.label, contentWidth, 18.2, `700 14px ${NODE_FONT_FAMILY}`, 34),
+    textHeight(branch.description, contentWidth, 17.4, `400 12px ${NODE_FONT_FAMILY}`, 43),
+    ...(anchor ? [anchorSummaryHeight(anchor.title, contentWidth, 40)] : []),
+  ];
   return {
     width: BRANCH_WIDTH,
-    height: Math.max(118, 52 + titleHeight + descriptionHeight + anchorHeight),
+    height: stackedNodeHeight(contentHeights),
   };
 }
 
 function paperNodeSize(paper: PaperCard) {
-  const titleHeight = textHeight(paper.title, 39, 18);
-  const authorsHeight = textHeight(compactAuthorLine(paper.authors), 42, 16);
-  const tldrHeight = textHeight(paper.tldr || "Unavailable from Semantic Scholar.", 46, 17);
+  const contentWidth = nodeContentWidth(PAPER_WIDTH);
+  const tldrPrefixWidth = textWidth("TLDR", `700 11px ${NODE_FONT_FAMILY}`) + 4;
+  const contentHeights = [
+    textHeight(paper.title, contentWidth, 18.2, `700 14px ${NODE_FONT_FAMILY}`, 39),
+    textHeight(compactAuthorLine(paper.authors), contentWidth, 16.2, `400 12px ${NODE_FONT_FAMILY}`, 42),
+    textHeight("Date", contentWidth, 14.3, `400 11px ${NODE_FONT_FAMILY}`, 42),
+    textHeight(
+      paper.tldr || "Unavailable",
+      contentWidth,
+      17.04,
+      `400 12px ${NODE_FONT_FAMILY}`,
+      46,
+      tldrPrefixWidth,
+      6,
+    ),
+  ];
   return {
     width: PAPER_WIDTH,
-    height: Math.max(164, 57 + titleHeight + authorsHeight + tldrHeight),
+    height: stackedNodeHeight(contentHeights),
   };
 }
 
-function textHeight(value: string, charactersPerLine: number, lineHeight: number): number {
+function stackedNodeHeight(contentHeights: number[]): number {
+  const contentHeight = contentHeights.reduce((total, height) => total + height, 0);
+  const gapHeight = Math.max(0, contentHeights.length - 1) * NODE_GAP;
+  return Math.ceil(NODE_BORDER + NODE_PADDING * 2 + contentHeight + gapHeight);
+}
+
+function nodeContentWidth(width: number): number {
+  return width - NODE_PADDING * 2 - NODE_BORDER;
+}
+
+function anchorSummaryHeight(title: string, width: number, fallbackCharactersPerLine: number): number {
+  const labelAndYearHeight = 13.5 * 2;
+  const anchorGaps = 3 * 2;
+  const anchorTopRule = 8 + 1;
+  return anchorTopRule + labelAndYearHeight + anchorGaps + textHeight(
+    title,
+    width,
+    14.85,
+    `600 11px ${NODE_FONT_FAMILY}`,
+    fallbackCharactersPerLine,
+  );
+}
+
+function textHeight(
+  value: string,
+  width: number,
+  lineHeight: number,
+  font: string,
+  fallbackCharactersPerLine: number,
+  firstLinePrefixWidth = 0,
+  fallbackPrefixCharacters = 0,
+): number {
   if (!value) {
     return 0;
   }
-  const lines = value.split(/\r?\n/).reduce((total, line) => {
-    return total + Math.max(1, Math.ceil(line.length / charactersPerLine));
-  }, 0);
+  const context = textMeasureContext();
+  const lines = context
+    ? wrappedLineCount(value, width, font, firstLinePrefixWidth, context)
+    : fallbackLineCount(value, fallbackCharactersPerLine, fallbackPrefixCharacters);
   return lines * lineHeight;
+}
+
+function textWidth(value: string, font: string): number {
+  const context = textMeasureContext();
+  if (!context) {
+    return 0;
+  }
+  context.font = font;
+  return context.measureText(value).width;
+}
+
+function textMeasureContext(): CanvasRenderingContext2D | null {
+  if (cachedTextMeasureContext !== undefined) {
+    return cachedTextMeasureContext;
+  }
+  if (typeof document === "undefined") {
+    cachedTextMeasureContext = null;
+    return null;
+  }
+  const canvas = document.createElement("canvas");
+  cachedTextMeasureContext = canvas.getContext("2d");
+  return cachedTextMeasureContext;
+}
+
+function wrappedLineCount(
+  value: string,
+  width: number,
+  font: string,
+  firstLinePrefixWidth: number,
+  context: CanvasRenderingContext2D,
+): number {
+  context.font = font;
+  const spaceWidth = context.measureText(" ").width;
+  return value.split(/\r?\n/).reduce((total, line) => {
+    if (!line.trim()) {
+      return total + 1;
+    }
+    const words = line.trim().split(/\s+/);
+    let lineCount = 1;
+    let lineWidth = firstLinePrefixWidth;
+    let hasWord = false;
+    for (const word of words) {
+      const wordWidth = context.measureText(word).width;
+      const separatorWidth = hasWord ? spaceWidth : 0;
+      if (hasWord && lineWidth + separatorWidth + wordWidth > width) {
+        lineCount += 1;
+        lineWidth = wordWidth;
+        continue;
+      }
+      if (!hasWord && lineWidth + wordWidth > width) {
+        lineCount += Math.max(0, Math.ceil(wordWidth / width) - 1);
+        lineWidth = wordWidth % width || width;
+        hasWord = true;
+        continue;
+      }
+      lineWidth += separatorWidth + wordWidth;
+      hasWord = true;
+    }
+    return total + lineCount;
+  }, 0);
+}
+
+function fallbackLineCount(value: string, charactersPerLine: number, firstLinePrefixCharacters: number): number {
+  return value.split(/\r?\n/).reduce((total, line) => {
+    const firstLineCharacters = Math.max(1, charactersPerLine - firstLinePrefixCharacters);
+    if (!line) {
+      return total + 1;
+    }
+    if (line.length <= firstLineCharacters) {
+      return total + 1;
+    }
+    return total + 1 + Math.ceil((line.length - firstLineCharacters) / charactersPerLine);
+  }, 0);
 }
 
 function compactAuthorLine(authors: string[]): string {

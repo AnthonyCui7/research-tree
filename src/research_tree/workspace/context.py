@@ -68,6 +68,22 @@ def build_workspace_summary(workspace: Mapping[str, Any]) -> dict[str, Any]:
         "title": workspace.get("title"),
         "branch_count": len(nodes) if isinstance(nodes, list) else 0,
         "visible_paper_count": len(paper_cards) if isinstance(paper_cards, Mapping) else 0,
+        "branches": [
+            {
+                "node_id": node.get("node_id"),
+                "label": node.get("label"),
+            }
+            for node in nodes
+            if isinstance(node, Mapping)
+        ],
+        "papers": [
+            {
+                "paper_id": str(paper_id),
+                "title": card.get("title"),
+            }
+            for paper_id, card in paper_cards.items()
+            if isinstance(card, Mapping)
+        ] if isinstance(paper_cards, Mapping) else [],
     }
 
 
