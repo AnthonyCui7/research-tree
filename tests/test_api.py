@@ -251,6 +251,55 @@ def test_chat_agent_request_returns_completed() -> None:
     assert payload["review_id"] is None
 
 
+def test_agent_request_passes_bounded_conversation_history() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    _seed_current(repository)
+    captured: dict[str, Any] = {}
+
+    class RecordingGraph:
+        def stream(self, graph_input: Any, *, config: dict[str, Any], stream_mode: str) -> list[dict[str, Any]]:
+            captured["graph_input"] = graph_input
+            captured["config"] = config
+            captured["stream_mode"] = stream_mode
+            return [
+                {
+                    "status": "completed",
+                    "thread_id": graph_input["thread_id"],
+                    "agent_run_id": "agent-run-test",
+                    "final_response": "Done.",
+                    "warnings": [],
+                    "errors": [],
+                }
+            ]
+
+    app = create_app()
+    app.dependency_overrides[get_repository] = lambda: repository
+    app.dependency_overrides[get_workspace_agent_service] = lambda: WorkspaceAgentService(
+        repository,
+        graph_factory=lambda _repository: RecordingGraph(),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/workspaces/workspace-1/agent",
+        json={
+            "message": "Use that previous point.",
+            "thread_id": "thread-1",
+            "conversation_history": [
+                {"role": "user", "text": "First question."},
+                {"role": "assistant", "text": "First answer."},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["thread_id"] == "thread-1"
+    assert captured["graph_input"]["conversation_history"] == [
+        {"role": "user", "text": "First question."},
+        {"role": "assistant", "text": "First answer."},
+    ]
+
+
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
 def test_modify_agent_request_returns_pending_review_and_persists_review() -> None:
     client, repository = _client_with_repository()

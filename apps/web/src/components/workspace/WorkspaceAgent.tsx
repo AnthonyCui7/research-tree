@@ -7,6 +7,7 @@ import type { AgentRunResult } from "../../lib/types";
 type WorkspaceAgentProps = {
   open: boolean;
   workspaceId: string;
+  sidebarCollapsed: boolean;
   onClose: () => void;
   onWorkspaceChanged: () => Promise<void>;
 };
@@ -19,10 +20,15 @@ type ConversationItem = {
 const models = [
   { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", detail: "Fast" },
 ] as const;
+const DESKTOP_SIDEBAR_WIDTH = 252;
+const AGENT_PANEL_MIN_WIDTH = 480;
+const MAX_CONVERSATION_HISTORY_TURNS = 12;
+const MAX_CONVERSATION_HISTORY_CHARACTERS = 4_000;
 
 export function WorkspaceAgent({
   open,
   workspaceId,
+  sidebarCollapsed,
   onClose,
   onWorkspaceChanged,
 }: WorkspaceAgentProps) {
@@ -34,6 +40,7 @@ export function WorkspaceAgent({
   const [error, setError] = useState<string | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(560);
+  const [threadId, setThreadId] = useState<string | null>(null);
   const [present, setPresent] = useState(open);
   const [closing, setClosing] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -81,10 +88,11 @@ export function WorkspaceAgent({
   }, [helpOpen, modelMenuOpen, onClose]);
 
   useEffect(() => {
+    if (!busy) return;
     const conversationElement = conversationRef.current;
     if (!conversationElement) return;
     conversationElement.scrollTo({ top: conversationElement.scrollHeight, behavior: "smooth" });
-  }, [busy, conversation]);
+  }, [busy]);
 
   useEffect(() => {
     const composer = composerRef.current;
@@ -109,10 +117,12 @@ export function WorkspaceAgent({
     setMessage("");
     setBusy(true);
     setError(null);
+    const history = conversationHistoryForRequest(conversation);
     setConversation((items) => [...items, { role: "user", text: request }]);
     try {
-      const next = await repositoryWorkspaceGateway.runAgent(workspaceId, request, model);
+      const next = await repositoryWorkspaceGateway.runAgent(workspaceId, request, model, history, threadId);
       setResult(next);
+      setThreadId(next.thread_id ?? threadId);
       const response = next.final_response || (next.status === "pending_review"
         ? "I have prepared a structural revision for your review."
         : "Analysis complete.");
@@ -151,12 +161,12 @@ export function WorkspaceAgent({
     if (window.innerWidth <= 980) return;
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = panelWidth;
+    const maxWidth = resizablePanelMaxWidth(sidebarCollapsed);
+    const startWidth = clampResizablePanelWidth(panelWidth, AGENT_PANEL_MIN_WIDTH, maxWidth);
     document.body.style.cursor = "ew-resize";
     document.body.style.userSelect = "none";
     const onPointerMove = (moveEvent: PointerEvent) => {
-      const maxWidth = window.innerWidth - 80;
-      setPanelWidth(Math.min(maxWidth, Math.max(480, startWidth + startX - moveEvent.clientX)));
+      setPanelWidth(clampResizablePanelWidth(startWidth + startX - moveEvent.clientX, AGENT_PANEL_MIN_WIDTH, maxWidth));
     };
     const onPointerUp = () => {
       document.body.style.cursor = "";
@@ -180,7 +190,10 @@ export function WorkspaceAgent({
       className="utility-panel agent-panel"
       data-state={closing ? "closing" : "open"}
       aria-label="Workspace Assistant"
-      style={{ "--agent-panel-width": `${panelWidth}px` } as CSSProperties}
+      style={{
+        "--agent-panel-width": `${clampResizablePanelWidth(panelWidth, AGENT_PANEL_MIN_WIDTH, resizablePanelMaxWidth(sidebarCollapsed))}px`,
+        "--agent-panel-max-width": `${resizablePanelMaxWidth(sidebarCollapsed)}px`,
+      } as CSSProperties}
     >
       <button className="agent-resize-handle" type="button" onPointerDown={beginResize} aria-label="Resize Assistant panel"><span className="drag-pill" aria-hidden="true" /></button>
       <header className="agent-header">
@@ -213,10 +226,9 @@ export function WorkspaceAgent({
             data-pending={busy && item.role === "user" && index === conversation.length - 1}
             key={`${item.role}-${index}`}
           >
-            <span className="agent-message-label">{item.role === "user" ? "You" : "Assistant"}</span>
             {item.role === "user" ? <p>{item.text}</p> : (
               <div className="agent-message-content">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayMarkdown(item.text)}</ReactMarkdown>
               </div>
             )}
           </div>
@@ -314,6 +326,67 @@ function diffLabel(diff: Record<string, unknown> | null): string {
   if (!diff) return "Structural revision ready for review.";
   const count = Number(diff.operation_count ?? diff.changed_item_count ?? 0);
   return count > 0 ? `${count} structural change${count === 1 ? "" : "s"} prepared.` : "Structural revision ready for review.";
+}
+
+function resizablePanelMaxWidth(sidebarCollapsed: boolean): number {
+  return Math.max(0, window.innerWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH));
+}
+
+function clampResizablePanelWidth(width: number, minWidth: number, maxWidth: number): number {
+  const effectiveMinWidth = Math.min(minWidth, maxWidth);
+  return Math.min(maxWidth, Math.max(effectiveMinWidth, width));
+}
+
+function displayMarkdown(text: string): string {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  return lines.map((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+    if (isPlainAssistantHeading(lines, index)) {
+      return `## ${trimmed}`;
+    }
+    if (isBracketedTexLine(trimmed)) {
+      return texLineToReadableText(trimmed);
+    }
+    return line;
+  }).join("\n");
+}
+
+function isPlainAssistantHeading(lines: string[], index: number): boolean {
+  const line = lines[index].trim();
+  if (line.length > 72 || /[.!?:;,]$/.test(line)) return false;
+  if (/^(#{1,6}|\d+\.|[-*+]\s|>|```)/.test(line)) return false;
+  if (!/[A-Za-z]/.test(line)) return false;
+  const previous = lines[index - 1]?.trim();
+  const next = lines[index + 1]?.trim();
+  if (index > 0 && previous) return false;
+  if (!next) return false;
+  const words = line.split(/\s+/);
+  return words.length <= 8;
+}
+
+function isBracketedTexLine(line: string): boolean {
+  return line.startsWith("[") && line.endsWith("]") && /\\(text|rightarrow)/.test(line);
+}
+
+function texLineToReadableText(line: string): string {
+  return line
+    .replace(/^\[\s*/, "")
+    .replace(/\s*\]$/, "")
+    .replace(/\\text\{([^}]+)\}/g, "$1")
+    .replace(/\\rightarrow/g, "→")
+    .replace(/\\+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function conversationHistoryForRequest(
+  conversation: ConversationItem[],
+): Array<{ role: "user" | "assistant"; text: string }> {
+  return conversation.slice(-MAX_CONVERSATION_HISTORY_TURNS).map((item) => ({
+    role: item.role === "agent" ? "assistant" : "user",
+    text: item.text.slice(0, MAX_CONVERSATION_HISTORY_CHARACTERS),
+  }));
 }
 
 function messageFrom(error: unknown): string {

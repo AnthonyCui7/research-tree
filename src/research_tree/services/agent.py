@@ -29,6 +29,7 @@ class WorkspaceAgentService:
         workspace_id: str,
         *,
         message: str,
+        conversation_history: list[dict[str, str]] | None = None,
         thread_id: str | None = None,
         allow_pipeline_rerun: bool = False,
         require_approval: bool = True,
@@ -60,6 +61,9 @@ class WorkspaceAgentService:
                 {
                     "workspace_id": safe_workspace_id,
                     "user_message": message,
+                    "conversation_history": _bounded_conversation_history(
+                        conversation_history or []
+                    ),
                     "thread_id": thread_id,
                     "allow_pipeline_rerun": allow_pipeline_rerun,
                     "require_approval": require_approval,
@@ -101,6 +105,23 @@ class WorkspaceAgentService:
 
 def _default_graph_factory(repository: WorkspaceRepository) -> Any:
     return build_workspace_agent_graph(workspace_repository=repository)
+
+
+def _bounded_conversation_history(
+    history: list[dict[str, str]],
+    *,
+    max_turns: int = 12,
+    max_characters_per_turn: int = 4_000,
+) -> list[dict[str, str]]:
+    bounded: list[dict[str, str]] = []
+    for item in history[-max_turns:]:
+        role = str(item.get("role") or "")
+        if role not in {"user", "assistant"}:
+            continue
+        text = str(item.get("text") or "")[:max_characters_per_turn].strip()
+        if text:
+            bounded.append({"role": role, "text": text})
+    return bounded
 
 
 def _normalized_status(output: dict[str, Any], *, interrupted: bool) -> str:

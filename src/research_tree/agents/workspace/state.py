@@ -25,6 +25,7 @@ WorkspaceAgentStatus = Literal[
 class WorkspaceAgentState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     user_message: str
+    conversation_history: list[dict[str, str]]
     final_response: str | None
 
     agent_run_id: str
@@ -88,6 +89,7 @@ class WorkspaceAgentInput(TypedDict, total=False):
     workspace: dict[str, Any] | None
     candidate_artifact: dict[str, Any] | None
     candidate_artifact_path: str | None
+    conversation_history: list[dict[str, str]]
     user_message: str
     user_id: str | None
     thread_id: str | None

@@ -12,12 +12,14 @@ from research_tree.workspace.prompts import (
 def build_intent_prompt(
     *,
     user_message: str,
+    conversation_history: list[Mapping[str, Any]] | None = None,
     workspace_summary: Mapping[str, Any] | None,
 ) -> str:
     return _prompt(
         "Classify the user's Research Tree workspace request.",
         {
             "user_message": user_message,
+            "conversation_history": _conversation_history_for_prompt(conversation_history),
             "workspace_summary": workspace_summary or {},
             "allowed_intents": [
                 "chat",
@@ -44,6 +46,7 @@ def build_intent_prompt(
 def build_next_action_prompt(
     *,
     user_message: str,
+    conversation_history: list[Mapping[str, Any]] | None = None,
     intent: Mapping[str, Any],
     workspace_context: Mapping[str, Any],
     action_history: list[Mapping[str, Any]],
@@ -54,6 +57,7 @@ def build_next_action_prompt(
         "Choose the next safe action for the single Research Tree workspace agent.",
         {
             "user_message": user_message,
+            "conversation_history": _conversation_history_for_prompt(conversation_history),
             "intent": intent,
             "workspace_context": workspace_context,
             "action_history": action_history,
@@ -83,12 +87,14 @@ def build_next_action_prompt(
 def build_workspace_chat_prompt(
     *,
     user_message: str,
+    conversation_history: list[Mapping[str, Any]] | None = None,
     workspace_context: Mapping[str, Any],
 ) -> str:
     return _prompt(
         "Answer as a Research Tree expert over this workspace.",
         {
             "user_message": user_message,
+            "conversation_history": _conversation_history_for_prompt(conversation_history),
             "workspace_context": workspace_context,
             "rules": [
                 "Do not mutate the workspace.",
@@ -110,12 +116,14 @@ def build_workspace_chat_prompt(
 def build_workspace_critique_prompt(
     *,
     user_message: str,
+    conversation_history: list[Mapping[str, Any]] | None = None,
     workspace_context: Mapping[str, Any],
 ) -> str:
     return _prompt(
         "Critique the Research Tree workspace without mutating it.",
         {
             "user_message": user_message,
+            "conversation_history": _conversation_history_for_prompt(conversation_history),
             "workspace_context": workspace_context,
             "look_for": [
                 "weak branches",
@@ -215,6 +223,20 @@ def _workspace_mutation_rules() -> list[str]:
         "Do not exceed the visible paper budget without an explicit reason.",
         "Preserve provenance where possible.",
     ]
+
+
+def _conversation_history_for_prompt(
+    history: list[Mapping[str, Any]] | None,
+) -> list[dict[str, str]]:
+    prompt_history: list[dict[str, str]] = []
+    for item in history or []:
+        role = str(item.get("role") or "")
+        if role not in {"user", "assistant"}:
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            prompt_history.append({"role": role, "text": text})
+    return prompt_history
 
 
 def _prompt(instruction: str, payload: Mapping[str, Any]) -> str:

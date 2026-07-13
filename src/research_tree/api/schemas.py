@@ -105,6 +105,7 @@ class WorkspaceReviewResponse(BaseModel):
 
 class AgentRunRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
+    conversation_history: list[dict[str, str]] = Field(default_factory=list, max_length=24)
     thread_id: str | None = None
     allow_pipeline_rerun: bool = False
     require_approval: bool = True

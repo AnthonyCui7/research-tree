@@ -5,9 +5,13 @@ import { authorLine, publicationDate } from "./TreeNode";
 type FloatingInspectorProps = {
   node: TreeNodeViewModel | null;
   onClose: () => void;
+  sidebarCollapsed: boolean;
 };
 
-export function FloatingInspector({ node, onClose }: FloatingInspectorProps) {
+const DESKTOP_SIDEBAR_WIDTH = 252;
+const INSPECTOR_MIN_WIDTH = 420;
+
+export function FloatingInspector({ node, onClose, sidebarCollapsed }: FloatingInspectorProps) {
   const [visibleNode, setVisibleNode] = useState<TreeNodeViewModel | null>(node);
   const [isClosing, setIsClosing] = useState(false);
   const [panelWidth, setPanelWidth] = useState(510);
@@ -44,12 +48,12 @@ export function FloatingInspector({ node, onClose }: FloatingInspectorProps) {
     if (window.innerWidth <= 980) return;
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = panelWidth;
+    const maxWidth = resizablePanelMaxWidth(sidebarCollapsed);
+    const startWidth = clampResizablePanelWidth(panelWidth, INSPECTOR_MIN_WIDTH, maxWidth);
     document.body.style.cursor = "ew-resize";
     document.body.style.userSelect = "none";
     const onPointerMove = (moveEvent: PointerEvent) => {
-      const maxWidth = window.innerWidth - 80;
-      setPanelWidth(Math.min(maxWidth, Math.max(420, startWidth + startX - moveEvent.clientX)));
+      setPanelWidth(clampResizablePanelWidth(startWidth + startX - moveEvent.clientX, INSPECTOR_MIN_WIDTH, maxWidth));
     };
     const onPointerUp = () => {
       document.body.style.cursor = "";
@@ -64,6 +68,7 @@ export function FloatingInspector({ node, onClose }: FloatingInspectorProps) {
   if (!visibleNode) {
     return null;
   }
+  const sourcePaper = visibleNode.kind === "paper" ? visibleNode : visibleNode.anchorPaper;
 
   return (
     <aside
@@ -71,7 +76,10 @@ export function FloatingInspector({ node, onClose }: FloatingInspectorProps) {
       className="floating-inspector"
       data-state={isClosing ? "closing" : "open"}
       aria-label="Selected node details"
-      style={{ "--inspector-panel-width": `${panelWidth}px` } as CSSProperties}
+      style={{
+        "--inspector-panel-width": `${clampResizablePanelWidth(panelWidth, INSPECTOR_MIN_WIDTH, resizablePanelMaxWidth(sidebarCollapsed))}px`,
+        "--inspector-panel-max-width": `${resizablePanelMaxWidth(sidebarCollapsed)}px`,
+      } as CSSProperties}
       onAnimationEnd={() => {
         if (isClosing) {
           if (nextNodeRef.current) {
@@ -109,9 +117,18 @@ export function FloatingInspector({ node, onClose }: FloatingInspectorProps) {
         {visibleNode.kind === "paper" ? <PaperLearningDetails paper={visibleNode} /> : null}
       </div>
 
-      {visibleNode.kind === "paper" ? <PaperSourceActions paper={visibleNode} /> : null}
+      {sourcePaper ? <PaperSourceActions paper={sourcePaper} /> : null}
     </aside>
   );
+}
+
+function resizablePanelMaxWidth(sidebarCollapsed: boolean): number {
+  return Math.max(0, window.innerWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH));
+}
+
+function clampResizablePanelWidth(width: number, minWidth: number, maxWidth: number): number {
+  const effectiveMinWidth = Math.min(minWidth, maxWidth);
+  return Math.min(maxWidth, Math.max(effectiveMinWidth, width));
 }
 
 function RootLearningDetails({
@@ -178,11 +195,11 @@ function PaperReferenceDetails({
           <h3>{paper.title}</h3>
         </div>
       ) : null}
-      <MetadataRow label="Authors" value={fullAuthorList(paper.authors)} />
+      <p className="paper-authors-full">{fullAuthorList(paper.authors)}</p>
       <PaperFacts paper={paper} />
-      <TextSection label="Summary" value={paper.tldr || "Unavailable"} />
-      <TextSection label="Why it matters" value={paper.importance || "Unavailable"} />
-      {paper.abstract ? <TextSection label="Abstract" value={paper.abstract} /> : null}
+      <LearningSection label="Summary" value={paper.tldr || "Unavailable"} />
+      <LearningSection label="Why it matters" value={paper.importance || "Unavailable"} />
+      {paper.abstract ? <AbstractSection abstract={paper.abstract} /> : null}
     </div>
   );
 }
@@ -277,15 +294,6 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   );
 }
 
-function TextSection({ label, value }: { label: string; value: string }) {
-  return (
-    <section className="paper-text-section">
-      <span className={`metadata-label ${sectionLabelClass(label)}`}>{label}</span>
-      <p>{value}</p>
-    </section>
-  );
-}
-
 function sectionLabelClass(label: string): string {
   return `paper-section-label paper-section-${label.toLowerCase().replace(/[^a-z]+/g, "-")}`;
 }
@@ -336,15 +344,6 @@ function headingLabel(kind: TreeNodeViewModel["kind"]): string {
     return "Branch";
   }
   return "Paper";
-}
-
-function MetadataRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="metadata-row">
-      <span className="metadata-label">{label}</span>
-      <p>{value}</p>
-    </div>
-  );
 }
 
 function TagList({ tags, label }: { tags: string[]; label: string }) {

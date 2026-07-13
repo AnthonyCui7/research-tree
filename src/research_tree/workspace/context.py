@@ -20,10 +20,11 @@ def build_workspace_chat_context(
     *,
     workspace: Mapping[str, Any],
     candidate_artifact: Mapping[str, Any] | None = None,
-    include_similar_papers: bool = True,
+    include_similar_papers: bool = False,
     max_similar_per_paper: int = 10,
     target_branch_id: str | None = None,
     target_paper_ids: list[str] | None = None,
+    similar_papers_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_paper_set = set(target_paper_ids or [])
     visible_cards = _visible_paper_cards(
@@ -32,7 +33,7 @@ def build_workspace_chat_context(
         max_similar_per_paper=max_similar_per_paper,
         target_paper_ids=target_paper_set,
     )
-    similar_papers_context = {
+    visible_similar_papers_context = {
         paper_id: card.get("similar_papers") or []
         for paper_id, card in visible_cards.items()
         if card.get("similar_papers")
@@ -45,15 +46,20 @@ def build_workspace_chat_context(
         "workspace_id": workspace.get("workspace_id"),
         "topic": workspace.get("topic"),
         "title": workspace.get("title"),
+        "workspace": _workspace_prompt_payload(workspace),
         "root_overview": _root_overview(workspace),
         "branch_summaries": branch_summaries,
         "paper_paths": _paper_paths(workspace, target_branch_id=target_branch_id),
         "reading_order": _reading_order(workspace, target_paper_set),
         "visible_paper_cards": visible_cards,
         "visible_paper_count": len((workspace.get("paper_cards") or {})),
-        "similar_papers_context": similar_papers_context,
-        "off_path_papers": _off_path_papers(workspace),
-        "candidate_pool_summary": _candidate_pool_summary(candidate_artifact),
+        "similar_papers_context": (
+            dict(similar_papers_context)
+            if isinstance(similar_papers_context, Mapping)
+            else visible_similar_papers_context
+        ),
+        "off_path_papers": [],
+        "source_candidate_artifact": _source_candidate_artifact_reference(candidate_artifact),
         "provenance_warnings": _provenance_warnings(workspace, candidate_artifact),
     }
 
@@ -185,20 +191,10 @@ def _visible_paper_cards(
             continue
         if target_paper_ids and str(paper_id) not in target_paper_ids:
             continue
-        payload = {
-            "paper_id": card.get("paper_id") or paper_id,
-            "title": card.get("title"),
-            "authors": card.get("authors") or [],
-            "year": card.get("year"),
-            "venue": card.get("venue"),
-            "primary_tree_location": card.get("primary_tree_location"),
-            "secondary_tags": card.get("secondary_tags") or [],
-            "paper_role": card.get("paper_role"),
-            "importance": card.get("importance"),
-            "core_idea": card.get("core_idea"),
-            "read_before": card.get("read_before") or [],
-            "read_after": card.get("read_after") or [],
-        }
+        payload = dict(card)
+        payload["paper_id"] = payload.get("paper_id") or paper_id
+        if not include_similar_papers:
+            payload.pop("similar_papers", None)
         if include_similar_papers:
             payload["similar_papers"] = list(card.get("similar_papers") or [])[
                 :max_similar_per_paper
@@ -236,20 +232,45 @@ def _off_path_papers(workspace: Mapping[str, Any]) -> list[dict[str, Any]]:
     return off_path
 
 
-def _candidate_pool_summary(
+def _source_candidate_artifact_reference(
     candidate_artifact: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     if not isinstance(candidate_artifact, Mapping):
-        return {"candidate_count": 0, "candidates": []}
-    candidates = candidate_pool_from_artifact(candidate_artifact)
+        return {}
     return {
         "schema_version": candidate_artifact.get("schema_version"),
         "topic": candidate_artifact.get("topic"),
+        "workspace": candidate_artifact.get("workspace"),
+        "candidate_set_purpose": candidate_artifact.get("candidate_set_purpose"),
         "candidate_pool_order": candidate_artifact.get("candidate_pool_order"),
         "citation_age_exponent": candidate_artifact.get("citation_age_exponent"),
-        "candidate_count": len(candidates),
-        "candidates": candidates[:50],
+        "non_survey_count": len(candidate_artifact.get("non_survey_papers") or []),
+        "survey_count": len(candidate_artifact.get("survey_papers") or []),
     }
+
+
+def _workspace_prompt_payload(workspace: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(workspace)
+    payload["source_candidate_artifact"] = _source_candidate_artifact_reference(
+        workspace.get("source_candidate_artifact")
+        if isinstance(workspace.get("source_candidate_artifact"), Mapping)
+        else None
+    )
+    payload["discarded_candidates"] = []
+    paper_cards = payload.get("paper_cards")
+    if isinstance(paper_cards, Mapping):
+        payload["paper_cards"] = {
+            str(paper_id): _paper_card_without_external_candidates(card)
+            for paper_id, card in paper_cards.items()
+            if isinstance(card, Mapping)
+        }
+    return payload
+
+
+def _paper_card_without_external_candidates(card: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(card)
+    payload.pop("similar_papers", None)
+    return payload
 
 
 def _provenance_warnings(

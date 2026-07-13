@@ -128,7 +128,11 @@ export function AppShell({
                 onSelectNode={onSelectNode}
               />
               {utilityPanel === null ? (
-                <FloatingInspector node={selectedNode} onClose={onCloseInspector} />
+                <FloatingInspector
+                  node={selectedNode}
+                  onClose={onCloseInspector}
+                  sidebarCollapsed={sidebarCollapsed}
+                />
               ) : null}
               {activeWorkspace && tree?.currentVersionHash ? (
                 <WorkspaceHistory
@@ -146,6 +150,7 @@ export function AppShell({
                 <WorkspaceAgent
                   open={utilityPanel === "agent"}
                   workspaceId={activeWorkspace.workspace_id}
+                  sidebarCollapsed={sidebarCollapsed}
                   onClose={onCloseUtility}
                   onWorkspaceChanged={onWorkspaceChanged}
                 />

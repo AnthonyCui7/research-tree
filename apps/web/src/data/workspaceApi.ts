@@ -43,7 +43,13 @@ export type WorkspaceGateway = {
   cancelPipelineRun: (runId: string) => Promise<PipelineRun>;
   restoreWorkspace: (workspaceId: string, versionHash: string, expectedHash: string) => Promise<void>;
   deleteWorkspace: (workspaceId: string, expectedHash: string) => Promise<void>;
-  runAgent: (workspaceId: string, message: string, model: string) => Promise<AgentRunResult>;
+  runAgent: (
+    workspaceId: string,
+    message: string,
+    model: string,
+    conversationHistory?: Array<{ role: "user" | "assistant"; text: string }>,
+    threadId?: string | null,
+  ) => Promise<AgentRunResult>;
   approveReview: (workspaceId: string, reviewId: string) => Promise<void>;
   rejectReview: (workspaceId: string, reviewId: string) => Promise<void>;
 };
@@ -114,10 +120,12 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     });
   },
 
-  async runAgent(workspaceId, message, model) {
+  async runAgent(workspaceId, message, model, conversationHistory = [], threadId = null) {
     return postJson<AgentRunResult>(`/workspaces/${encodeURIComponent(workspaceId)}/agent`, {
       message,
       model,
+      conversation_history: conversationHistory,
+      thread_id: threadId,
       require_approval: true,
       allow_pipeline_rerun: true,
     });

@@ -145,6 +145,7 @@ class WorkspaceAgentNodes:
             "errors": errors,
             "node_trace": [_trace("load_workspace")],
             "messages": [{"role": "user", "content": state.get("user_message", "")}],
+            "conversation_history": state.get("conversation_history") or [],
         }
 
     def classify_intent(
@@ -153,6 +154,7 @@ class WorkspaceAgentNodes:
     ) -> Command[Literal["build_workspace_context"]]:
         prompt = build_intent_prompt(
             user_message=state.get("user_message", ""),
+            conversation_history=state.get("conversation_history") or [],
             workspace_summary=state.get("workspace_summary"),
         )
         intent = self.llm_client.complete_structured(
@@ -181,16 +183,27 @@ class WorkspaceAgentNodes:
             set(intent.get("target_paper_ids") or [])
             | set(next_action.get("target_paper_ids") or [])
         )
-        include_similar_context = _is_similar_paper_adjustment(state) or bool(
-            target_paper_ids
+        similar_papers_context = (
+            _similar_papers_context_for_scope(
+                workspace=workspace,
+                paper_ids=_similar_paper_target_ids(workspace, {
+                    "target_branch_id": target_branch_id,
+                    "target_paper_ids": target_paper_ids,
+                }),
+                repository=self.workspace_repository,
+                repo_root=self.repo_root,
+            )
+            if _needs_similar_paper_context(state)
+            else {}
         )
         context = build_workspace_chat_context(
             workspace=workspace,
             candidate_artifact=state.get("candidate_artifact"),
-            include_similar_papers=include_similar_context,
+            include_similar_papers=False,
             max_similar_per_paper=5,
             target_branch_id=target_branch_id,
             target_paper_ids=target_paper_ids,
+            similar_papers_context=similar_papers_context,
         )
         content_warnings: list[str] = []
         if self.workspace_repository is not None:
@@ -209,7 +222,7 @@ class WorkspaceAgentNodes:
         return {
             "chat_context": context,
             "modification_context": context,
-            "similar_papers_context": context.get("similar_papers_context") or {},
+            "similar_papers_context": similar_papers_context,
             "off_path_papers": context.get("off_path_papers") or [],
             "workspace_summary": build_workspace_summary(workspace),
             "warnings": content_warnings,
@@ -242,6 +255,7 @@ class WorkspaceAgentNodes:
 
         prompt = build_next_action_prompt(
             user_message=state.get("user_message", ""),
+            conversation_history=state.get("conversation_history") or [],
             intent=state.get("intent") or {},
             workspace_context=state.get("chat_context") or {},
             action_history=state.get("action_history") or [],
@@ -283,6 +297,7 @@ class WorkspaceAgentNodes:
     def answer_chat(self, state: WorkspaceAgentState) -> dict[str, Any]:
         prompt = build_workspace_chat_prompt(
             user_message=state.get("user_message", ""),
+            conversation_history=state.get("conversation_history") or [],
             workspace_context=state.get("chat_context") or {},
         )
         answer = self.llm_client.complete_text(
@@ -300,6 +315,7 @@ class WorkspaceAgentNodes:
     def critique_workspace(self, state: WorkspaceAgentState) -> dict[str, Any]:
         prompt = build_workspace_critique_prompt(
             user_message=state.get("user_message", ""),
+            conversation_history=state.get("conversation_history") or [],
             workspace_context=state.get("chat_context") or {},
         )
         critique = self.llm_client.complete_structured(
@@ -428,7 +444,10 @@ class WorkspaceAgentNodes:
         if _is_similar_paper_adjustment(state):
             return self._adjust_similar_papers(state, next_action)
         proposed = self.workspace_constructor(
-            candidate_artifact=state.get("candidate_artifact"),
+            candidate_artifact=_workspace_only_candidate_artifact(
+                state.get("workspace"),
+                state.get("candidate_artifact"),
+            ),
             base_workspace=state.get("workspace"),
             construction_mode="agent_modify_workspace",
             agent_instruction=next_action.get("modification_instruction")
@@ -638,7 +657,10 @@ class WorkspaceAgentNodes:
         validation_summary = state.get("validation_summary") or {}
         next_action = state.get("next_action") or {}
         proposed = self.workspace_constructor(
-            candidate_artifact=state.get("candidate_artifact"),
+            candidate_artifact=_workspace_only_candidate_artifact(
+                state.get("workspace"),
+                state.get("candidate_artifact"),
+            ),
             base_workspace=state.get("workspace"),
             construction_mode="workspace_repair",
             agent_instruction=next_action.get("modification_instruction")
@@ -1133,6 +1155,10 @@ def _paper_ids_for_explanation(
 
 
 def _is_similar_paper_adjustment(state: Mapping[str, Any]) -> bool:
+    return _needs_similar_paper_context(state)
+
+
+def _needs_similar_paper_context(state: Mapping[str, Any]) -> bool:
     message = str(state.get("user_message") or "").casefold()
     next_action = state.get("next_action")
     instruction = (
@@ -1142,6 +1168,146 @@ def _is_similar_paper_adjustment(state: Mapping[str, Any]) -> bool:
     )
     text = f"{message} {instruction}"
     return "similar paper" in text or "related paper" in text
+
+
+def _similar_papers_context_for_scope(
+    *,
+    workspace: Mapping[str, Any],
+    paper_ids: set[str],
+    repository: WorkspaceRepository | None,
+    repo_root: Path,
+) -> dict[str, Any]:
+    cards = workspace.get("paper_cards")
+    if not isinstance(cards, Mapping) or not paper_ids:
+        return {}
+
+    paper_database_by_id: dict[str, Any] = {}
+    paper_database_path = _paper_database_path_for_workspace(
+        workspace,
+        repository,
+        repo_root,
+    )
+    if paper_database_path is not None:
+        paper_database_by_id = {
+            paper.paper_id: paper
+            for paper in paper_database_from_artifact(
+                load_json_artifact(paper_database_path)
+            )
+        }
+
+    context: dict[str, Any] = {}
+    for paper_id in sorted(paper_ids):
+        card = cards.get(paper_id)
+        if not isinstance(card, Mapping):
+            continue
+        similar_papers = [
+            _similar_paper_context_item(item, paper_database_by_id)
+            for item in card.get("similar_papers") or []
+            if isinstance(item, Mapping)
+        ]
+        if similar_papers:
+            context[paper_id] = {
+                "source_workspace_paper": {
+                    "paper_id": card.get("paper_id") or paper_id,
+                    "title": card.get("title"),
+                    "primary_tree_location": card.get("primary_tree_location"),
+                },
+                "similar_papers": similar_papers,
+            }
+    return context
+
+
+def _similar_paper_context_item(
+    item: Mapping[str, Any],
+    paper_database_by_id: Mapping[str, Any],
+) -> dict[str, Any]:
+    paper_id = str(item.get("paper_id") or "")
+    paper = paper_database_by_id.get(paper_id)
+    if paper is not None:
+        return {
+            "paper_id": paper.paper_id,
+            "title": paper.title,
+            "authors": paper.authors,
+            "year": paper.year,
+            "publication_date": paper.publication_date,
+            "venue": paper.venue,
+            "abstract": paper.abstract,
+            "tldr": paper.tldr,
+            "citation_count": paper.citation_count,
+            "primary_link": paper.primary_link,
+            "arxiv_link": paper.arxiv_link,
+            "s2_link": paper.s2_link,
+            "provider": item.get("provider"),
+            "rank": item.get("rank"),
+            "age_adjusted_citation_score": item.get("age_adjusted_citation_score"),
+            "similarity_score": item.get("similarity_score"),
+            "cross_encoder_score": item.get("cross_encoder_score"),
+        }
+    return {
+        "paper_id": paper_id,
+        "title": item.get("title"),
+        "authors": item.get("authors") or [],
+        "year": item.get("year"),
+        "publication_date": item.get("publication_date"),
+        "venue": item.get("venue"),
+        "citation_count": item.get("citation_count"),
+        "primary_link": item.get("primary_link"),
+        "arxiv_link": item.get("arxiv_link"),
+        "s2_link": item.get("s2_link"),
+        "provider": item.get("provider"),
+        "rank": item.get("rank"),
+        "age_adjusted_citation_score": item.get("age_adjusted_citation_score"),
+        "similarity_score": item.get("similarity_score"),
+        "cross_encoder_score": item.get("cross_encoder_score"),
+    }
+
+
+def _workspace_only_candidate_artifact(
+    workspace: Any,
+    candidate_artifact: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(workspace, Mapping):
+        return None
+    cards = workspace.get("paper_cards")
+    if not isinstance(cards, Mapping):
+        return None
+    visible_ids = {str(paper_id) for paper_id in cards}
+    source = candidate_artifact if isinstance(candidate_artifact, Mapping) else {}
+    artifact: dict[str, Any] = {
+        "schema_version": source.get("schema_version"),
+        "topic": source.get("topic") or workspace.get("topic"),
+        "workspace": source.get("workspace"),
+        "candidate_set_purpose": (
+            "Workspace-only prompt context; hidden candidate papers omitted."
+        ),
+        "candidate_pool_order": source.get("candidate_pool_order"),
+        "citation_age_exponent": source.get("citation_age_exponent"),
+        "non_survey_papers": [],
+        "survey_papers": [],
+    }
+    source_by_id: dict[str, Mapping[str, Any]] = {}
+    if isinstance(candidate_artifact, Mapping):
+        for key in ("non_survey_papers", "survey_papers"):
+            for item in candidate_artifact.get(key) or []:
+                if isinstance(item, Mapping) and item.get("paper_id"):
+                    source_by_id[str(item["paper_id"])] = item
+    for paper_id, card in cards.items():
+        if str(paper_id) not in visible_ids or not isinstance(card, Mapping):
+            continue
+        source_paper = source_by_id.get(str(paper_id))
+        payload = dict(source_paper) if source_paper is not None else dict(card)
+        payload["paper_id"] = payload.get("paper_id") or str(paper_id)
+        payload["is_survey"] = bool(payload.get("is_survey")) or _card_is_survey(card)
+        payload.pop("similar_papers", None)
+        if _card_is_survey(card):
+            artifact["survey_papers"].append(payload)
+        else:
+            artifact["non_survey_papers"].append(payload)
+    return artifact
+
+
+def _card_is_survey(card: Mapping[str, Any]) -> bool:
+    return "survey" in str(card.get("paper_role") or "").casefold()
 
 
 def _similar_paper_target_ids(
