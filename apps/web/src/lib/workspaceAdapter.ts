@@ -10,7 +10,6 @@ import type {
   RootTreeNode,
   TreeEdgeViewModel,
   TreeNodeViewModel,
-  TreePathLabelViewModel,
   TreeViewModel,
   WorkspaceDocument,
 } from "./types";
@@ -27,20 +26,29 @@ const BRANCH_FAMILY_COUNT = 8;
 const NODE_PADDING = 14;
 const NODE_BORDER = 2;
 const NODE_GAP = 6;
-const NODE_FONT_FAMILY = "Inter, sans-serif";
-let cachedTextMeasureContext: CanvasRenderingContext2D | null | undefined;
+const NODE_VERTICAL_GUARD = 12;
+
+/** Real card heights measured from the DOM, keyed by tree node id. */
+export type MeasuredNodeHeights = Record<string, number>;
 
 type LayoutState = {
   nextY: number;
   nodes: TreeNodeViewModel[];
   edges: TreeEdgeViewModel[];
-  pathLabels: TreePathLabelViewModel[];
   pathStarts: { branchId: string; paperNodeId: string }[];
-  paperCountByBranch: Map<string, number>;
   maxRight: number;
 };
 
-export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeViewModel {
+/**
+ * Builds the tree view model. Without `measuredHeights`, node heights are
+ * character-count estimates — good enough for an unpainted first pass. The
+ * canvas re-runs this with real DOM-measured card heights (see TreeCanvas),
+ * which is the layout that actually paints.
+ */
+export function normalizeWorkspaceForTree(
+  workspace: WorkspaceDocument,
+  measuredHeights?: MeasuredNodeHeights,
+): TreeViewModel {
   const branches = workspace.tree.nodes.filter((node) => Boolean(node.node_id));
   const branchesById = new Map(branches.map((branch) => [branch.node_id, branch]));
   const childrenByParent = childBranches(branches, workspace.tree.root_node_id);
@@ -50,18 +58,21 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
       .filter((branch) => branch.is_leaf)
       .map((branch, index) => [branch.node_id, index % BRANCH_FAMILY_COUNT]),
   );
-  const rootSize = rootNodeSize(workspace.root, anchorPaper(workspace, workspace.root.survey_anchor_paper_ids));
+  const rootId = workspace.tree.root_node_id || workspace.root.node_id || "root";
+  const rootNodeViewId = workspace.root.node_id || rootId;
+  const rootSize = rootNodeSize(
+    workspace.root,
+    anchorPaper(workspace, workspace.root.survey_anchor_paper_ids),
+    measuredHeights?.[rootNodeViewId],
+  );
   const state: LayoutState = {
     nextY: TOP_PADDING,
     nodes: [],
     edges: [],
-    pathLabels: [],
     pathStarts: [],
-    paperCountByBranch: new Map(),
     maxRight: ROOT_POSITION_X + rootSize.width,
   };
 
-  const rootId = workspace.tree.root_node_id || workspace.root.node_id || "root";
   const rootChildren = childrenByParent.get(rootId) ?? [];
   const childCenters = rootChildren
     .map((branchId) => layoutBranch({
@@ -72,24 +83,22 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
       childrenByParent,
       pathsByBranch,
       familyByBranch,
+      measuredHeights,
       state,
     }))
     .filter((center): center is number => center !== null);
 
   const rootCenterY = average(childCenters, TOP_PADDING + rootSize.height / 2);
   const rootNode: RootTreeNode = {
-    id: workspace.root.node_id || rootId,
+    id: rootNodeViewId,
     kind: "root",
     title: workspace.root.label || workspace.title,
     overview: workspace.root.overview,
     whyItMatters: workspace.root.why_it_matters || workspace.root.overview,
-    surveyType: workspace.root.root_survey_type,
     suggestedReadingDirection: workspace.root.suggested_reading_direction,
     keyTerms: workspace.root.key_terms,
     openQuestions: workspace.root.open_questions,
-    paperCount: workspace.root.representative_paper_ids.length,
     branchCount: branches.length,
-    pathCount: workspace.paper_paths.length,
     anchorPaper: anchorPaper(workspace, workspace.root.survey_anchor_paper_ids),
     position: {
       x: ROOT_POSITION_X,
@@ -140,9 +149,7 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
     title: workspace.title,
     paperCount: Object.keys(workspace.paper_cards).length,
     branchCount: branches.length,
-    pathCount: workspace.paper_paths.length,
     currentVersionHash: currentVersion,
-    versionCount: workspace.workspace_versions?.length ?? 0,
     canvas: {
       width: Math.max(1040, state.maxRight + 48),
       height: Math.max(520, state.nextY + BOTTOM_PADDING),
@@ -151,7 +158,6 @@ export function normalizeWorkspaceForTree(workspace: WorkspaceDocument): TreeVie
     nodes: state.nodes,
     nodesById: Object.fromEntries(state.nodes.map((node) => [node.id, node])),
     edges: state.edges,
-    pathLabels: state.pathLabels,
   };
 }
 
@@ -163,6 +169,7 @@ function layoutBranch({
   childrenByParent,
   pathsByBranch,
   familyByBranch,
+  measuredHeights,
   state,
 }: {
   workspace: WorkspaceDocument;
@@ -172,6 +179,7 @@ function layoutBranch({
   childrenByParent: Map<string, string[]>;
   pathsByBranch: Map<string, PaperPath[]>;
   familyByBranch: Map<string, number>;
+  measuredHeights?: MeasuredNodeHeights;
   state: LayoutState;
 }): number | null {
   const branch = branchesById.get(branchId);
@@ -190,26 +198,26 @@ function layoutBranch({
         childrenByParent,
         pathsByBranch,
         familyByBranch,
+        measuredHeights,
         state,
       }),
     )
     .filter((center): center is number => center !== null);
   const paths = pathsByBranch.get(branch.node_id) ?? [];
   const pathCenters = paths
-    .map((path) => layoutPath({ workspace, branch, branchX, path, familyByBranch, state }))
+    .map((path) => layoutPath({ workspace, branch, branchX, path, familyByBranch, measuredHeights, state }))
     .filter((center): center is number => center !== null);
   const childOrPathCenters = [...childCenters, ...pathCenters];
   const branchAnchor = anchorPaper(
     workspace,
     branch.survey_anchor_paper_id ? [branch.survey_anchor_paper_id] : [],
   );
-  const branchSize = branchNodeSize(branch, branchAnchor);
+  const branchSize = branchNodeSize(branch, branchAnchor, measuredHeights?.[branch.node_id]);
   const fallbackCenterY = state.nextY + branchSize.height / 2;
   if (childOrPathCenters.length === 0) {
     state.nextY += branchSize.height + ROW_GAP;
   }
   const centerY = average(childOrPathCenters, fallbackCenterY);
-  const paperCount = state.paperCountByBranch.get(branch.node_id) ?? 0;
   const branchNode: BranchTreeNode = {
     id: branch.node_id,
     kind: "branch",
@@ -222,11 +230,8 @@ function layoutBranch({
     title: branch.label,
     description: branch.description,
     whyItMatters: branch.why_it_matters,
-    breadcrumb: branchBreadcrumb(branch, branchesById, workspace.root.label || workspace.title),
     tags: branch.tags,
     openQuestions: branch.open_questions,
-    paperCount,
-    pathCount: paths.length,
     anchorPaper: branchAnchor,
     position: {
       x: branchX,
@@ -245,6 +250,7 @@ function layoutPath({
   branchX,
   path,
   familyByBranch,
+  measuredHeights,
   state,
 }: {
   workspace: WorkspaceDocument;
@@ -252,6 +258,7 @@ function layoutPath({
   branchX: number;
   path: PaperPath;
   familyByBranch: Map<string, number>;
+  measuredHeights?: MeasuredNodeHeights;
   state: LayoutState;
 }): number | null {
   const steps = paperSteps(workspace, path).filter((step) => {
@@ -269,9 +276,9 @@ function layoutPath({
     paperNodeViewModel({
       paper: workspace.paper_cards[step.paper_id],
       path,
-      step,
       index,
       family,
+      measuredHeights,
       position: {
         x: paperX + index * (PAPER_WIDTH + COLUMN_GAP),
         y: paperY,
@@ -285,17 +292,6 @@ function layoutPath({
   }
 
   state.nodes.push(...paperNodes);
-  state.paperCountByBranch.set(
-    branch.node_id,
-    (state.paperCountByBranch.get(branch.node_id) ?? 0) + paperNodes.length,
-  );
-  state.pathLabels.push({
-    id: `path:${path.path_id}`,
-    label: path.label,
-    description: path.description,
-    position: { x: paperX, y: Math.max(10, paperY - 20) },
-  });
-
   state.pathStarts.push({ branchId: branch.node_id, paperNodeId: paperNodes[0].id });
   for (let index = 1; index < paperNodes.length; index += 1) {
     state.edges.push(edgeBetween(paperNodes[index - 1], paperNodes[index], "timeline"));
@@ -370,27 +366,26 @@ function legacyStepOrder(left: PaperStep, right: PaperStep): number {
 function paperNodeViewModel({
   paper,
   path,
-  step,
   index,
   family,
+  measuredHeights,
   position,
 }: {
   paper: PaperCard;
   path: PaperPath;
-  step: PaperStep;
   index: number;
   family: number | null;
+  measuredHeights?: MeasuredNodeHeights;
   position: Point;
 }): PaperTreeNode {
+  const id = `paper:${path.path_id}:${index + 1}:${paper.paper_id}`;
   return {
-    id: `paper:${path.path_id}:${index + 1}:${paper.paper_id}`,
+    id,
     kind: "paper",
     family,
     ...paperDetails(paper),
-    whyReadHere: step.why_read_here,
-    pathId: path.path_id,
     position,
-    size: paperNodeSize(paper),
+    size: paperNodeSize(paper, measuredHeights?.[id]),
   };
 }
 
@@ -445,35 +440,23 @@ function fallbackPath(branch: BranchNode): PaperPath {
   };
 }
 
-function branchBreadcrumb(
-  branch: BranchNode,
-  branchesById: Map<string, BranchNode>,
-  rootLabel: string,
-): string[] {
-  const labels = [branch.label];
-  let parentId = branch.parent_id;
-  while (parentId && parentId !== "root") {
-    const parent = branchesById.get(parentId);
-    if (!parent) {
-      break;
-    }
-    labels.unshift(parent.label);
-    parentId = parent.parent_id;
-  }
-  return [rootLabel, ...labels];
-}
-
 function branchPositionX(depth: number): number {
   return ROOT_POSITION_X + ROOT_WIDTH + COLUMN_GAP + (depth - 1) * (BRANCH_WIDTH + COLUMN_GAP);
 }
 
-function rootNodeSize(root: WorkspaceDocument["root"], anchor: PaperDetails | null) {
-  const contentWidth = nodeContentWidth(ROOT_WIDTH);
+function rootNodeSize(
+  root: WorkspaceDocument["root"],
+  anchor: PaperDetails | null,
+  measuredHeight?: number,
+) {
+  if (measuredHeight) {
+    return { width: ROOT_WIDTH, height: measuredHeight };
+  }
   const contentHeights = [
-    textHeight("Research topic", contentWidth, 14.3, `600 11px ${NODE_FONT_FAMILY}`, 31),
-    textHeight(root.label, contentWidth, 23.52, `700 21px ${NODE_FONT_FAMILY}`, 31),
-    textHeight(root.overview, contentWidth, 17.4, `400 12px ${NODE_FONT_FAMILY}`, 54),
-    ...(anchor ? [anchorSummaryHeight(anchor.title, contentWidth, 46)] : []),
+    estimatedTextHeight("Research topic", 14.3, 31),
+    estimatedTextHeight(root.label, 23.52, 31),
+    estimatedTextHeight(root.overview, 17.4, 54),
+    ...(anchor ? [anchorSummaryEstimate(anchor.title, 46)] : []),
   ];
   return {
     width: ROOT_WIDTH,
@@ -481,13 +464,19 @@ function rootNodeSize(root: WorkspaceDocument["root"], anchor: PaperDetails | nu
   };
 }
 
-function branchNodeSize(branch: BranchNode, anchor: PaperDetails | null) {
-  const contentWidth = nodeContentWidth(BRANCH_WIDTH);
+function branchNodeSize(
+  branch: BranchNode,
+  anchor: PaperDetails | null,
+  measuredHeight?: number,
+) {
+  if (measuredHeight) {
+    return { width: BRANCH_WIDTH, height: measuredHeight };
+  }
   const contentHeights = [
-    textHeight("Research branch", contentWidth, 14.3, `600 11px ${NODE_FONT_FAMILY}`, 34),
-    textHeight(branch.label, contentWidth, 18.2, `700 14px ${NODE_FONT_FAMILY}`, 34),
-    textHeight(branch.description, contentWidth, 17.4, `400 12px ${NODE_FONT_FAMILY}`, 43),
-    ...(anchor ? [anchorSummaryHeight(anchor.title, contentWidth, 40)] : []),
+    estimatedTextHeight("Research branch", 14.3, 34),
+    estimatedTextHeight(branch.label, 18.2, 34),
+    estimatedTextHeight(branch.description, 17.4, 43),
+    ...(anchor ? [anchorSummaryEstimate(anchor.title, 40)] : []),
   ];
   return {
     width: BRANCH_WIDTH,
@@ -495,22 +484,15 @@ function branchNodeSize(branch: BranchNode, anchor: PaperDetails | null) {
   };
 }
 
-function paperNodeSize(paper: PaperCard) {
-  const contentWidth = nodeContentWidth(PAPER_WIDTH);
-  const tldrPrefixWidth = textWidth("TLDR", `700 11px ${NODE_FONT_FAMILY}`) + 4;
+function paperNodeSize(paper: PaperCard, measuredHeight?: number) {
+  if (measuredHeight) {
+    return { width: PAPER_WIDTH, height: measuredHeight };
+  }
   const contentHeights = [
-    textHeight(paper.title, contentWidth, 18.2, `700 14px ${NODE_FONT_FAMILY}`, 39),
-    textHeight(compactAuthorLine(paper.authors), contentWidth, 16.2, `400 12px ${NODE_FONT_FAMILY}`, 42),
-    textHeight("Date", contentWidth, 14.3, `400 11px ${NODE_FONT_FAMILY}`, 42),
-    textHeight(
-      paper.tldr || "Unavailable",
-      contentWidth,
-      17.04,
-      `400 12px ${NODE_FONT_FAMILY}`,
-      46,
-      tldrPrefixWidth,
-      6,
-    ),
+    estimatedTextHeight(paper.title, 18.2, 39),
+    estimatedTextHeight(compactAuthorLine(paper.authors), 16.2, 42),
+    estimatedTextHeight("Date", 14.3, 42),
+    estimatedTextHeight(paper.tldr || "Unavailable", 17.04, 46, 6),
   ];
   return {
     width: PAPER_WIDTH,
@@ -521,103 +503,30 @@ function paperNodeSize(paper: PaperCard) {
 function stackedNodeHeight(contentHeights: number[]): number {
   const contentHeight = contentHeights.reduce((total, height) => total + height, 0);
   const gapHeight = Math.max(0, contentHeights.length - 1) * NODE_GAP;
-  return Math.ceil(NODE_BORDER + NODE_PADDING * 2 + contentHeight + gapHeight);
+  return Math.ceil(NODE_BORDER + NODE_PADDING * 2 + contentHeight + gapHeight + NODE_VERTICAL_GUARD);
 }
 
-function nodeContentWidth(width: number): number {
-  return width - NODE_PADDING * 2 - NODE_BORDER;
-}
-
-function anchorSummaryHeight(title: string, width: number, fallbackCharactersPerLine: number): number {
+function anchorSummaryEstimate(title: string, fallbackCharactersPerLine: number): number {
   const labelAndYearHeight = 13.5 * 2;
   const anchorGaps = 3 * 2;
   const anchorTopRule = 8 + 1;
-  return anchorTopRule + labelAndYearHeight + anchorGaps + textHeight(
+  return anchorTopRule + labelAndYearHeight + anchorGaps + estimatedTextHeight(
     title,
-    width,
     14.85,
-    `600 11px ${NODE_FONT_FAMILY}`,
     fallbackCharactersPerLine,
   );
 }
 
-function textHeight(
+function estimatedTextHeight(
   value: string,
-  width: number,
   lineHeight: number,
-  font: string,
-  fallbackCharactersPerLine: number,
-  firstLinePrefixWidth = 0,
-  fallbackPrefixCharacters = 0,
+  charactersPerLine: number,
+  firstLinePrefixCharacters = 0,
 ): number {
   if (!value) {
     return 0;
   }
-  const context = textMeasureContext();
-  const lines = context
-    ? wrappedLineCount(value, width, font, firstLinePrefixWidth, context)
-    : fallbackLineCount(value, fallbackCharactersPerLine, fallbackPrefixCharacters);
-  return lines * lineHeight;
-}
-
-function textWidth(value: string, font: string): number {
-  const context = textMeasureContext();
-  if (!context) {
-    return 0;
-  }
-  context.font = font;
-  return context.measureText(value).width;
-}
-
-function textMeasureContext(): CanvasRenderingContext2D | null {
-  if (cachedTextMeasureContext !== undefined) {
-    return cachedTextMeasureContext;
-  }
-  if (typeof document === "undefined") {
-    cachedTextMeasureContext = null;
-    return null;
-  }
-  const canvas = document.createElement("canvas");
-  cachedTextMeasureContext = canvas.getContext("2d");
-  return cachedTextMeasureContext;
-}
-
-function wrappedLineCount(
-  value: string,
-  width: number,
-  font: string,
-  firstLinePrefixWidth: number,
-  context: CanvasRenderingContext2D,
-): number {
-  context.font = font;
-  const spaceWidth = context.measureText(" ").width;
-  return value.split(/\r?\n/).reduce((total, line) => {
-    if (!line.trim()) {
-      return total + 1;
-    }
-    const words = line.trim().split(/\s+/);
-    let lineCount = 1;
-    let lineWidth = firstLinePrefixWidth;
-    let hasWord = false;
-    for (const word of words) {
-      const wordWidth = context.measureText(word).width;
-      const separatorWidth = hasWord ? spaceWidth : 0;
-      if (hasWord && lineWidth + separatorWidth + wordWidth > width) {
-        lineCount += 1;
-        lineWidth = wordWidth;
-        continue;
-      }
-      if (!hasWord && lineWidth + wordWidth > width) {
-        lineCount += Math.max(0, Math.ceil(wordWidth / width) - 1);
-        lineWidth = wordWidth % width || width;
-        hasWord = true;
-        continue;
-      }
-      lineWidth += separatorWidth + wordWidth;
-      hasWord = true;
-    }
-    return total + lineCount;
-  }, 0);
+  return fallbackLineCount(value, charactersPerLine, firstLinePrefixCharacters) * lineHeight;
 }
 
 function fallbackLineCount(value: string, charactersPerLine: number, firstLinePrefixCharacters: number): number {

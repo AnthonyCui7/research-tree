@@ -1,3 +1,4 @@
+import { ApiError } from "../lib/apiError";
 import type {
   AgentRunResult,
   PipelineRun,
@@ -39,7 +40,6 @@ export type WorkspaceGateway = {
   getWorkspaceVersions: (workspaceId: string) => Promise<WorkspaceVersion[]>;
   reviewTopic: (topic: string) => Promise<TopicReview>;
   createWorkspace: (topic: string, topicReviewToken: string) => Promise<PipelineRun>;
-  getPipelineRun: (runId: string) => Promise<PipelineRun>;
   cancelPipelineRun: (runId: string) => Promise<PipelineRun>;
   restoreWorkspace: (workspaceId: string, versionHash: string, expectedHash: string) => Promise<void>;
   deleteWorkspace: (workspaceId: string, expectedHash: string) => Promise<void>;
@@ -91,13 +91,6 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     return payload.pipeline_run;
   },
 
-  async getPipelineRun(runId) {
-    const payload = await getJson<{ pipeline_run: PipelineRun }>(
-      `/workspaces/pipeline-runs/${encodeURIComponent(runId)}`,
-    );
-    return payload.pipeline_run;
-  },
-
   async cancelPipelineRun(runId) {
     const payload = await postJson<{ pipeline_run: PipelineRun }>(
       `/workspaces/pipeline-runs/${encodeURIComponent(runId)}/cancel`,
@@ -114,10 +107,11 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
   },
 
   async deleteWorkspace(workspaceId, expectedHash) {
-    await requestJson(`/workspaces/${encodeURIComponent(workspaceId)}`, {
-      method: "DELETE",
-      body: JSON.stringify({ expected_version_hash: expectedHash }),
-    });
+    await requestJson(
+      `/workspaces/${encodeURIComponent(workspaceId)}` +
+        `?expected_version_hash=${encodeURIComponent(expectedHash)}`,
+      { method: "DELETE" },
+    );
   },
 
   async runAgent(workspaceId, message, model, conversationHistory = [], threadId = null) {
@@ -148,16 +142,24 @@ async function postJson<T = unknown>(path: string, body: unknown): Promise<T> {
   return requestJson<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+      ...init,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+    });
+  } catch (error) {
+    throw ApiError.fromNetworkFailure(error);
+  }
   if (!response.ok) {
-    throw new Error("We could not complete that request. Please try again.");
+    throw await ApiError.fromResponse(response);
   }
   return (await response.json()) as T;
 }

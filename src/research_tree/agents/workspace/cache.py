@@ -11,7 +11,7 @@ def workspace_context_cache_key(state: Mapping[str, Any]) -> str:
         "workspace_version_hash": state.get("workspace_version_hash"),
         "target_branch_id": _target_branch_id(state),
         "target_paper_ids": _target_paper_ids(state),
-        "include_similar_papers": _needs_similar_paper_context(state),
+        "include_similar_papers": needs_similar_paper_context(state),
     }
     return _stable_key("workspace-context", payload)
 
@@ -33,7 +33,7 @@ def _target_paper_ids(state: Mapping[str, Any]) -> list[str]:
     return sorted(paper_ids)
 
 
-def _needs_similar_paper_context(state: Mapping[str, Any]) -> bool:
+def needs_similar_paper_context(state: Mapping[str, Any]) -> bool:
     message = str(state.get("user_message") or "").casefold()
     next_action = state.get("next_action")
     instruction = (

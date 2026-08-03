@@ -6,16 +6,13 @@ import json
 import logging
 import os
 import re
-import socket
-import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from research_tree.artifacts import write_json_file, write_text_file
+from research_tree.llm import DEFAULT_MODEL, call_responses_api
 from research_tree.retrieval.semantic_scholar import (
     SemanticScholarClient,
     paper_from_semantic_scholar,
@@ -38,6 +35,7 @@ from research_tree.workspace.serialization import (
     write_workspace_artifacts,
 )
 from research_tree.workspace.structured_outputs import workspace_response_format
+from research_tree.workspace.tldr import TldrGenerator, apply_generated_tldr
 from research_tree.workspace.validation import WorkspaceValidationResult, validate_workspace
 
 
@@ -46,11 +44,10 @@ from research_tree.workspace.validation import WorkspaceValidationResult, valida
 logger = logging.getLogger("uvicorn.error")
 
 
-DEFAULT_WORKSPACE_LLM_TIMEOUT_SECONDS = 600.0
-DEFAULT_WORKSPACE_LLM_REASONING_EFFORT = "high"
+DEFAULT_WORKSPACE_LLM_TIMEOUT_SECONDS = 900.0
+DEFAULT_WORKSPACE_LLM_REASONING_EFFORT = "xhigh"
 DEFAULT_WORKSPACE_LLM_MAX_OUTPUT_TOKENS: int | None = None
 DEFAULT_WORKSPACE_LLM_TEXT_VERBOSITY = "low"
-DEFAULT_WORKSPACE_LLM_TEMPERATURE = 0.3
 DEFAULT_WORKSPACE_LLM_RESPONSE_FORMAT = "json_schema"
 WORKSPACE_LLM_PROMPT_CACHE_KEY = "research-tree-workspace-construction"
 WORKSPACE_LLM_REASONING_EFFORTS = {
@@ -95,7 +92,6 @@ class OpenAIResponsesWorkspaceClient:
         reasoning_effort: str | None = DEFAULT_WORKSPACE_LLM_REASONING_EFFORT,
         max_output_tokens: int | None = DEFAULT_WORKSPACE_LLM_MAX_OUTPUT_TOKENS,
         text_verbosity: str | None = DEFAULT_WORKSPACE_LLM_TEXT_VERBOSITY,
-        temperature: float = DEFAULT_WORKSPACE_LLM_TEMPERATURE,
         response_format: str = DEFAULT_WORKSPACE_LLM_RESPONSE_FORMAT,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -114,14 +110,11 @@ class OpenAIResponsesWorkspaceClient:
             raise ValueError(f"unsupported text verbosity: {text_verbosity}")
         if max_output_tokens is not None and max_output_tokens < 16:
             raise ValueError("max_output_tokens must be at least 16.")
-        if not 0 <= temperature <= 2:
-            raise ValueError("temperature must be between 0 and 2.")
         if response_format not in WORKSPACE_LLM_RESPONSE_FORMATS:
             raise ValueError(f"unsupported response format: {response_format}")
         self.reasoning_effort = reasoning_effort
         self.max_output_tokens = max_output_tokens
         self.text_verbosity = text_verbosity
-        self.temperature = temperature
         self.response_format = response_format
 
     def call_workspace_llm(self, *, prompt: str, model: str) -> WorkspaceLlmResponse:
@@ -148,95 +141,26 @@ class OpenAIResponsesWorkspaceClient:
             "tool_choice": "none",
             "store": False,
             "prompt_cache_key": WORKSPACE_LLM_PROMPT_CACHE_KEY,
-            "temperature": self.temperature,
         }
         if self.max_output_tokens is not None:
             body["max_output_tokens"] = self.max_output_tokens
         reasoning_effort = _reasoning_effort_for_model(model, self.reasoning_effort)
         if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort}
-        started_at = time.monotonic()
-        try:
-            raw_response = self._post_response(body)
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
-            if not _is_unsupported_temperature_error(detail):
-                raise RuntimeError(f"OpenAI workspace LLM call failed: {detail}") from error
-            logger.warning(
-                "Workspace model %s rejected temperature=%s; retrying without temperature.",
-                model,
-                self.temperature,
-            )
-            body = {key: value for key, value in body.items() if key != "temperature"}
-            try:
-                raw_response = self._post_response(body)
-            except urllib.error.HTTPError as retry_error:
-                retry_detail = retry_error.read().decode("utf-8", errors="replace")
-                raise RuntimeError(
-                    f"OpenAI workspace LLM call failed: {retry_detail}"
-                ) from retry_error
-        except urllib.error.URLError as error:
-            raise RuntimeError(f"OpenAI workspace LLM call failed: {error}") from error
-        except (TimeoutError, socket.timeout) as error:
-            raise RuntimeError(
-                "OpenAI workspace LLM call timed out after "
-                f"{self.timeout_seconds:g}s. Retry the command, or raise "
-                "--request-timeout-seconds for this one-shot workspace generation."
-            ) from error
-
-        _log_workspace_llm_usage(
-            model=model,
+        raw_response = call_responses_api(
+            body,
+            api_key=str(self.api_key),
+            timeout_seconds=self.timeout_seconds,
+            label="workspace construction",
+            timeout_hint=(
+                " Retry the command, or raise --request-timeout-seconds for this "
+                "one-shot workspace generation."
+            ),
+        )
+        return WorkspaceLlmResponse(
+            text=_extract_llm_text(raw_response),
             raw_response=raw_response,
-            elapsed_seconds=time.monotonic() - started_at,
         )
-        workspace_text = _extract_llm_text(raw_response)
-        return WorkspaceLlmResponse(text=workspace_text, raw_response=raw_response)
-
-    def _post_response(self, body: dict[str, Any]) -> dict[str, Any]:
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-
-def _log_workspace_llm_usage(
-    *,
-    model: str,
-    raw_response: dict[str, Any],
-    elapsed_seconds: float,
-) -> None:
-    usage = raw_response.get("usage")
-    if not isinstance(usage, dict):
-        logger.info(
-            "workspace LLM response model=%s elapsed_seconds=%.3f usage=unavailable",
-            model,
-            elapsed_seconds,
-        )
-        return
-    input_details = usage.get("input_tokens_details")
-    output_details = usage.get("output_tokens_details")
-    logger.info(
-        "workspace LLM response model=%s elapsed_seconds=%.3f input_tokens=%s "
-        "cached_input_tokens=%s cache_write_tokens=%s output_tokens=%s reasoning_tokens=%s",
-        model,
-        elapsed_seconds,
-        usage.get("input_tokens"),
-        input_details.get("cached_tokens") if isinstance(input_details, dict) else None,
-        input_details.get("cache_write_tokens") if isinstance(input_details, dict) else None,
-        usage.get("output_tokens"),
-        output_details.get("reasoning_tokens") if isinstance(output_details, dict) else None,
-    )
-
-
-def _is_unsupported_temperature_error(detail: str) -> bool:
-    return "Unsupported parameter: 'temperature'" in detail
 
 
 def construct_workspace(
@@ -250,7 +174,7 @@ def construct_workspace(
     target_paper_ids: list[str] | None = None,
     similar_papers_context: dict[str, Any] | None = None,
     run_metadata: dict[str, Any] | None = None,
-    model: str = "gpt-5.6-luna",
+    model: str = DEFAULT_MODEL,
     prompt_version: str = WORKSPACE_CONSTRUCTION_PROMPT_VERSION,
     llm_client: OpenAIResponsesWorkspaceClient | None = None,
     raw_llm_output: str | dict[str, Any] | None = None,
@@ -454,22 +378,6 @@ def construct_workspace_from_candidates(
         validation=validation,
         output_paths=output_paths,
     )
-
-
-def call_workspace_llm(
-    *,
-    prompt: str,
-    model: str,
-    llm_client: OpenAIResponsesWorkspaceClient | None = None,
-) -> WorkspaceLlmResponse:
-    return (llm_client or OpenAIResponsesWorkspaceClient()).call_workspace_llm(
-        prompt=prompt,
-        model=model,
-    )
-
-
-def parse_workspace_llm_output(raw_llm_output: str | dict[str, Any]) -> dict[str, Any]:
-    return parse_workspace_output(raw_llm_output)
 
 
 def _build_agent_workspace_prompt(
@@ -1076,8 +984,9 @@ def _normalize_paper_cards(workspace: dict[str, Any]) -> None:
 def enrich_workspace_papers_from_semantic_scholar(
     workspace: dict[str, Any],
     semantic_scholar: SemanticScholarClient,
+    tldr_generator: TldrGenerator | None = None,
 ) -> None:
-    """Attach Semantic Scholar's source TLDR to the curated workspace papers."""
+    """Attach S2 TLDRs, generating S2-style fallbacks only when none are available."""
 
     paper_cards = workspace.get("paper_cards")
     if not isinstance(paper_cards, dict):
@@ -1101,6 +1010,11 @@ def enrich_workspace_papers_from_semantic_scholar(
             card["tldr"] = tldr["text"].strip() or None
             card["tldr_model"] = tldr.get("model")
             card["tldr_source"] = "semantic_scholar"
+        if not str(card.get("tldr") or "").strip() and tldr_generator is not None:
+            try:
+                apply_generated_tldr(card, generator=tldr_generator)
+            except RuntimeError as error:
+                warnings.append(f"Generated TLDR failed for {paper_id}: {error}")
 
 
 def _fill_card_with_semantic_scholar_details(

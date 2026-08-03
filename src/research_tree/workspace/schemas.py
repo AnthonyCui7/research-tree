@@ -41,13 +41,16 @@ class CandidatePaperMetadata:
     doi_link: str | None = None
     citation_count: int | None = None
     semantic_scholar_metadata: dict[str, Any] = field(default_factory=dict)
-    raw_citation_rank: int | None = None
-    age_adjusted_rank: int | None = None
-    cross_encoder_rank: int | None = None
+    authority_rank: int | None = None
+    authority_score: float | None = None
+    hub_score: float | None = None
+    in_degree: int | None = None
+    root_set_member: bool = False
+    snowballed: bool = False
+    flagged_off_topic: bool = False
     age_years: float | None = None
     age_adjusted_citation_score: float | None = None
     citations_per_year: float | None = None
-    cross_encoder_relevance: float | None = None
     is_survey: bool = False
     found_by: list[str] = field(default_factory=list)
 
@@ -76,17 +79,22 @@ class CandidatePaperMetadata:
             doi_link=_optional_str(payload.get("doi_link")),
             citation_count=_optional_int(payload.get("citation_count")),
             semantic_scholar_metadata=_dict(payload.get("semantic_scholar_metadata")),
-            raw_citation_rank=_optional_int(payload.get("raw_citation_rank")),
-            age_adjusted_rank=_optional_int(payload.get("age_adjusted_rank")),
-            cross_encoder_rank=_optional_int(payload.get("cross_encoder_rank")),
+            authority_rank=_optional_int(payload.get("authority_rank")),
+            authority_score=_optional_float(payload.get("authority_score")),
+            hub_score=_optional_float(payload.get("hub_score")),
+            in_degree=_optional_int(payload.get("in_degree")),
+            root_set_member=bool(
+                # Artifacts written before the Kleinberg-aligned rename used
+                # "base_set_member" for the same fact.
+                payload.get("root_set_member", payload.get("base_set_member", False))
+            ),
+            snowballed=bool(payload.get("snowballed", False)),
+            flagged_off_topic=bool(payload.get("flagged_off_topic", False)),
             age_years=_optional_float(payload.get("age_years")),
             age_adjusted_citation_score=_optional_float(
                 payload.get("age_adjusted_citation_score")
             ),
             citations_per_year=_optional_float(payload.get("citations_per_year")),
-            cross_encoder_relevance=_optional_float(
-                payload.get("cross_encoder_relevance")
-            ),
             is_survey=bool(payload.get("is_survey", False)),
             found_by=[
                 str(value)
@@ -117,13 +125,16 @@ class CandidatePaperMetadata:
             "doi_link": self.doi_link,
             "citation_count": self.citation_count,
             "semantic_scholar_metadata": self.semantic_scholar_metadata,
-            "raw_citation_rank": self.raw_citation_rank,
-            "age_adjusted_rank": self.age_adjusted_rank,
-            "cross_encoder_rank": self.cross_encoder_rank,
+            "authority_rank": self.authority_rank,
+            "authority_score": self.authority_score,
+            "hub_score": self.hub_score,
+            "in_degree": self.in_degree,
+            "root_set_member": self.root_set_member,
+            "snowballed": self.snowballed,
+            "flagged_off_topic": self.flagged_off_topic,
             "age_years": self.age_years,
             "age_adjusted_citation_score": self.age_adjusted_citation_score,
             "citations_per_year": self.citations_per_year,
-            "cross_encoder_relevance": self.cross_encoder_relevance,
             "is_survey": self.is_survey,
             "found_by": self.found_by,
         }

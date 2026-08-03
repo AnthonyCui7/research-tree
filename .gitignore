@@ -1,27 +1,42 @@
+# Secrets
 .env
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
-*.md
-!README.md
-!**/README.md
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend build
 node_modules/
 dist/
 .vite/
+
+# OS / editor
+.DS_Store
 .*.tmp
+
+# Agent tool scratch
 /.codex/
+.rocketride/
+
+# Local data, logs, and experiment outputs (not part of the product)
+/data/
+/experiments/
+cache/
+output/
+tests/output/
+
+# Stray root images
 /*.png
 /*.jpg
 /*.jpeg
 /*.webp
 
-/experiments/
-/tests/*
-!/tests/test_api.py
-/data/
-
-cache/
-output/
+*.md
+!README.md

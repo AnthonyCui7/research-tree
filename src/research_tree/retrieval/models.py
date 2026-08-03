@@ -22,6 +22,7 @@ class Paper:
     semantic_scholar_metadata: dict[str, Any] = field(default_factory=dict)
     found_by: set[str] = field(default_factory=set)
     is_survey: bool = False
+    flagged_off_topic: bool = False
     cross_encoder_relevance: float = 0.0
     citations_per_year: float = 0.0
     age_adjusted_citation_score: float = 0.0
@@ -58,6 +59,7 @@ class Paper:
             "semantic_scholar_metadata": self.semantic_scholar_metadata,
             "citations_per_year": self.citations_per_year,
             "is_survey": self.is_survey,
+            "flagged_off_topic": self.flagged_off_topic,
             "cross_encoder_relevance": self.cross_encoder_relevance,
             "age_adjusted_citation_score": self.age_adjusted_citation_score,
             "found_by": sorted(self.found_by),

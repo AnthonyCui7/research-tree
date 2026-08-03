@@ -16,6 +16,30 @@ class JsonRequestError(RuntimeError):
     pass
 
 
+class RateLimiter:
+    """Spaces request starts across every client that shares this instance.
+
+    Semantic Scholar counts one request per second cumulatively across all of its
+    endpoints, so the budget belongs to the API rather than to any one client.
+    Sharing a single limiter is what keeps two clients in the same process from
+    together exceeding a limit each of them respects alone.
+    """
+
+    def __init__(self) -> None:
+        self._last_request_at = 0.0
+        self._lock = Lock()
+
+    def acquire(self, delay_seconds: float) -> None:
+        with self._lock:
+            if delay_seconds <= 0:
+                self._last_request_at = time.monotonic()
+                return
+            elapsed = time.monotonic() - self._last_request_at
+            if elapsed < delay_seconds:
+                time.sleep(delay_seconds - elapsed)
+            self._last_request_at = time.monotonic()
+
+
 class CachedJsonClient:
     def __init__(
         self,
@@ -25,6 +49,7 @@ class CachedJsonClient:
         headers: dict[str, str] | None = None,
         max_retries: int = 2,
         timeout_seconds: float = 20.0,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.cache_dir = cache_dir
         self.request_delay_seconds = request_delay_seconds
@@ -32,8 +57,7 @@ class CachedJsonClient:
         self.headers = headers or {}
         self.max_retries = max(max_retries, 0)
         self.timeout_seconds = max(timeout_seconds, 1.0)
-        self._last_request_at = 0.0
-        self._request_start_lock = Lock()
+        self.rate_limiter = rate_limiter or RateLimiter()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
@@ -70,7 +94,10 @@ class CachedJsonClient:
         url: str,
         body: dict[str, Any] | None,
     ) -> str:
-        backoffs = [30, 60, 120, 240, 240][: self.max_retries]
+        # A shared 1 req/s limiter already paces normal traffic, so a 429 here is
+        # a transient burst rather than sustained overuse. `Retry-After` still
+        # wins whenever the server sends one.
+        backoffs = [5, 15, 45, 90, 90][: self.max_retries]
         last_error: Exception | None = None
         for attempt in range(len(backoffs) + 1):
             self._wait_for_delay()
@@ -113,14 +140,7 @@ class CachedJsonClient:
         raise JsonRequestError(str(last_error))
 
     def _wait_for_delay(self) -> None:
-        with self._request_start_lock:
-            if self.request_delay_seconds <= 0:
-                self._last_request_at = time.monotonic()
-                return
-            elapsed = time.monotonic() - self._last_request_at
-            if elapsed < self.request_delay_seconds:
-                time.sleep(self.request_delay_seconds - elapsed)
-            self._last_request_at = time.monotonic()
+        self.rate_limiter.acquire(self.request_delay_seconds)
 
     def _cache_path(
         self,

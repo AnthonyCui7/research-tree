@@ -3,10 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
-import time
-import urllib.error
-import urllib.request
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
@@ -19,6 +15,7 @@ from research_tree.agents.workspace.models import (
     WorkspaceChatResponse,
     WorkspaceCritique,
 )
+from research_tree.llm import DEFAULT_MODEL, call_responses_api
 from research_tree.workspace.serialization import extract_response_output_text
 
 
@@ -29,15 +26,14 @@ logger = logging.getLogger("uvicorn.error")
 @dataclass(frozen=True)
 class AgentRequestProfile:
     reasoning_effort: str
-    temperature: float
     text_verbosity: str
     timeout_seconds: float
 
 
-AGENT_INTENT_PROFILE = AgentRequestProfile("medium", 0, "low", 30.0)
-AGENT_ACTION_PROFILE = AgentRequestProfile("high", 0.3, "low", 60.0)
-AGENT_CRITIQUE_PROFILE = AgentRequestProfile("high", 0.3, "low", 60.0)
-AGENT_CHAT_PROFILE = AgentRequestProfile("medium", 0.7, "medium", 90.0)
+AGENT_INTENT_PROFILE = AgentRequestProfile("medium", "low", 30.0)
+AGENT_ACTION_PROFILE = AgentRequestProfile("xhigh", "low", 120.0)
+AGENT_CRITIQUE_PROFILE = AgentRequestProfile("xhigh", "low", 120.0)
+AGENT_CHAT_PROFILE = AgentRequestProfile("high", "medium", 120.0)
 
 
 class WorkspaceAgentLlmClient(Protocol):
@@ -103,8 +99,8 @@ class OpenAIResponsesAgentClient:
         self,
         *,
         api_key: str | None = None,
-        default_model: str = "gpt-5.6-luna",
-        timeout_seconds: float = 120.0,
+        default_model: str = DEFAULT_MODEL,
+        timeout_seconds: float = 180.0,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
@@ -182,95 +178,13 @@ class OpenAIResponsesAgentClient:
             "tool_choice": "none",
             "store": False,
             "reasoning": {"effort": profile.reasoning_effort},
-            "temperature": profile.temperature,
         }
-        timeout_seconds = min(self.timeout_seconds, profile.timeout_seconds)
-        started_at = time.monotonic()
-        try:
-            raw_response = self._post_response(body, timeout_seconds)
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
-            if not _is_unsupported_temperature_error(detail):
-                raise RuntimeError(f"OpenAI agent LLM call failed: {detail}") from error
-            logger.warning(
-                "Agent model %s rejected temperature=%s; retrying without temperature.",
-                model,
-                profile.temperature,
-            )
-            body = {key: value for key, value in body.items() if key != "temperature"}
-            try:
-                raw_response = self._post_response(body, timeout_seconds)
-            except urllib.error.HTTPError as retry_error:
-                retry_detail = retry_error.read().decode("utf-8", errors="replace")
-                raise RuntimeError(
-                    f"OpenAI agent LLM call failed: {retry_detail}"
-                ) from retry_error
-        except urllib.error.URLError as error:
-            raise RuntimeError(f"OpenAI agent LLM call failed: {error}") from error
-        except (TimeoutError, socket.timeout) as error:
-            raise RuntimeError(
-                f"OpenAI agent LLM call timed out after {timeout_seconds:g}s."
-            ) from error
-        _log_agent_llm_usage(
-            call_name=call_name,
-            model=model,
-            raw_response=raw_response,
-            elapsed_seconds=time.monotonic() - started_at,
+        return call_responses_api(
+            body,
+            api_key=str(self.api_key),
+            timeout_seconds=min(self.timeout_seconds, profile.timeout_seconds),
+            label=f"agent {call_name}",
         )
-        return raw_response
-
-    def _post_response(
-        self,
-        body: dict[str, Any],
-        timeout_seconds: float,
-    ) -> dict[str, Any]:
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-
-def _log_agent_llm_usage(
-    *,
-    call_name: str,
-    model: str,
-    raw_response: dict[str, Any],
-    elapsed_seconds: float,
-) -> None:
-    usage = raw_response.get("usage")
-    if not isinstance(usage, dict):
-        logger.info(
-            "agent LLM call=%s model=%s elapsed_seconds=%.3f usage=unavailable",
-            call_name,
-            model,
-            elapsed_seconds,
-        )
-        return
-    input_details = usage.get("input_tokens_details")
-    output_details = usage.get("output_tokens_details")
-    logger.info(
-        "agent LLM call=%s model=%s elapsed_seconds=%.3f input_tokens=%s "
-        "cached_input_tokens=%s cache_write_tokens=%s output_tokens=%s reasoning_tokens=%s",
-        call_name,
-        model,
-        elapsed_seconds,
-        usage.get("input_tokens"),
-        input_details.get("cached_tokens") if isinstance(input_details, dict) else None,
-        input_details.get("cache_write_tokens") if isinstance(input_details, dict) else None,
-        usage.get("output_tokens"),
-        output_details.get("reasoning_tokens") if isinstance(output_details, dict) else None,
-    )
-
-
-def _is_unsupported_temperature_error(detail: str) -> bool:
-    return "Unsupported parameter: 'temperature'" in detail
 
 
 def default_workspace_agent_llm_client() -> WorkspaceAgentLlmClient:

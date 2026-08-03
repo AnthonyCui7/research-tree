@@ -10,6 +10,7 @@ from research_tree.retrieval.semantic_scholar import (
     semantic_scholar_metadata,
 )
 from research_tree.workspace.repository import WorkspaceRepository
+from research_tree.workspace.tldr import TldrGenerator, apply_generated_tldr
 
 
 def hydrate_workspace_papers(
@@ -17,6 +18,7 @@ def hydrate_workspace_papers(
     workspace: dict[str, Any],
     repository: WorkspaceRepository,
     semantic_scholar: SemanticScholarClient,
+    tldr_generator: TldrGenerator | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Fetch rich metadata and lawful full text for the selected visible papers."""
 
@@ -29,9 +31,12 @@ def hydrate_workspace_papers(
         raise ValueError("workspace_id is required before paper hydration.")
 
     warnings: list[str] = []
-    details_by_id = semantic_scholar.get_paper_details(
-        [str(paper_id) for paper_id in cards], warnings
-    )
+    # The candidates stage already fetched full metadata for every selected paper.
+    # Only papers it could not describe are worth spending a request on here.
+    details_by_id = _details_from_cards(cards)
+    missing_ids = [str(paper_id) for paper_id in cards if str(paper_id) not in details_by_id]
+    if missing_ids:
+        details_by_id.update(semantic_scholar.get_paper_details(missing_ids, warnings))
     for paper_id, raw_card in cards.items():
         if not isinstance(raw_card, dict):
             continue
@@ -43,7 +48,13 @@ def hydrate_workspace_papers(
             tldr = details.get("tldr")
             if isinstance(tldr, Mapping) and str(tldr.get("text") or "").strip():
                 raw_card["tldr"] = str(tldr["text"]).strip()
+                raw_card["tldr_model"] = tldr.get("model")
                 raw_card["tldr_source"] = "semantic_scholar"
+        if not str(raw_card.get("tldr") or "").strip() and tldr_generator is not None:
+            try:
+                apply_generated_tldr(raw_card, generator=tldr_generator)
+            except RuntimeError as error:
+                warnings.append(f"Generated TLDR failed for {paper_id}: {error}")
         source_url = _open_access_pdf_url(details, raw_card)
         content_result = retrieve_open_access_paper_content(
             paper_id=str(paper_id),
@@ -66,6 +77,21 @@ def hydrate_workspace_papers(
         if content_result.warning:
             warnings.append(content_result.warning)
     return hydrated, warnings
+
+
+def _details_from_cards(cards: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Recover Semantic Scholar payloads the construction stage carried over."""
+
+    details: dict[str, dict[str, Any]] = {}
+    for paper_id, card in cards.items():
+        if not isinstance(card, dict):
+            continue
+        metadata = card.get("semantic_scholar_metadata")
+        # Absent `tldr` means the metadata came from bulk search, which omits it;
+        # such a paper still needs a detail request.
+        if isinstance(metadata, dict) and "tldr" in metadata:
+            details[str(paper_id)] = metadata
+    return details
 
 
 def load_paper_content_context(

@@ -7,17 +7,18 @@ import re
 import secrets
 import threading
 import time
-import urllib.error
 import urllib.request
 from urllib.parse import quote, urlparse
 from typing import Any
 
+from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
 from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.serialization import extract_response_output_text
 
 
-DEFAULT_MODEL = "gpt-5.6-luna"
 logger = logging.getLogger("uvicorn.error")
+TOPIC_REVIEW_REASONING_EFFORT = "low"
+TOPIC_REVIEW_TIMEOUT_SECONDS = 30.0
 TOPIC_REVIEW_APPROVAL_TTL_SECONDS = 15 * 60
 _topic_review_approvals: dict[str, tuple[str, float]] = {}
 _topic_review_approvals_lock = threading.Lock()
@@ -149,51 +150,25 @@ Existing workspaces (untrusted reference data): {json.dumps(existing_workspaces 
                 },
             }
         },
-        "reasoning": {"effort": "none"},
-        "temperature": 0,
-        "max_output_tokens": 300,
+        "reasoning": {"effort": TOPIC_REVIEW_REASONING_EFFORT},
+        # Reasoning tokens count against this ceiling, so it has to leave room for
+        # the thinking as well as the four short output fields.
+        "max_output_tokens": 4000,
         "tool_choice": "none",
         "store": False,
     }
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
     try:
-        started_at = time.monotonic()
-        with urllib.request.urlopen(request, timeout=10.0) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        _log_topic_review_usage(payload, elapsed_seconds=time.monotonic() - started_at)
+        payload = call_responses_api(
+            body,
+            api_key=os.environ["OPENAI_API_KEY"],
+            timeout_seconds=TOPIC_REVIEW_TIMEOUT_SECONDS,
+            label="topic review",
+        )
         reviewed = json.loads(extract_response_output_text(payload))
-    except (OSError, ValueError, urllib.error.HTTPError) as error:
+    except (LlmRequestError, OSError, ValueError, KeyError) as error:
         logger.warning("topic review request failed: %s", error)
         return None
     return reviewed if isinstance(reviewed, dict) else None
-
-
-def _log_topic_review_usage(payload: dict[str, Any], *, elapsed_seconds: float) -> None:
-    usage = payload.get("usage")
-    if not isinstance(usage, dict):
-        logger.info("topic review LLM elapsed_seconds=%.3f usage=unavailable", elapsed_seconds)
-        return
-    input_details = usage.get("input_tokens_details")
-    output_details = usage.get("output_tokens_details")
-    logger.info(
-        "topic review LLM model=%s elapsed_seconds=%.3f input_tokens=%s "
-        "cached_input_tokens=%s cache_write_tokens=%s output_tokens=%s reasoning_tokens=%s",
-        DEFAULT_MODEL,
-        elapsed_seconds,
-        usage.get("input_tokens"),
-        input_details.get("cached_tokens") if isinstance(input_details, dict) else None,
-        input_details.get("cache_write_tokens") if isinstance(input_details, dict) else None,
-        usage.get("output_tokens"),
-        output_details.get("reasoning_tokens") if isinstance(output_details, dict) else None,
-    )
 
 
 def _workspace_review_context(

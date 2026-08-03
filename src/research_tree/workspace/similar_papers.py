@@ -27,6 +27,9 @@ DEFAULT_SIMILAR_PAPERS_K = 10
 DEFAULT_SIMILAR_BI_ENCODER_TOP_N = 100
 DEFAULT_SIMILAR_CITATION_AGE_EXPONENT = 1.25
 DEFAULT_SIMILAR_CITATION_SCORE_FLOOR = 10.0
+# A paper nobody has cited yet is not a useful recommendation, however well its
+# abstract embeds against the one being read.
+DEFAULT_SIMILAR_MIN_CITATION_COUNT = 5
 DEFAULT_SIMILAR_PAPER_WORKERS = 1
 
 
@@ -150,6 +153,7 @@ def build_similar_papers(
     bi_encoder_top_n: int = DEFAULT_SIMILAR_BI_ENCODER_TOP_N,
     citation_age_exponent: float = DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
     citation_score_floor: float = DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+    min_citation_count: int = DEFAULT_SIMILAR_MIN_CITATION_COUNT,
     retriever: SimilarPaperRetriever | None = None,
     reranker: SimilarPaperReranker | None = None,
     paper_ids: set[str] | None = None,
@@ -165,6 +169,8 @@ def build_similar_papers(
         raise ValueError("citation_age_exponent must be positive.")
     if citation_score_floor < 0:
         raise ValueError("citation_score_floor cannot be negative.")
+    if min_citation_count < 0:
+        raise ValueError("min_citation_count cannot be negative.")
     if max_workers <= 0:
         raise ValueError("max_workers must be positive.")
 
@@ -189,6 +195,7 @@ def build_similar_papers(
         "bi_encoder_top_n": bi_encoder_top_n,
         "citation_age_exponent": citation_age_exponent,
         "citation_score_floor": citation_score_floor,
+        "min_citation_count": min_citation_count,
         "max_workers": max_workers,
         "paper_count": len(paper_cards),
         "papers": {},
@@ -197,7 +204,9 @@ def build_similar_papers(
     unfiltered_candidates = [
         paper
         for paper in paper_database
-        if paper.paper_id not in workspace_paper_ids and paper.document_text().strip()
+        if paper.paper_id not in workspace_paper_ids
+        and paper.document_text().strip()
+        and (paper.citation_count or 0) > min_citation_count
     ]
     citation_scores = {
         paper.paper_id: _age_adjusted_citation_score(

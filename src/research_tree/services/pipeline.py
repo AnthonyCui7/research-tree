@@ -14,9 +14,10 @@ from research_tree.retrieval.candidate_preparation import (
     PipelineConfig,
     run_workspace_candidate_preparation_pipeline,
 )
-from research_tree.retrieval.semantic_scholar import SemanticScholarClient
+from research_tree.retrieval.semantic_scholar import SemanticScholarClient, s2_api_key
 from research_tree.services.errors import InvalidPayloadError, WorkspaceNotFoundError
-from research_tree.services.topics import DEFAULT_MODEL, TopicReviewService, topic_slug
+from research_tree.services.topics import TopicReviewService, topic_slug
+from research_tree.llm import DEFAULT_MODEL
 from research_tree.workspace.construction import construct_workspace_from_candidates
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.publishing import publish_workspace_version
@@ -32,6 +33,7 @@ from research_tree.workspace.similar_papers import (
     DEFAULT_SIMILAR_PAPERS_K,
     build_similar_papers,
 )
+from research_tree.workspace.tldr import OpenAIResponsesTldrGenerator, TldrGenerator
 
 
 # The local FastAPI server configures this logger at INFO without requiring a
@@ -169,7 +171,7 @@ class WorkspacePipelineService:
             "run_id": run_id,
             "workspace_id": workspace_id,
             "topic": topic,
-            "model": model or DEFAULT_MODEL,
+            "model": DEFAULT_MODEL,
             "status": "queued",
             "current_stage": None,
             "requested_stages": list(PIPELINE_STAGES[start_index:]),
@@ -265,6 +267,7 @@ class WorkspacePipelineService:
                     workspace=workspace,
                     repository=self.repository,
                     semantic_scholar=semantic_scholar,
+                    tldr_generator=self._tldr_generator(),
                 )
                 warnings.extend(hydration_warnings)
                 hydrated_path = run_dir / "workspace_with_paper_content.json"
@@ -317,25 +320,36 @@ class WorkspacePipelineService:
                 paper_database = paper_database_from_artifact(
                     load_json_artifact(paper_database_path)
                 )
-                workspace, debug = build_similar_papers(
-                    workspace=workspace,
-                    paper_database=paper_database,
-                    k=DEFAULT_SIMILAR_PAPERS_K,
-                    citation_age_exponent=DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
-                    citation_score_floor=DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
-                )
-                related_path = run_dir / "workspace_with_related_papers.json"
-                debug_path = run_dir / "related_papers_debug.json"
-                write_json_file(related_path, workspace)
-                write_json_file(debug_path, debug)
-                artifacts["enriched_workspace_json"] = str(related_path)
-                artifacts["related_papers_debug_json"] = str(debug_path)
-                self._stage(
-                    run,
-                    "related",
-                    "completed",
-                    outputs={"workspace_json": str(related_path), "debug_json": str(debug_path)},
-                )
+                try:
+                    workspace, debug = build_similar_papers(
+                        workspace=workspace,
+                        paper_database=paper_database,
+                        k=DEFAULT_SIMILAR_PAPERS_K,
+                        citation_age_exponent=DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+                        citation_score_floor=DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+                    )
+                except (ImportError, RuntimeError, OSError) as error:
+                    # Similar papers need local embedding models from the optional
+                    # `pipeline` extra. The workspace is already usable without
+                    # them, so a missing model degrades the run, not the product.
+                    warnings.append(f"Similar-paper recommendations were skipped: {error}")
+                    self._stage(run, "related", "completed_with_warnings")
+                else:
+                    related_path = run_dir / "workspace_with_related_papers.json"
+                    debug_path = run_dir / "related_papers_debug.json"
+                    write_json_file(related_path, workspace)
+                    write_json_file(debug_path, debug)
+                    artifacts["enriched_workspace_json"] = str(related_path)
+                    artifacts["related_papers_debug_json"] = str(debug_path)
+                    self._stage(
+                        run,
+                        "related",
+                        "completed",
+                        outputs={
+                            "workspace_json": str(related_path),
+                            "debug_json": str(debug_path),
+                        },
+                    )
 
             if workspace is None:
                 raise RuntimeError("pipeline did not produce a workspace")
@@ -500,12 +514,19 @@ class WorkspacePipelineService:
             return True
 
     def _semantic_scholar_client(self) -> SemanticScholarClient:
-        import os
-
+        # Shares the candidates stage's cache directory, so a paper already
+        # fetched during retrieval costs no request during hydration.
         return SemanticScholarClient(
-            cache_dir=self.repository.base_dir.parent / "cache" / "semantic_scholar",
-            api_key=os.environ.get("S2_API_KEY") or os.environ.get("SEMANTIC_SCHOLAR_API_KEY"),
+            cache_dir=self.repo_root / "experiments" / "cache" / "semantic_scholar",
+            api_key=s2_api_key(),
         )
+
+    def _tldr_generator(self) -> TldrGenerator | None:
+        try:
+            return OpenAIResponsesTldrGenerator()
+        except RuntimeError as error:
+            logger.warning("generated TLDR fallback unavailable: %s", error)
+            return None
 
 
 def _now() -> str:

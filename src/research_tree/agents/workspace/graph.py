@@ -104,6 +104,7 @@ def build_workspace_agent_graph(
             "persist_pending_review",
             "repair_workspace_proposal",
             "finalize_validation_failure",
+            "finalize_response",
         ),
     )
     builder.add_node("persist_pending_review", nodes.persist_pending_review)

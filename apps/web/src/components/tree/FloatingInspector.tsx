@@ -1,6 +1,13 @@
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import type { PaperDetails, SimilarPaper, TreeNodeViewModel } from "../../lib/types";
 import { authorLine, publicationDate } from "./TreeNode";
+import { cx } from "../../lib/cx";
+import {
+  beginPanelResize,
+  clampResizablePanelWidth,
+  resizablePanelMaxWidth,
+  useViewportWidth,
+} from "../../lib/resizablePanel";
 
 type FloatingInspectorProps = {
   node: TreeNodeViewModel | null;
@@ -8,29 +15,22 @@ type FloatingInspectorProps = {
   sidebarCollapsed: boolean;
 };
 
-const DESKTOP_SIDEBAR_WIDTH = 252;
 const INSPECTOR_MIN_WIDTH = 420;
 
 export function FloatingInspector({ node, onClose, sidebarCollapsed }: FloatingInspectorProps) {
   const [visibleNode, setVisibleNode] = useState<TreeNodeViewModel | null>(node);
   const [isClosing, setIsClosing] = useState(false);
   const [panelWidth, setPanelWidth] = useState(510);
-  const nextNodeRef = useRef<TreeNodeViewModel | null>(null);
+  const viewportWidth = useViewportWidth();
+  const maxWidth = resizablePanelMaxWidth(sidebarCollapsed, viewportWidth);
 
   useEffect(() => {
     if (node) {
-      if (visibleNode && visibleNode.id !== node.id) {
-        nextNodeRef.current = null;
-        setVisibleNode(node);
-        setIsClosing(false);
-        return;
-      }
       setVisibleNode(node);
       setIsClosing(false);
       return;
     }
     if (visibleNode) {
-      nextNodeRef.current = null;
       setIsClosing(true);
     }
   }, [node, visibleNode]);
@@ -44,27 +44,6 @@ export function FloatingInspector({ node, onClose, sidebarCollapsed }: FloatingI
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [node, onClose]);
 
-  function beginResize(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (window.innerWidth <= 980) return;
-    event.preventDefault();
-    const startX = event.clientX;
-    const maxWidth = resizablePanelMaxWidth(sidebarCollapsed);
-    const startWidth = clampResizablePanelWidth(panelWidth, INSPECTOR_MIN_WIDTH, maxWidth);
-    document.body.style.cursor = "ew-resize";
-    document.body.style.userSelect = "none";
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      setPanelWidth(clampResizablePanelWidth(startWidth + startX - moveEvent.clientX, INSPECTOR_MIN_WIDTH, maxWidth));
-    };
-    const onPointerUp = () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  }
-
   if (!visibleNode) {
     return null;
   }
@@ -73,39 +52,33 @@ export function FloatingInspector({ node, onClose, sidebarCollapsed }: FloatingI
   return (
     <aside
       key={visibleNode.id}
-      className="floating-inspector"
+      className="fixed top-16 right-0 bottom-0 z-panel flex h-auto w-[min(var(--inspector-panel-width,510px),var(--inspector-panel-max-width,calc(100%_-_80px)))] animate-interface-right-enter flex-col overflow-visible border-l border-border bg-surface px-[26px] pt-6 pb-[22px] shadow-panel-left data-[state=closing]:pointer-events-none data-[state=closing]:animate-interface-right-exit max-[980px]:top-auto max-[980px]:left-[68px] max-[980px]:h-[min(72vh,680px)] max-[980px]:w-auto max-[980px]:border-l-0 max-[980px]:border-t max-[720px]:left-0 max-[720px]:h-[min(80vh,720px)]"
       data-state={isClosing ? "closing" : "open"}
       aria-label="Selected node details"
       style={{
-        "--inspector-panel-width": `${clampResizablePanelWidth(panelWidth, INSPECTOR_MIN_WIDTH, resizablePanelMaxWidth(sidebarCollapsed))}px`,
-        "--inspector-panel-max-width": `${resizablePanelMaxWidth(sidebarCollapsed)}px`,
+        "--inspector-panel-width": `${clampResizablePanelWidth(panelWidth, INSPECTOR_MIN_WIDTH, maxWidth)}px`,
+        "--inspector-panel-max-width": `${maxWidth}px`,
       } as CSSProperties}
-      onAnimationEnd={() => {
-        if (isClosing) {
-          if (nextNodeRef.current) {
-            setVisibleNode(nextNodeRef.current);
-            nextNodeRef.current = null;
-            setIsClosing(false);
-          } else {
-            setVisibleNode(null);
-          }
+      onAnimationEnd={(event) => {
+        if (isClosing && event.target === event.currentTarget) {
+          setVisibleNode(null);
         }
       }}
     >
-      <button className="inspector-resize-handle" type="button" onPointerDown={beginResize} aria-label="Resize details panel"><span className="drag-pill" aria-hidden="true" /></button>
-      <div className="inspector-heading">
-        <div>
-          <span className={visibleNode.kind === "paper" ? "eyebrow paper-inspector-eyebrow" : "eyebrow"}>
+      <button className="group absolute top-1/2 -left-1 z-[1] grid h-12 w-2 -translate-y-1/2 cursor-ew-resize touch-none place-items-center rounded-full border border-border bg-surface p-0 shadow-control transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-accent hover:shadow-[0_8px_18px_rgb(31_35_40_/_14%)] focus-visible:border-accent focus-visible:shadow-[0_8px_18px_rgb(31_35_40_/_14%)] max-[980px]:hidden" type="button" onPointerDown={(event) => beginPanelResize(event, { startWidth: panelWidth, minWidth: INSPECTOR_MIN_WIDTH, maxWidth, onWidth: setPanelWidth })} aria-label="Resize details panel"><span className="relative block h-[42px] w-1.5 rounded-full bg-[color-mix(in_srgb,var(--color-surface-subtle)_60%,var(--color-surface))] transition-[background-color,transform] duration-150 before:absolute before:top-2.5 before:bottom-2.5 before:left-1/2 before:block before:w-px before:-translate-x-1/2 before:bg-text-secondary before:opacity-80 before:content-[''] group-hover:bg-accent-subtle group-focus-visible:bg-accent-subtle" aria-hidden="true" /></button>
+      <div className="flex items-center justify-between gap-4 border-b border-border pb-[18px]">
+        <div className="min-w-0">
+          <span className="text-[11px] font-semibold leading-[1.35] text-text-secondary">
             {headingLabel(visibleNode.kind)}
           </span>
-          <h2 className={visibleNode.kind === "paper" ? "paper-inspector-title" : undefined}>{visibleNode.title}</h2>
+          <h2 className="mt-1 mb-0 w-[min(100%,40ch)] max-w-[40ch] text-[23px] font-bold leading-[1.2] tracking-normal text-balance text-text-primary [overflow-wrap:anywhere]">{visibleNode.title}</h2>
         </div>
-        <button className="inspector-close icon-button" type="button" onClick={onClose} aria-label="Close details" title="Close">
+        <button className="grid h-8 w-8 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-[background-color,border-color,color,transform] duration-200 ease-research enabled:hover:bg-surface-subtle enabled:hover:text-text-primary enabled:active:scale-[0.94] disabled:cursor-not-allowed disabled:text-text-muted [&_svg]:h-[18px] [&_svg]:w-[18px] max-[720px]:h-10 max-[720px]:w-10" type="button" onClick={onClose} aria-label="Close details" title="Close">
           <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="m4 4 8 8M12 4l-8 8" /></svg>
         </button>
       </div>
 
-      <div className="inspector-content">
+      <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto">
         {visibleNode.kind === "root" ? (
           <RootLearningDetails node={visibleNode} />
         ) : null}
@@ -122,14 +95,6 @@ export function FloatingInspector({ node, onClose, sidebarCollapsed }: FloatingI
   );
 }
 
-function resizablePanelMaxWidth(sidebarCollapsed: boolean): number {
-  return Math.max(0, window.innerWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH));
-}
-
-function clampResizablePanelWidth(width: number, minWidth: number, maxWidth: number): number {
-  const effectiveMinWidth = Math.min(minWidth, maxWidth);
-  return Math.min(maxWidth, Math.max(effectiveMinWidth, width));
-}
 
 function RootLearningDetails({
   node,
@@ -137,7 +102,7 @@ function RootLearningDetails({
   node: Extract<TreeNodeViewModel, { kind: "root" }>;
 }) {
   return (
-    <div className="node-learning-detail">
+    <div className="py-[22px] pb-[26px]">
       <NodeTextSection label="Overview" value={node.overview} />
       <NodeTextSection label="Why it matters" value={node.whyItMatters} />
       <PaperReferenceDetails paper={node.anchorPaper} showTitle />
@@ -154,7 +119,7 @@ function BranchLearningDetails({
   node: Extract<TreeNodeViewModel, { kind: "branch" }>;
 }) {
   return (
-    <div className="node-learning-detail">
+    <div className="py-[22px] pb-[26px]">
       <NodeTextSection label="Overview" value={node.description} />
       <NodeTextSection label="Why it matters" value={node.whyItMatters} />
       <PaperReferenceDetails paper={node.anchorPaper} showTitle />
@@ -166,8 +131,8 @@ function BranchLearningDetails({
 
 function PaperLearningDetails({ paper }: { paper: PaperDetails }) {
   return (
-    <div className="paper-learning-detail">
-      <p className="paper-authors-full">{fullAuthorList(paper.authors)}</p>
+    <div className="py-[22px] pb-[26px]">
+      <p className="m-0 w-[min(100%,60ch)] text-xs leading-normal text-text-secondary">{fullAuthorList(paper.authors)}</p>
       <PaperFacts paper={paper} />
       <LearningSection label="Summary" value={paper.tldr || "Unavailable"} />
       <LearningSection label="Why it matters" value={paper.importance || "Unavailable"} />
@@ -188,14 +153,14 @@ function PaperReferenceDetails({
     return null;
   }
   return (
-    <div className="paper-reference-detail">
+    <div className="mt-[18px] border-t border-border pt-[18px]">
       {showTitle ? (
-        <div className="paper-reference-heading">
-          <span className="metadata-label paper-section-label paper-reference-label">Survey anchor</span>
-          <h3>{paper.title}</h3>
+        <div className="grid gap-1.5 pb-3">
+          <span className={metadataLabelClass}>Survey anchor</span>
+          <h3 className="m-0 text-base leading-[1.35] text-text-primary [overflow-wrap:anywhere]">{paper.title}</h3>
         </div>
       ) : null}
-      <p className="paper-authors-full">{fullAuthorList(paper.authors)}</p>
+      <p className="m-0 w-[min(100%,60ch)] text-xs leading-normal text-text-secondary">{fullAuthorList(paper.authors)}</p>
       <PaperFacts paper={paper} />
       <LearningSection label="Summary" value={paper.tldr || "Unavailable"} />
       <LearningSection label="Why it matters" value={paper.importance || "Unavailable"} />
@@ -206,19 +171,19 @@ function PaperReferenceDetails({
 
 function PaperFacts({ paper }: { paper: PaperDetails }) {
   return (
-    <dl className="paper-facts">
+    <dl className="mt-4 mb-0 grid grid-cols-[repeat(auto-fit,minmax(110px,1fr))] gap-3 border-y border-border py-3.5 pb-4">
       <div>
-        <dt>Published</dt>
-        <dd>{publicationDate(paper)}</dd>
+        <dt className="text-[10px] font-semibold leading-[1.3] tracking-[0.045em] text-text-secondary">Published</dt>
+        <dd className="m-0 text-xs font-semibold leading-[1.4] text-text-primary [overflow-wrap:anywhere]">{publicationDate(paper)}</dd>
       </div>
       <div>
-        <dt>Venue</dt>
-        <dd>{paper.venue || "Unlisted"}</dd>
+        <dt className="text-[10px] font-semibold leading-[1.3] tracking-[0.045em] text-text-secondary">Venue</dt>
+        <dd className="m-0 text-xs font-semibold leading-[1.4] text-text-primary [overflow-wrap:anywhere]">{paper.venue || "Unlisted"}</dd>
       </div>
       {paper.citationCount !== null ? (
         <div>
-          <dt>Citations</dt>
-          <dd>{paper.citationCount.toLocaleString()}</dd>
+          <dt className="text-[10px] font-semibold leading-[1.3] tracking-[0.045em] text-text-secondary">Citations</dt>
+          <dd className="m-0 text-xs font-semibold leading-[1.4] text-text-primary [overflow-wrap:anywhere]">{paper.citationCount.toLocaleString()}</dd>
         </div>
       ) : null}
     </dl>
@@ -227,9 +192,9 @@ function PaperFacts({ paper }: { paper: PaperDetails }) {
 
 function NodeTextSection({ label, value }: { label: string; value: string }) {
   return (
-    <section className="node-text-section">
-      <span className="metadata-label paper-section-label node-section-label">{label}</span>
-      <p>{value}</p>
+    <section className="mt-[18px] grid gap-2 border-t border-border pt-[18px] first:mt-0 first:border-t-0 first:pt-0">
+      <span className={metadataLabelClass}>{label}</span>
+      <p className={detailParagraphClass}>{value}</p>
     </section>
   );
 }
@@ -242,18 +207,18 @@ function LearningSection({
   value: string;
 }) {
   return (
-    <section className="paper-learning-section">
-      <span className={`metadata-label ${sectionLabelClass(label)}`}>{label}</span>
-      <p>{value}</p>
+    <section className="mt-[18px] grid gap-2 border-t border-border pt-[18px] first-of-type:mt-0 first-of-type:border-t-0 first-of-type:pt-5">
+      <span className={cx(metadataLabelClass, sectionLabelTone(label))}>{label}</span>
+      <p className={detailParagraphClass}>{value}</p>
     </section>
   );
 }
 
 function AbstractSection({ abstract }: { abstract: string }) {
   return (
-    <section className="paper-abstract">
-      <span className="metadata-label paper-section-label paper-section-abstract">Abstract</span>
-      <p>{abstract}</p>
+    <section className="mt-[22px] grid gap-2 border-t border-border pt-[18px]">
+      <span className={cx(metadataLabelClass, "text-[#756a5e]")}>Abstract</span>
+      <p className={detailParagraphClass}>{abstract}</p>
     </section>
   );
 }
@@ -263,25 +228,25 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   const visiblePapers = showAll ? papers : papers.slice(0, 3);
 
   return (
-    <section className="similar-papers">
-      <span className="similar-papers-heading metadata-label paper-section-label paper-section-similar">Similar papers</span>
+    <section className="mt-7 grid gap-0 border-t border-border pt-[18px]">
+      <span className={cx(metadataLabelClass, "pb-3.5 text-text-primary")}>Similar papers</span>
       {visiblePapers.map((paper, index) => (
-        <article key={paper.paper_id} className={`similar-paper${!showAll && index === 2 ? " similar-paper-preview" : ""}`}>
-          <strong>{paper.title}</strong>
-          <span>{authorLine(paper.authors ?? [])}</span>
-          <span>{publicationDate({ publicationDate: paper.publication_date ?? null, year: paper.year })}</span>
+        <article key={paper.paper_id} className={cx("grid gap-[5px] border-t border-border py-3.5", !showAll && index === 2 && "max-h-[52px] overflow-hidden opacity-45 blur-[2.4px]")}>
+          <strong className="text-[13px] font-semibold leading-[1.45] text-text-primary [overflow-wrap:anywhere]">{paper.title}</strong>
+          <span className="text-[11px] leading-[1.4] text-text-secondary">{authorLine(paper.authors ?? [])}</span>
+          <span className="text-[11px] leading-[1.4] text-text-secondary">{publicationDate({ publicationDate: paper.publication_date ?? null, year: paper.year })}</span>
           {paper.arxiv_link || paper.s2_link ? (
-            <div className="similar-paper-links">
-              {paper.arxiv_link ? <ExternalLink href={paper.arxiv_link}>arXiv ↗</ExternalLink> : null}
-              {paper.s2_link ? <ExternalLink href={paper.s2_link}>Semantic Scholar ↗</ExternalLink> : null}
+            <div className="flex flex-wrap gap-2 pt-[3px]">
+              {paper.arxiv_link ? <ExternalLink href={paper.arxiv_link} className={similarLinkClass}>arXiv ↗</ExternalLink> : null}
+              {paper.s2_link ? <ExternalLink href={paper.s2_link} className={similarLinkClass}>Semantic Scholar ↗</ExternalLink> : null}
             </div>
           ) : null}
         </article>
       ))}
-      {papers.length > 2 ? (
-        <div className={`similar-paper-reveal${showAll ? " similar-paper-reveal-expanded" : ""}`}>
+      {papers.length > 3 ? (
+        <div className={cx("relative z-[1] -mt-[42px] bg-[linear-gradient(to_bottom,transparent_0%,color-mix(in_srgb,var(--color-surface)_78%,transparent)_34%,var(--color-surface)_68%)] pt-[42px]", showAll && "mt-2 bg-transparent pt-0")}>
           <button
-            className="similar-paper-toggle"
+            className="block min-h-10 w-full rounded-[3px] border border-border-strong bg-[color-mix(in_srgb,var(--color-surface)_90%,var(--color-surface-subtle))] px-3 py-[9px] text-xs font-semibold text-text-primary hover:border-accent hover:text-accent-deep"
             type="button"
             onClick={() => setShowAll((current) => !current)}
             aria-expanded={showAll}
@@ -294,8 +259,14 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   );
 }
 
-function sectionLabelClass(label: string): string {
-  return `paper-section-label paper-section-${label.toLowerCase().replace(/[^a-z]+/g, "-")}`;
+const metadataLabelClass = "text-xs font-bold leading-[1.3] tracking-[0.01em] text-text-secondary";
+const detailParagraphClass = "m-0 w-[min(100%,62ch)] text-sm leading-[1.65] text-[color-mix(in_srgb,var(--color-text-primary)_82%,var(--color-text-secondary))]";
+const similarLinkClass = "text-[11px] font-semibold text-accent-deep underline decoration-[color-mix(in_srgb,var(--color-accent)_45%,var(--color-border))] underline-offset-[3px] hover:decoration-accent";
+
+function sectionLabelTone(label: string): string {
+  if (label === "Summary") return "text-accent-deep";
+  if (label === "Why it matters") return "text-[#526575]";
+  return "";
 }
 
 function fullAuthorList(authors: string[]): string {
@@ -307,11 +278,11 @@ function PaperSourceActions({ paper }: { paper: PaperDetails }) {
     return null;
   }
   return (
-    <footer className="paper-source-actions" aria-label="Original paper sources">
-      <div>
-        {paper.arxivLink ? <ExternalLink href={paper.arxivLink} className="paper-source-action">arXiv ↗</ExternalLink> : null}
+    <footer className="-mx-[26px] -mb-[22px] mt-[18px] border-t border-border bg-surface px-[26px] py-3.5" aria-label="Original paper sources">
+      <div className="flex flex-wrap gap-2">
+        {paper.arxivLink ? <ExternalLink href={paper.arxivLink} className="rounded-sm border border-text-primary bg-text-primary px-2.5 py-2 text-xs font-semibold text-surface no-underline transition-[background-color,border-color,color] duration-150 hover:border-accent">arXiv ↗</ExternalLink> : null}
         {paper.semanticScholarLink ? (
-          <ExternalLink href={paper.semanticScholarLink} className="paper-source-action paper-source-action-secondary">
+          <ExternalLink href={paper.semanticScholarLink} className="rounded-sm border border-border-strong bg-surface px-2.5 py-2 text-xs font-semibold text-text-primary no-underline transition-[background-color,border-color,color] duration-150 hover:border-accent hover:bg-accent-subtle hover:text-accent-deep">
             Semantic Scholar ↗
           </ExternalLink>
         ) : null}
@@ -351,9 +322,9 @@ function TagList({ tags, label }: { tags: string[]; label: string }) {
     return null;
   }
   return (
-    <section className="node-list-section node-tag-list" aria-label={label}>
-      <span className="metadata-label paper-section-label node-section-label">{label}</span>
-      <p>{tags.join(" · ")}</p>
+    <section className="mt-[18px] grid gap-2 border-t border-border pt-[18px]" aria-label={label}>
+      <span className={metadataLabelClass}>{label}</span>
+      <p className={detailParagraphClass}>{tags.join(" · ")}</p>
     </section>
   );
 }
@@ -363,11 +334,11 @@ function QuestionList({ questions }: { questions: string[] }) {
     return null;
   }
   return (
-    <section className="node-list-section node-question-list">
-      <span className="metadata-label paper-section-label node-section-label">Open questions</span>
-      <ul>
+    <section className="mt-[18px] grid gap-2 border-t border-border pt-[18px]">
+      <span className={metadataLabelClass}>Open questions</span>
+      <ul className="m-0 w-[min(100%,62ch)] list-disc pl-5 text-sm leading-[1.65] text-text-secondary marker:text-text-secondary">
         {questions.map((question) => (
-          <li key={question}>{question}</li>
+          <li className="mb-2.5 pl-1 leading-[1.55] last:mb-0" key={question}>{question}</li>
         ))}
       </ul>
     </section>

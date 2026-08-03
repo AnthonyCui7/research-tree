@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
+from research_tree.llm import DEFAULT_MODEL
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
@@ -43,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
             "experiments/output/workspace_candidate_preparation/runN artifact."
         ),
     )
-    parser.add_argument("--model", default="gpt-5.6-luna")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--prompt-version",
         default=WORKSPACE_CONSTRUCTION_PROMPT_VERSION,

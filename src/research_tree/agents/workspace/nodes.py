@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 from uuid import uuid4
 
 from langgraph.types import Command, interrupt
 
+from research_tree.agents.workspace.cache import needs_similar_paper_context
 from research_tree.agents.workspace.llm import (
     AGENT_ACTION_PROFILE,
     AGENT_CHAT_PROFILE,
@@ -20,7 +22,6 @@ from research_tree.agents.workspace.models import (
     AgentIntent,
     AgentNextAction,
     PipelineRerunRequest,
-    WorkspaceChatResponse,
     WorkspaceCritique,
     WorkspaceValidationSummary,
 )
@@ -31,6 +32,7 @@ from research_tree.agents.workspace.prompts import (
     build_workspace_critique_prompt,
 )
 from research_tree.agents.workspace.state import WorkspaceAgentState
+from research_tree.llm import DEFAULT_MODEL
 from research_tree.retrieval.candidate_preparation import (
     run_workspace_candidate_preparation_pipeline,
 )
@@ -49,7 +51,12 @@ from research_tree.workspace.diff import derive_operations_and_diff_summary
 from research_tree.workspace.enrichment import (
     load_paper_content_context,
 )
-from research_tree.workspace.operations import apply_workspace_patch_in_memory
+from research_tree.workspace.operations import (
+    WorkspacePatchError,
+    apply_structured_workspace_patch,
+    apply_workspace_patch_in_memory,
+    remove_visible_paper_operation,
+)
 from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.serialization import load_candidate_artifact, load_json_artifact
 from research_tree.workspace.schemas import paper_database_from_artifact
@@ -134,7 +141,7 @@ class WorkspaceAgentNodes:
             "agent_run_id": state.get("agent_run_id") or f"agent_run_{uuid4().hex}",
             "allow_pipeline_rerun": bool(state.get("allow_pipeline_rerun", False)),
             "require_approval": bool(state.get("require_approval", True)),
-            "agent_model": str(state.get("agent_model") or "gpt-5.6-luna"),
+            "agent_model": str(state.get("agent_model") or DEFAULT_MODEL),
             "approval_required": False,
             "repair_attempts": int(state.get("repair_attempts", 0)),
             "max_repair_attempts": int(state.get("max_repair_attempts", 2)),
@@ -193,7 +200,7 @@ class WorkspaceAgentNodes:
                 repository=self.workspace_repository,
                 repo_root=self.repo_root,
             )
-            if _needs_similar_paper_context(state)
+            if needs_similar_paper_context(state)
             else {}
         )
         context = build_workspace_chat_context(
@@ -269,6 +276,8 @@ class WorkspaceAgentNodes:
             **self._request_profile_kwargs(AGENT_ACTION_PROFILE),
         )
         action_type = action.action_type
+        if needs_similar_paper_context(state):
+            action_type = "construct_workspace_modification"
         if state.get("retrieval_result") and action_type == "prepare_retrieval_rerun":
             intent = state.get("intent") or {}
             action_type = (
@@ -340,9 +349,14 @@ class WorkspaceAgentNodes:
                 "topic": _workspace_topic(state),
                 "max_candidates": None,
                 "alpha": None,
-                "reason": next_action.get("reason")
-                or "More candidate papers are needed for the requested workspace action.",
             }
+        raw_request = {
+            **dict(raw_request),
+            "topic": raw_request.get("topic") or _workspace_topic(state),
+            "reason": raw_request.get("reason")
+            or next_action.get("reason")
+            or "More candidate papers are needed for the requested workspace action.",
+        }
         request = PipelineRerunRequest.model_validate(raw_request)
         return {
             "retrieval_request": request.model_dump(),
@@ -441,7 +455,20 @@ class WorkspaceAgentNodes:
 
     def construct_workspace_modification(self, state: WorkspaceAgentState) -> dict[str, Any]:
         next_action = state.get("next_action") or {}
-        if _is_similar_paper_adjustment(state):
+        deterministic_removal = _deterministic_visible_paper_removal(
+            _required_mapping(state.get("workspace"), "workspace"),
+            user_message=str(state.get("user_message") or ""),
+            next_action=next_action,
+        )
+        if deterministic_removal is not None:
+            return {
+                "proposed_workspace": deterministic_removal,
+                "status": "constructing",
+                "node_trace": [
+                    _trace("construct_workspace_modification:remove_visible_paper")
+                ],
+            }
+        if needs_similar_paper_context(state):
             return self._adjust_similar_papers(state, next_action)
         proposed = self.workspace_constructor(
             candidate_artifact=_workspace_only_candidate_artifact(
@@ -456,7 +483,7 @@ class WorkspaceAgentNodes:
             target_paper_ids=next_action.get("target_paper_ids") or [],
             similar_papers_context=state.get("similar_papers_context") or {},
             run_metadata={"user_message": state.get("user_message", "")},
-            model=str(state.get("agent_model") or "gpt-5.6-luna"),
+            model=str(state.get("agent_model") or DEFAULT_MODEL),
         )
         return {
             "proposed_workspace": proposed,
@@ -496,12 +523,21 @@ class WorkspaceAgentNodes:
         paper_database = paper_database_from_artifact(
             load_json_artifact(paper_database_path)
         )
-        proposed, _debug = build_similar_papers(
-            workspace=workspace,
-            paper_database=paper_database,
-            paper_ids=target_ids,
-            **policy,
-        )
+        try:
+            proposed, _debug = build_similar_papers(
+                workspace=workspace,
+                paper_database=paper_database,
+                paper_ids=target_ids,
+                **policy,
+            )
+        except Exception as error:
+            return {
+                "proposed_workspace": workspace,
+                "status": "failed",
+                "final_response": "Similar-paper refresh failed before producing a workspace change.",
+                "errors": [str(error)],
+                "node_trace": [_trace("adjust_similar_papers:failed")],
+            }
         provenance = proposed.setdefault("provenance", {})
         if isinstance(provenance, dict):
             provenance["similar_papers_policy"] = {
@@ -593,19 +629,26 @@ class WorkspaceAgentNodes:
             repair_attempts=int(state.get("repair_attempts", 0)),
             validation_round=validation_round,
         ).model_dump()
-        if not errors:
+        if state.get("errors"):
+            goto = "finalize_response"
+        elif not errors and _proposal_has_no_changes(state):
+            goto = "finalize_response"
+        elif not errors:
             goto = "persist_pending_review"
         elif int(state.get("repair_attempts", 0)) < int(state.get("max_repair_attempts", 2)):
             goto = "repair_workspace_proposal"
         else:
             goto = "finalize_validation_failure"
+        update: dict[str, Any] = {
+            "validation_summary": summary,
+            "warnings": warnings,
+            "status": "failed" if state.get("errors") else "validating",
+            "node_trace": [_trace("combine_validation_results")],
+        }
+        if goto == "finalize_response" and not state.get("errors"):
+            update["final_response"] = "I could not find a workspace change to propose."
         return Command(
-            update={
-                "validation_summary": summary,
-                "warnings": warnings,
-                "status": "validating",
-                "node_trace": [_trace("combine_validation_results")],
-            },
+            update=update,
             goto=goto,
         )
 
@@ -674,7 +717,7 @@ class WorkspaceAgentNodes:
                 "validation_errors": validation_summary.get("errors") or [],
                 "operation_history": state.get("action_history") or [],
             },
-            model=str(state.get("agent_model") or "gpt-5.6-luna"),
+            model=str(state.get("agent_model") or DEFAULT_MODEL),
         )
         return {
             "proposed_workspace": proposed,
@@ -1154,22 +1197,6 @@ def _paper_ids_for_explanation(
     return sorted(paper_id for paper_id in selected if paper_id in visible_ids)
 
 
-def _is_similar_paper_adjustment(state: Mapping[str, Any]) -> bool:
-    return _needs_similar_paper_context(state)
-
-
-def _needs_similar_paper_context(state: Mapping[str, Any]) -> bool:
-    message = str(state.get("user_message") or "").casefold()
-    next_action = state.get("next_action")
-    instruction = (
-        str(next_action.get("modification_instruction") or "").casefold()
-        if isinstance(next_action, Mapping)
-        else ""
-    )
-    text = f"{message} {instruction}"
-    return "similar paper" in text or "related paper" in text
-
-
 def _similar_papers_context_for_scope(
     *,
     workspace: Mapping[str, Any],
@@ -1232,7 +1259,7 @@ def _similar_paper_context_item(
             "publication_date": paper.publication_date,
             "venue": paper.venue,
             "abstract": paper.abstract,
-            "tldr": paper.tldr,
+            "tldr": _candidate_tldr(paper),
             "citation_count": paper.citation_count,
             "primary_link": paper.primary_link,
             "arxiv_link": paper.arxiv_link,
@@ -1260,6 +1287,33 @@ def _similar_paper_context_item(
         "similarity_score": item.get("similarity_score"),
         "cross_encoder_score": item.get("cross_encoder_score"),
     }
+
+
+def _proposal_has_no_changes(state: Mapping[str, Any]) -> bool:
+    diff_summary = state.get("diff_summary")
+    if not isinstance(diff_summary, Mapping):
+        return False
+    if int(diff_summary.get("operation_count") or 0) != 0:
+        return False
+    return (
+        diff_summary.get("workspace_version_hash_before")
+        == diff_summary.get("workspace_version_hash_after")
+    )
+
+
+def _candidate_tldr(paper: Any) -> str | None:
+    direct = getattr(paper, "tldr", None)
+    if isinstance(direct, str):
+        return direct
+    metadata = getattr(paper, "semantic_scholar_metadata", None)
+    if isinstance(metadata, Mapping):
+        tldr = metadata.get("tldr")
+        if isinstance(tldr, Mapping):
+            text = tldr.get("text")
+            return str(text) if text else None
+        if isinstance(tldr, str):
+            return tldr
+    return None
 
 
 def _workspace_only_candidate_artifact(
@@ -1304,6 +1358,126 @@ def _workspace_only_candidate_artifact(
         else:
             artifact["non_survey_papers"].append(payload)
     return artifact
+
+
+def _deterministic_visible_paper_removal(
+    workspace: Mapping[str, Any],
+    *,
+    user_message: str,
+    next_action: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    target_paper_ids = _visible_removal_target_ids(
+        workspace,
+        user_message=user_message,
+        next_action=next_action,
+    )
+    if not target_paper_ids:
+        return None
+
+    operations = [
+        remove_visible_paper_operation(paper_id=paper_id)
+        for paper_id in target_paper_ids
+    ]
+    try:
+        return apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=operations,
+        )
+    except WorkspacePatchError:
+        return None
+
+
+def _visible_removal_target_ids(
+    workspace: Mapping[str, Any],
+    *,
+    user_message: str,
+    next_action: Mapping[str, Any],
+) -> list[str]:
+    message_tokens = _paper_query_tokens(user_message)
+    removal_requested = any(
+        token in message_tokens
+        for token in ("remove", "delete", "drop", "demote")
+    )
+    if not removal_requested:
+        return []
+
+    paper_cards = _required_mapping(workspace.get("paper_cards"), "paper_cards")
+    explicit_ids = [
+        str(paper_id)
+        for paper_id in next_action.get("target_paper_ids") or []
+        if str(paper_id) in paper_cards
+    ]
+    if explicit_ids:
+        return sorted(set(explicit_ids))
+
+    normalized_message = _normalized_phrase(user_message)
+    exact_title_ids: list[str] = []
+    for paper_id, card in paper_cards.items():
+        if not isinstance(card, Mapping):
+            continue
+        title = str(card.get("title") or "")
+        if title and _normalized_phrase(title) in normalized_message:
+            exact_title_ids.append(str(paper_id))
+    if exact_title_ids:
+        return sorted(set(exact_title_ids))
+
+    query_tokens = [
+        token
+        for token in message_tokens
+        if token
+        not in {
+            "remove",
+            "delete",
+            "drop",
+            "demote",
+            "paper",
+            "workspace",
+            "visible",
+            "from",
+            "the",
+        }
+    ]
+    if not query_tokens:
+        return []
+
+    scored: list[tuple[float, str]] = []
+    for paper_id, card in paper_cards.items():
+        if not isinstance(card, Mapping):
+            continue
+        title_tokens = set(_paper_query_tokens(str(card.get("title") or "")))
+        if not title_tokens:
+            continue
+        matches = sum(1 for token in query_tokens if token in title_tokens)
+        if matches:
+            scored.append((matches / len(query_tokens), str(paper_id)))
+
+    if not scored:
+        return []
+    scored.sort(reverse=True)
+    best_score, best_id = scored[0]
+    if best_score < 0.6:
+        return []
+    if len(scored) > 1 and scored[1][0] == best_score:
+        return []
+    return [best_id]
+
+
+def _paper_query_tokens(value: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", value.casefold())
+    normalized: list[str] = []
+    for token in tokens:
+        if len(token) > 4 and token.endswith("ed"):
+            token = token[:-2]
+        elif len(token) > 5 and token.endswith("ing"):
+            token = token[:-3]
+        elif len(token) > 4 and token.endswith("s"):
+            token = token[:-1]
+        normalized.append(token)
+    return normalized
+
+
+def _normalized_phrase(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
 
 
 def _card_is_survey(card: Mapping[str, Any]) -> bool:

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { AppShell } from "../components/layout/AppShell";
 import { useWorkspaceCollection } from "../data/useWorkspaceCollection";
+import { useActiveWorkspace } from "../data/useActiveWorkspace";
 import { normalizeWorkspaceForTree } from "../lib/workspaceAdapter";
 import type { PipelineRun, TreeNodeId } from "../lib/types";
 
@@ -15,7 +16,7 @@ export function App() {
   );
   const [buildingRun, setBuildingRun] = useState<PipelineRun | null>(null);
 
-  const activeWorkspace = useMemo(() => {
+  const activeSummary = useMemo(() => {
     if (workspaces.length === 0) {
       return null;
     }
@@ -25,6 +26,12 @@ export function App() {
     );
   }, [selectedWorkspaceId, workspaces]);
 
+  const {
+    workspace: activeWorkspace,
+    loading: workspaceLoading,
+    error: workspaceError,
+  } = useActiveWorkspace(activeSummary);
+
   const tree = useMemo(() => {
     if (!activeWorkspace) {
       return null;
@@ -32,7 +39,7 @@ export function App() {
     return normalizeWorkspaceForTree(activeWorkspace);
   }, [activeWorkspace]);
 
-  const activeWorkspaceId = activeWorkspace?.workspace_id ?? null;
+  const activeWorkspaceId = activeSummary?.workspace_id ?? null;
 
   function selectWorkspace(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);
@@ -84,6 +91,9 @@ export function App() {
       activeWorkspaceId={activeWorkspaceId}
       tree={tree}
       activeWorkspace={activeWorkspace}
+      workspaceLoading={workspaceLoading}
+      workspaceError={workspaceError}
+      onRefresh={() => void refresh()}
       selectedNodeId={selectedNodeId}
       onSelectWorkspace={selectWorkspace}
       onSelectNode={selectNode}

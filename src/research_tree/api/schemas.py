@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from research_tree.llm import DEFAULT_MODEL
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -54,12 +56,12 @@ class TopicReviewResponse(BaseModel):
 class CreateWorkspaceRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=240)
     topic_review_token: str = Field(min_length=1, max_length=128)
-    model: str = "gpt-5.6-luna"
+    model: str = DEFAULT_MODEL
 
 
 class PipelineRerunApiRequest(BaseModel):
     start_stage: str
-    model: str = "gpt-5.6-luna"
+    model: str = DEFAULT_MODEL
     expected_version_hash: str | None = None
 
 
@@ -109,7 +111,7 @@ class AgentRunRequest(BaseModel):
     thread_id: str | None = None
     allow_pipeline_rerun: bool = False
     require_approval: bool = True
-    model: str = Field(default="gpt-5.6-luna", min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:-]+$")
+    model: str = Field(default=DEFAULT_MODEL, min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class AgentRunResponse(BaseModel):

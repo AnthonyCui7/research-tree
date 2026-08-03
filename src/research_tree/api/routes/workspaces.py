@@ -153,12 +153,18 @@ def get_workspace(
 @router.delete("/{workspace_id}", response_model=WorkspaceMutationResponse)
 def delete_workspace(
     workspace_id: str,
+    expected_version_hash: str | None = None,
     request: DeleteWorkspaceRequest | None = None,
     service: WorkspaceQueryService = Depends(get_workspace_query_service),
 ) -> dict[str, object]:
+    # The hash travels as a query parameter because intermediaries are entitled
+    # to drop a DELETE body. The body form stays accepted for older callers.
     return service.delete_workspace(
         workspace_id,
-        expected_version_hash=(request or DeleteWorkspaceRequest()).expected_version_hash,
+        expected_version_hash=(
+            expected_version_hash
+            or (request or DeleteWorkspaceRequest()).expected_version_hash
+        ),
     )
 
 

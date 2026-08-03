@@ -43,31 +43,6 @@ class AgentNextAction(BaseModel):
     modification_instruction: str | None = None
 
 
-class WorkspaceOperation(BaseModel):
-    operation_type: Literal[
-        "rename_branch",
-        "split_branch",
-        "merge_branches",
-        "move_paper",
-        "promote_candidate_paper",
-        "demote_visible_paper",
-        "update_paper_card",
-        "create_paper_path",
-        "update_reading_order",
-        "mark_off_path",
-        "update_root_overview",
-        "update_workspace_subtree",
-        "refresh_similar_papers",
-    ]
-    target_ids: dict[str, Any] = Field(default_factory=dict)
-    before: dict[str, Any] | None = None
-    after: dict[str, Any] | None = None
-    rationale: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    source: Literal["agent"] = "agent"
-    requires_approval: bool = True
-
-
 class PipelineRerunRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -79,16 +54,6 @@ class PipelineRerunRequest(BaseModel):
     alpha: float | None = None
     reason: str
     requested_by_agent: bool = True
-
-
-class PipelineRerunGuardrailResult(BaseModel):
-    allowed: bool
-    normalized_args: dict[str, Any] = Field(default_factory=dict)
-    rejection_reason: str | None = None
-    warnings: list[str] = Field(default_factory=list)
-    expensive: bool = False
-    prior_defaults: dict[str, Any] = Field(default_factory=dict)
-    new_values: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkspaceCritiqueFinding(BaseModel):
@@ -118,15 +83,6 @@ class WorkspaceChatResponse(BaseModel):
     answer: str
     referenced_paper_ids: list[str] = Field(default_factory=list)
     referenced_branch_ids: list[str] = Field(default_factory=list)
-
-
-class WorkspaceValidationResultModel(BaseModel):
-    validator_name: str
-    valid: bool
-    errors: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    stats: dict[str, Any] = Field(default_factory=dict)
-    validation_round: int = 0
 
 
 class WorkspaceValidationSummary(BaseModel):

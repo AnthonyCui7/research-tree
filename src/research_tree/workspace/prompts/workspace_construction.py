@@ -4,7 +4,7 @@ import json
 from typing import Any, Mapping
 
 
-WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v8"
+WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v9"
 PROMPT_ABSTRACT_MAX_CHARS = 240
 
 
@@ -78,8 +78,8 @@ def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
         "abstract",
         "publication_date",
         "citation_count",
-        "age_adjusted_citation_score",
-        "cross_encoder_relevance",
+        "authority_rank",
+        "in_degree",
         "is_survey",
     )
     payload = {field: paper.get(field) for field in fields}
@@ -87,6 +87,8 @@ def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
         str(payload.get("abstract") or ""),
         PROMPT_ABSTRACT_MAX_CHARS,
     )
+    if paper.get("flagged_off_topic"):
+        payload["flagged_off_topic"] = True
     return payload
 
 
@@ -103,6 +105,8 @@ The workspace gives a reader a durable model of the field: central questions, di
 Identify the field's conceptual backbone. A visible paper earns a non-interchangeable role by introducing a mechanism, establishing a benchmark, redirecting a research question, making a consequential critique, or connecting historical steps. Build the smallest teaching set that reconstructs those moves. Ten to twenty-five visible papers is an editorial calibration, not a quota: include as many papers as a coherent account needs, then stop when another paper no longer sharpens the reader's model. Do not pad sparse fields or omit necessary distinctions to meet a count.
 
 Use citation count, publication date, and age-adjusted citation score as historical signals for establishment, momentum, and representative work; they do not replace conceptual judgment.
+
+A paper marked `flagged_off_topic: true` entered through citation snowballing, and the retrieval system judged that the field cites the paper as general infrastructure — an optimizer, a dataset, a backbone architecture — rather than as work on the topic itself. That judgment is heuristic and can be wrong: a flagged paper may in fact be a founding paper of the topic. Decide for yourself whether each flagged paper belongs; exclude the ones that are genuinely general infrastructure, keep the ones the topic cannot be understood without.
 
 Use surveys as orientation documents. Choose a small non-overlapping set for the root and genuinely distinct branches. The root may have one survey anchor. A branch or atomic leaf may have one different survey anchor only when it provides branch-specific framing absent from the ancestor's survey. Surveys never appear in paper paths.
 

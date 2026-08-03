@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
-from research_tree.retrieval.cache import CachedJsonClient, JsonRequestError
+from research_tree.retrieval.cache import CachedJsonClient, JsonRequestError, RateLimiter
 from research_tree.retrieval.dates import parse_iso_date
 from research_tree.retrieval.models import Paper
 from research_tree.retrieval.text import (
@@ -13,10 +14,21 @@ from research_tree.retrieval.text import (
 )
 
 
-# Semantic Scholar's introductory keyed limit is one request per second across
-# endpoints. A 1.5-second spacing stays below that shared limit and leaves room
-# for retries without creating burst traffic.
-SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.5
+# Semantic Scholar allows one request per second, counted cumulatively across
+# every endpoint; an API key buys reliability, not throughput. A slight margin
+# above one second absorbs clock jitter without wasting the budget.
+SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.2
+
+# Every Semantic Scholar client in this process shares one request budget.
+SEMANTIC_SCHOLAR_RATE_LIMITER = RateLimiter()
+
+# Documented endpoint ceilings.
+SEMANTIC_SCHOLAR_BATCH_ID_LIMIT = 500
+SEMANTIC_SCHOLAR_BULK_PAGE_SIZE = 1000
+
+# The batch endpoint caps a response at 10 MB. Reference lists run to hundreds of
+# ids per paper, so reference fetches use a smaller chunk than the id limit.
+SEMANTIC_SCHOLAR_REFERENCE_CHUNK_SIZE = 250
 
 
 SEMANTIC_SCHOLAR_PAPER_FIELDS = [
@@ -71,7 +83,114 @@ class SemanticScholarClient:
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
             headers=headers,
+            rate_limiter=SEMANTIC_SCHOLAR_RATE_LIMITER,
         )
+
+    def bulk_search(
+        self,
+        query: str,
+        *,
+        max_papers: int,
+        sort: str = "citationCount:desc",
+        filters: dict[str, str] | None = None,
+        source_tag: str | None = None,
+        warnings: list[str] | None = None,
+    ) -> list[Paper]:
+        """Page bulk search until `max_papers` papers are collected.
+
+        Bulk search returns up to 1,000 papers per request and supports boolean
+        query syntax, so one composed query covering a field's whole vocabulary
+        costs far fewer requests than one query per phrase.
+        """
+
+        found_by = source_tag or f"s2_bulk_search:{sort}"
+        papers: list[Paper] = []
+        token: str | None = None
+        while len(papers) < max_papers:
+            params: dict[str, Any] = {
+                "query": query,
+                "fields": SEMANTIC_SCHOLAR_SEARCH_FIELDS,
+                "sort": sort,
+                **(filters or {}),
+            }
+            if token:
+                params["token"] = token
+            try:
+                payload = self.client.get_json(
+                    f"{self.base_url}/paper/search/bulk",
+                    params,
+                )
+            except JsonRequestError as error:
+                _append_warning(
+                    warnings,
+                    f"Semantic Scholar bulk search failed for query '{query}': {error}",
+                )
+                break
+
+            items = (payload.get("data") or [])[: max_papers - len(papers)]
+            for item in items:
+                paper = paper_from_semantic_scholar(item)
+                paper.found_by.add(found_by)
+                papers.append(paper)
+            token = payload.get("token")
+            if not token or not items:
+                break
+        return papers
+
+    def get_references_batch(
+        self,
+        paper_ids: list[str],
+        warnings: list[str] | None,
+        chunk_size: int = SEMANTIC_SCHOLAR_REFERENCE_CHUNK_SIZE,
+    ) -> dict[str, list[str]]:
+        """Return `{paper_id: [referenced paper ids]}` for the given papers.
+
+        The batch endpoint returns complete reference lists, which collapses what
+        would otherwise be one request per paper into a couple of requests total.
+        """
+
+        ids = _unique_ids(paper_ids)
+        references: dict[str, list[str]] = {}
+        for chunk in _chunked(ids, max(chunk_size, 1)):
+            references.update(self._references_for_chunk(chunk, warnings))
+        return references
+
+    def _references_for_chunk(
+        self,
+        ids: list[str],
+        warnings: list[str] | None,
+    ) -> dict[str, list[str]]:
+        try:
+            payload = self.client.post_json(
+                f"{self.base_url}/paper/batch?fields=references.paperId",
+                {"ids": ids},
+            )
+        except JsonRequestError as error:
+            # A chunk can exceed the 10 MB response cap when its papers have very
+            # long bibliographies. Splitting once recovers those without turning
+            # a size problem into a per-paper request storm.
+            if len(ids) > 1:
+                midpoint = len(ids) // 2
+                return {
+                    **self._references_for_chunk(ids[:midpoint], warnings),
+                    **self._references_for_chunk(ids[midpoint:], warnings),
+                }
+            _append_warning(
+                warnings,
+                f"Semantic Scholar reference fetch failed for {ids[0]}: {error}",
+            )
+            return {}
+
+        references: dict[str, list[str]] = {}
+        for item in payload if isinstance(payload, list) else []:
+            if not isinstance(item, dict) or not item.get("paperId"):
+                continue
+            references[str(item["paperId"])] = [
+                str(reference["paperId"])
+                for reference in item.get("references") or []
+                if isinstance(reference, dict) and reference.get("paperId")
+            ]
+        return references
 
     def search_by_citation_count(
         self,
@@ -119,33 +238,39 @@ class SemanticScholarClient:
         paper_ids: list[str],
         warnings: list[str] | None,
     ) -> dict[str, dict[str, Any]]:
-        """Fetch source metadata for the small visible workspace set.
+        """Fetch full source metadata, including Semantic Scholar's own TLDRs."""
 
-        Paper batch accepts at most 500 IDs, while a workspace intentionally stays
-        below 30 papers. Keeping this as one cached request avoids generating a
-        summary when Semantic Scholar already supplies a TLDR.
-        """
+        details: dict[str, dict[str, Any]] = {}
+        for chunk in _chunked(_unique_ids(paper_ids), SEMANTIC_SCHOLAR_BATCH_ID_LIMIT):
+            try:
+                payload = self.client.post_json(
+                    f"{self.base_url}/paper/batch?fields={SEMANTIC_SCHOLAR_DETAIL_FIELDS}",
+                    {"ids": chunk},
+                )
+            except JsonRequestError as error:
+                _append_warning(
+                    warnings,
+                    f"Semantic Scholar paper metadata enrichment failed: {error}",
+                )
+                continue
+            details.update({
+                str(item["paperId"]): item
+                for item in payload if isinstance(item, dict) and item.get("paperId")
+            })
+        return details
 
-        ids = list(dict.fromkeys(paper_id for paper_id in paper_ids if paper_id))
-        if not ids:
-            return {}
-        try:
-            payload = self.client.post_json(
-                f"{self.base_url}/paper/batch?fields={SEMANTIC_SCHOLAR_DETAIL_FIELDS}",
-                {"ids": ids},
-            )
-        except JsonRequestError as error:
-            _append_warning(
-                warnings,
-                f"Semantic Scholar paper metadata enrichment failed: {error}",
-            )
-            return {}
 
-        return {
-            str(item.get("paperId")): item
-            for item in payload
-            if isinstance(item, dict) and item.get("paperId")
-        }
+def s2_api_key() -> str | None:
+    return os.environ.get("S2_API_KEY") or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+
+
+def _unique_ids(paper_ids: list[str]) -> list[str]:
+    return list(dict.fromkeys(paper_id for paper_id in paper_ids if paper_id))
+
+
+def _chunked(values: list[str], size: int) -> list[list[str]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
+
 
 def paper_from_semantic_scholar(item: dict[str, Any]) -> Paper:
     external_ids = item.get("externalIds") or {}
@@ -170,19 +295,15 @@ def paper_from_semantic_scholar(item: dict[str, Any]) -> Paper:
         citation_count=item.get("citationCount"),
         publication_types=publication_types,
         url=item.get("url"),
-        semantic_scholar_metadata=_paper_metadata(item),
+        semantic_scholar_metadata=semantic_scholar_metadata(item),
     )
     paper.is_survey = looks_like_survey(paper.title, paper.publication_types)
     return paper
 
 
 def semantic_scholar_metadata(item: dict[str, Any]) -> dict[str, Any]:
-    """Return the documented bulk-search fields without discarding provider data."""
+    """Return the documented paper fields without discarding provider data."""
 
-    return _paper_metadata(item)
-
-
-def _paper_metadata(item: dict[str, Any]) -> dict[str, Any]:
     return {
         field: item.get(field)
         for field in [*SEMANTIC_SCHOLAR_PAPER_FIELDS, "tldr"]

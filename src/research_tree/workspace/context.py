@@ -293,7 +293,7 @@ def _paper_summary(paper: Mapping[str, Any]) -> dict[str, Any]:
         "year": paper.get("year"),
         "venue": paper.get("venue"),
         "citation_count": paper.get("citation_count"),
-        "age_adjusted_rank": paper.get("age_adjusted_rank"),
-        "cross_encoder_rank": paper.get("cross_encoder_rank"),
+        "authority_rank": paper.get("authority_rank"),
+        "in_degree": paper.get("in_degree"),
         "is_survey": paper.get("is_survey"),
     }

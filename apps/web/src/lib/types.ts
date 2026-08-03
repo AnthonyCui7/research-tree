@@ -193,9 +193,7 @@ export type TreeViewModel = {
   title: string;
   paperCount: number;
   branchCount: number;
-  pathCount: number;
   currentVersionHash: string | null;
-  versionCount: number;
   canvas: {
     width: number;
     height: number;
@@ -204,7 +202,6 @@ export type TreeViewModel = {
   nodes: TreeNodeViewModel[];
   nodesById: Record<TreeNodeId, TreeNodeViewModel>;
   edges: TreeEdgeViewModel[];
-  pathLabels: TreePathLabelViewModel[];
 };
 
 export type TreeNodeViewModel = RootTreeNode | BranchTreeNode | PaperTreeNode;
@@ -234,13 +231,10 @@ export type RootTreeNode = {
   title: string;
   overview: string;
   whyItMatters: string;
-  surveyType: string;
   suggestedReadingDirection: string;
   keyTerms: string[];
   openQuestions: string[];
-  paperCount: number;
   branchCount: number;
-  pathCount: number;
   anchorPaper: PaperDetails | null;
   position: Point;
   size: NodeSize;
@@ -254,11 +248,8 @@ export type BranchTreeNode = {
   title: string;
   description: string;
   whyItMatters: string;
-  breadcrumb: string[];
   tags: string[];
   openQuestions: string[];
-  paperCount: number;
-  pathCount: number;
   anchorPaper: PaperDetails | null;
   position: Point;
   size: NodeSize;
@@ -268,17 +259,8 @@ export type PaperTreeNode = PaperDetails & {
   id: TreeNodeId;
   kind: "paper";
   family: number | "group" | null;
-  whyReadHere: string;
-  pathId: string;
   position: Point;
   size: NodeSize;
-};
-
-export type TreePathLabelViewModel = {
-  id: TreeNodeId;
-  label: string;
-  description: string;
-  position: Point;
 };
 
 export type TreeEdgeViewModel = {

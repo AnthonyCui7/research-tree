@@ -28,7 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--non-survey-count", type=int, default=50)
     parser.add_argument("--survey-baseline-count", type=int, default=5)
     parser.add_argument("--alpha", type=float, default=1.25)
-    parser.add_argument("--s2-bulk-citation-multiplier", type=int, default=50)
+    parser.add_argument("--pool-target", type=int, default=5000)
+    parser.add_argument("--root-set-size", type=int, default=250)
     parser.add_argument(
         "--request-delay-seconds",
         type=float,
@@ -38,10 +39,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-academic-retries", type=int, default=2)
     parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument(
-        "--cross-encoder-model",
-        default="cross-encoder/ms-marco-MiniLM-L6-v2",
-    )
     args = parser.parse_args(argv)
 
     load_dotenv_file(REPO_ROOT / ".env")
@@ -56,9 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         request_timeout_seconds=args.request_timeout_seconds,
         max_academic_retries=args.max_academic_retries,
         refresh_cache=args.refresh_cache,
-        cross_encoder_model=args.cross_encoder_model,
         citation_age_exponent=args.alpha,
-        s2_bulk_citation_multiplier=args.s2_bulk_citation_multiplier,
+        pool_target=args.pool_target,
+        root_set_size=args.root_set_size,
         verbose=not args.quiet,
     )
     output = run_workspace_candidate_preparation_pipeline(config)
@@ -92,8 +89,10 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--survey-baseline-count cannot be negative.")
     if args.alpha <= 0:
         raise ValueError("--alpha must be positive.")
-    if args.s2_bulk_citation_multiplier <= 0:
-        raise ValueError("--s2-bulk-citation-multiplier must be positive.")
+    if args.pool_target <= 0:
+        raise ValueError("--pool-target must be positive.")
+    if args.root_set_size <= 0:
+        raise ValueError("--root-set-size must be positive.")
     if args.request_delay_seconds < 0:
         raise ValueError("--request-delay-seconds cannot be negative.")
     if args.request_timeout_seconds <= 0:

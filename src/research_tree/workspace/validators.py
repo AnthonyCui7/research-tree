@@ -58,11 +58,18 @@ def schema_validator(payload: ValidatorPayload) -> dict[str, Any]:
         candidate_artifact,
         require_empty_similar_papers=False,
     )
+    errors = list(validation.errors)
+    warnings = list(validation.warnings)
+    if _explicit_all_visible_papers_removed(payload):
+        empty_error = "workspace paper_cards is empty."
+        errors = [error for error in errors if error != empty_error]
+        if empty_error in validation.errors:
+            warnings.append("This proposal removes all visible papers from the workspace.")
     return _result(
         "schema_validator",
-        valid=validation.is_valid,
-        errors=validation.errors,
-        warnings=validation.warnings,
+        valid=not errors,
+        errors=errors,
+        warnings=warnings,
         stats={
             "visible_paper_count": len(proposed.get("paper_cards") or {}),
         },
@@ -306,13 +313,40 @@ def _candidate_artifact_for_validation(payload: ValidatorPayload) -> dict[str, A
         for paper_id, card in _mapping(proposed.get("paper_cards")).items()
         if isinstance(card, Mapping)
     ]
+    discarded_fallback = [
+        {
+            "paper_id": str(item.get("paper_id")),
+            "title": item.get("title") or item.get("paper_id"),
+            "abstract": item.get("abstract") or "",
+        }
+        for item in proposed.get("discarded_candidates") or []
+        if isinstance(item, Mapping) and item.get("paper_id")
+    ]
     return {
         "schema_version": "llm_candidate_papers.v1",
         "topic": proposed.get("topic") or "",
         "workspace": proposed.get("topic") or "",
-        "non_survey_papers": candidate_pool or visible_fallback,
+        "non_survey_papers": candidate_pool or [*visible_fallback, *discarded_fallback],
         "survey_papers": [],
     }
+
+
+def _explicit_all_visible_papers_removed(payload: ValidatorPayload) -> bool:
+    proposed = _mapping(payload.get("proposed_workspace"))
+    if _mapping(proposed.get("paper_cards")):
+        return False
+    before_cards = _mapping(_mapping(payload.get("workspace")).get("paper_cards"))
+    if not before_cards:
+        return False
+    removed = {
+        str(operation.get("target_ids", {}).get("paper_id"))
+        for operation in payload.get("proposed_operations") or []
+        if isinstance(operation, Mapping)
+        and operation.get("operation_type") == "demote_visible_paper"
+        and isinstance(operation.get("target_ids"), Mapping)
+        and operation.get("target_ids", {}).get("paper_id")
+    }
+    return set(before_cards) <= removed
 
 
 def _candidate_ids(payload: ValidatorPayload) -> set[str]:

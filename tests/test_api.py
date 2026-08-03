@@ -16,6 +16,8 @@ from research_tree.api.dependencies import (
 )
 from research_tree.api.routes import agent, health, reviews, workspaces
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
+from research_tree.agents.workspace.llm import DeterministicWorkspaceAgentLlmClient
+from research_tree.agents.workspace.models import AgentIntent, AgentNextAction
 from research_tree.services.agent import WorkspaceAgentService
 from research_tree.services.errors import InvalidPayloadError
 from research_tree.services.pipeline import WorkspacePipelineService
@@ -111,7 +113,7 @@ def test_list_workspaces_returns_repository_summaries() -> None:
                 "workspace_version_hash": base_hash,
                 "title": "Test Topic",
                 "topic": "test topic",
-                "paper_count": 1,
+                "paper_count": 2,
                 "branch_count": 1,
                 "paper_path_count": 1,
                 "updated_at": "2026-07-05T00:00:00+00:00",
@@ -298,6 +300,92 @@ def test_agent_request_passes_bounded_conversation_history() -> None:
         {"role": "user", "text": "First question."},
         {"role": "assistant", "text": "First answer."},
     ]
+
+
+def test_remove_paper_request_bypasses_agent_graph_and_persists_review() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    _seed_current(repository)
+
+    def fail_graph_factory(_repository: Any) -> Any:
+        raise AssertionError("simple paper removal should not run the agent graph")
+
+    app = create_app()
+    app.dependency_overrides[get_repository] = lambda: repository
+    app.dependency_overrides[get_workspace_agent_service] = lambda: WorkspaceAgentService(
+        repository,
+        graph_factory=fail_graph_factory,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/workspaces/workspace-1/agent",
+        json={"message": "Remove Core Method paper."},
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["status"] == "pending_review"
+    assert payload["diff_summary"]["operation_types"] == [
+        "demote_visible_paper",
+        "update_reading_order",
+        "update_workspace_subtree",
+    ]
+    review = repository.get_pending_review("workspace-1", payload["review_id"])
+    assert "p1" not in review["proposed_workspace"]["paper_cards"]
+    assert review["structured_patch_operations"] == [
+        {"op": "remove", "entity_type": "paper_placement", "paper_id": "p1"}
+    ]
+    [placement] = review["proposed_workspace"]["removed_paper_placements"]
+    assert placement["paper_id"] == "p1"
+    assert placement["paper_card"]["title"] == "Core Method"
+    assert placement["branch_placements"][0]["branch_id"] == "branch-main"
+
+
+def test_noop_workspace_modification_does_not_persist_review() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    _seed_current(repository)
+
+    def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
+        return build_workspace_agent_graph(
+            llm_client=DeterministicWorkspaceAgentLlmClient(
+                structured_outputs=[
+                    AgentIntent(
+                        intent_type="modify_workspace",
+                        confidence=0.9,
+                        requires_workspace_modification=True,
+                        requires_more_papers=False,
+                        reason="test no-op",
+                    ),
+                    AgentNextAction(
+                        action_type="construct_workspace_modification",
+                        reason="test no-op",
+                        modification_instruction="No matching paper exists.",
+                    ),
+                ]
+            ),
+            workspace_constructor=lambda **kwargs: kwargs["base_workspace"],
+            workspace_repository=active_repository,
+        )
+
+    app = create_app()
+    app.dependency_overrides[get_repository] = lambda: repository
+    app.dependency_overrides[get_workspace_agent_service] = lambda: WorkspaceAgentService(
+        repository,
+        graph_factory=graph_factory,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/workspaces/workspace-1/agent",
+        json={"message": "Remove a paper that does not exist."},
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["status"] == "completed"
+    assert payload["review_id"] is None
+    assert payload["final_response"] == "I could not find a workspace change to propose."
+    assert repository.list_workspace_reviews("workspace-1") == []
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
@@ -488,6 +576,52 @@ def test_guardrail_rejection_returns_failed_guardrail_and_skips_retrieval_runner
     assert retrieval_calls == []
 
 
+def test_invalid_workspace_proposal_returns_failed_validation_status() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    _seed_current(repository)
+
+    def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
+        return build_workspace_agent_graph(
+            llm_client=DeterministicWorkspaceAgentLlmClient(
+                structured_outputs=[
+                    AgentIntent(
+                        intent_type="modify_workspace",
+                        confidence=0.9,
+                        requires_workspace_modification=True,
+                        requires_more_papers=False,
+                        reason="test invalid proposal",
+                    ),
+                    AgentNextAction(
+                        action_type="construct_workspace_modification",
+                        reason="test invalid proposal",
+                        modification_instruction="Return invalid workspace.",
+                    ),
+                ]
+            ),
+            workspace_constructor=lambda **_kwargs: {"schema_version": "bad"},
+            workspace_repository=active_repository,
+        )
+
+    app = create_app()
+    app.dependency_overrides[get_repository] = lambda: repository
+    app.dependency_overrides[get_workspace_agent_service] = lambda: WorkspaceAgentService(
+        repository,
+        graph_factory=graph_factory,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/workspaces/workspace-1/agent",
+        json={"message": "Make an invalid workspace proposal."},
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["status"] == "failed_validation"
+    assert payload["validation_summary"]["valid"] is False
+    assert payload["errors"]
+
+
 def test_route_modules_do_not_perform_low_level_file_writes() -> None:
     route_source = "\n".join(
         inspect.getsource(module)
@@ -539,6 +673,38 @@ def test_failed_pipeline_does_not_publish_a_partial_workspace() -> None:
     assert saved_run["stages"]["candidates"]["error"] == "Semantic Scholar is unavailable"
     with pytest.raises(FileNotFoundError):
         repository.get_current_workspace(run["workspace_id"])
+
+
+def test_workspace_pipeline_always_uses_luna_for_construction() -> None:
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    service = WorkspacePipelineService(
+        repository,
+        repo_root=_temp_dir(),
+        dispatch=lambda callback, _name: callback(),
+    )
+
+    with (
+        patch(
+            "research_tree.services.pipeline.TopicReviewService.review",
+            return_value={
+                "normalized_topic": "Model-Locked RAG",
+                "is_research_topic": True,
+                "guidance": "",
+                "existing_workspace": None,
+            },
+        ),
+        patch(
+            "research_tree.services.pipeline.run_workspace_candidate_preparation_pipeline",
+            side_effect=RuntimeError("stop after run reservation"),
+        ),
+    ):
+        run = service.start_new_workspace(
+            topic="Model-Locked RAG",
+            model="gpt-5.6-terra",
+        )
+
+    saved_run = repository.get_pipeline_run(run["run_id"])
+    assert saved_run["model"] == "gpt-5.6-luna"
 
 
 def test_failed_partial_rerun_keeps_source_artifacts_unchanged() -> None:
@@ -737,15 +903,17 @@ def _workspace(branch_label: str = "Main Branch") -> dict[str, Any]:
                 "path_type": "primary_timeline",
                 "label": "Main path",
                 "description": "Tiny path.",
-                "paper_ids": ["p1"],
+                "paper_ids": ["p1", "p2"],
                 "rationale": "Fixture.",
             }
         ],
         "paper_cards": {
             "p1": _paper_card("p1", "Core Method", branch_label),
+            "p2": _paper_card("p2", "Evaluation Benchmark", branch_label),
         },
         "reading_order": [
             {"order": 1, "paper_id": "p1", "reason": "Start here."},
+            {"order": 2, "paper_id": "p2", "reason": "Then evaluate."},
         ],
         "comparison_tables": [],
         "discarded_candidates": [],
@@ -768,7 +936,7 @@ def _branch_node(node_id: str, parent_id: str, label: str) -> dict[str, Any]:
         "why_it_matters": "It matters.",
         "is_leaf": True,
         "child_node_ids": [],
-        "primary_paper_ids": ["p1"],
+        "primary_paper_ids": ["p1", "p2"],
         "secondary_paper_ids": [],
         "tags": [],
         "open_questions": [],

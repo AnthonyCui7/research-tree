@@ -7,15 +7,18 @@ import { WorkspaceCreator } from "../workspace/WorkspaceCreator";
 import { WorkspaceHistory } from "../workspace/WorkspaceHistory";
 import { WorkspaceAgent } from "../workspace/WorkspaceAgent";
 import agentIcon from "../../assets/lucide-message-square-text.svg";
-import type { PipelineRun, TreeNodeId, TreeViewModel, WorkspaceDocument } from "../../lib/types";
+import { cx } from "../../lib/cx";
+import type { PipelineRun, TreeNodeId, TreeViewModel, WorkspaceDocument, WorkspaceSummary } from "../../lib/types";
 
 type AppShellProps = {
   status: "loading" | "ready" | "error";
   error: string | null;
-  workspaces: WorkspaceDocument[];
+  workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
   tree: TreeViewModel | null;
   activeWorkspace: WorkspaceDocument | null;
+  workspaceLoading: boolean;
+  workspaceError: string | null;
   selectedNodeId: TreeNodeId | null;
   onSelectWorkspace: (workspaceId: string) => void;
   onSelectNode: (nodeId: TreeNodeId) => void;
@@ -32,6 +35,7 @@ type AppShellProps = {
   onWorkspaceChanged: () => Promise<void>;
   onWorkspaceDeleted: () => Promise<void>;
   onToggleSidebar: () => void;
+  onRefresh: () => void;
   onResumeBuild: () => void;
   onPipelineStarted: (run: PipelineRun) => void;
   onPipelineFinished: (runId: string) => void;
@@ -44,6 +48,8 @@ export function AppShell({
   activeWorkspaceId,
   tree,
   activeWorkspace,
+  workspaceLoading,
+  workspaceError,
   selectedNodeId,
   onSelectWorkspace,
   onSelectNode,
@@ -60,6 +66,7 @@ export function AppShell({
   onWorkspaceChanged,
   onWorkspaceDeleted,
   onToggleSidebar,
+  onRefresh,
   onResumeBuild,
   onPipelineStarted,
   onPipelineFinished,
@@ -70,7 +77,14 @@ export function AppShell({
     (buildingRun.status === "queued" || buildingRun.status === "running");
 
   return (
-    <div className="app-shell" data-sidebar-collapsed={sidebarCollapsed}>
+    <div
+      className={cx(
+        "grid h-screen w-screen bg-surface transition-[grid-template-columns] duration-[260ms] ease-research",
+        sidebarCollapsed
+          ? "grid-cols-[0_minmax(0,1fr)] max-[720px]:grid-cols-[minmax(0,1fr)] max-[720px]:grid-rows-[56px_minmax(0,1fr)]"
+          : "grid-cols-[252px_minmax(0,1fr)] max-[980px]:grid-cols-[68px_minmax(0,1fr)] max-[420px]:grid-cols-[60px_minmax(0,1fr)]",
+      )}
+    >
       <Sidebar
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
@@ -82,7 +96,7 @@ export function AppShell({
         onResumeBuild={onResumeBuild}
       />
       <button
-        className="persistent-assistant-launcher agent-launcher"
+        className="fixed bottom-4 left-4 z-[calc(var(--z-panel)_+_1)] grid h-10 w-10 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-surface shadow-launcher transition-none enabled:hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-border-strong [&_img]:h-5 [&_img]:w-5"
         type="button"
         onClick={() => onOpenUtility("agent")}
         disabled={!tree || activePipelineRunning}
@@ -92,7 +106,7 @@ export function AppShell({
         <img src={agentIcon} alt="" aria-hidden="true" />
       </button>
 
-      <main className="workspace-main" aria-label="Research workspace">
+      <main className="grid h-screen min-w-0 grid-rows-[64px_minmax(0,1fr)] max-[720px]:grid-rows-[auto_minmax(0,1fr)]" aria-label="Research workspace">
         <TopBar
           workspaceTitle={tree?.title ?? "Workspace"}
           tree={tree}
@@ -101,18 +115,29 @@ export function AppShell({
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}
         />
-        <section className="workspace-stage" aria-live={status === "loading" ? "polite" : "off"}>
-          {status === "loading" ? (
+        <section className="relative min-h-0 min-w-0 overflow-hidden bg-background" aria-live={status === "loading" ? "polite" : "off"}>
+          {status === "loading" || (status === "ready" && !tree && workspaceLoading) ? (
             <WorkspaceEmptyState title="Loading workspace" detail="Loading…" />
           ) : null}
           {status === "error" ? (
             <WorkspaceEmptyState
-              title="Workspace unavailable"
+              title="Workspaces unavailable"
               detail={error ?? "Your workspaces could not be loaded. Refresh and try again."}
               tone="error"
+              actionLabel="Retry"
+              onAction={onRefresh}
             />
           ) : null}
-          {status === "ready" && !tree ? (
+          {status === "ready" && !tree && !workspaceLoading && workspaceError ? (
+            <WorkspaceEmptyState
+              title="Workspace failed to load"
+              detail={workspaceError}
+              tone="error"
+              actionLabel="Retry"
+              onAction={onRefresh}
+            />
+          ) : null}
+          {status === "ready" && !tree && !workspaceLoading && !workspaceError ? (
             <WorkspaceEmptyState
               title="No workspaces"
               detail="Enter a topic to build a workspace."
@@ -124,6 +149,7 @@ export function AppShell({
             <>
               <TreeCanvas
                 tree={tree}
+                workspace={activeWorkspace}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={onSelectNode}
               />
@@ -134,8 +160,12 @@ export function AppShell({
                   sidebarCollapsed={sidebarCollapsed}
                 />
               ) : null}
+              {/* Keying on the workspace id discards panel state on a switch.
+                  Without it a pending review, an armed delete confirmation, or a
+                  chat transcript would carry over onto a different workspace. */}
               {activeWorkspace && tree?.currentVersionHash ? (
                 <WorkspaceHistory
+                  key={`history:${activeWorkspace.workspace_id}`}
                   open={utilityPanel === "history"}
                   workspaceId={activeWorkspace.workspace_id}
                   workspaceTitle={activeWorkspace.title}
@@ -148,6 +178,7 @@ export function AppShell({
               ) : null}
               {activeWorkspace ? (
                 <WorkspaceAgent
+                  key={`agent:${activeWorkspace.workspace_id}`}
                   open={utilityPanel === "agent"}
                   workspaceId={activeWorkspace.workspace_id}
                   sidebarCollapsed={sidebarCollapsed}
