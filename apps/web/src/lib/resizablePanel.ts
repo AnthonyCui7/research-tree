@@ -2,16 +2,24 @@ import { useEffect, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 /** Width of the sidebar at desktop widths, subtracted from a panel's ceiling. */
-export const DESKTOP_SIDEBAR_WIDTH = 252;
+export const DESKTOP_SIDEBAR_WIDTH = 250;
 
-/** Below this width panels are docked, not resizable. */
-export const RESIZE_DISABLED_BELOW = 980;
+/** Below this width the panel is docked full-height over the canvas, not resizable. */
+export const RESIZE_DISABLED_BELOW = 900;
+
+/** The panel never grows past this, however wide the window is. */
+export const PANEL_MAX_WIDTH = 960;
+
+/** Canvas kept visible beside a docked panel, so resizing cannot swallow it. */
+const MIN_VISIBLE_CANVAS = 280;
 
 export function resizablePanelMaxWidth(
   sidebarCollapsed: boolean,
   viewportWidth: number = window.innerWidth,
 ): number {
-  return Math.max(0, viewportWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH));
+  const available =
+    viewportWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH) - MIN_VISIBLE_CANVAS;
+  return Math.max(0, Math.min(PANEL_MAX_WIDTH, available));
 }
 
 export function clampResizablePanelWidth(

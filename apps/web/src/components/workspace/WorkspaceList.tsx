@@ -1,87 +1,168 @@
-import type { PipelineRun, WorkspaceSummary } from "../../lib/types";
 import { cx } from "../../lib/cx";
+import { relativeTimestamp, pluralize } from "../../lib/format";
+import { buildProgress, isRunActive } from "../../lib/pipelineStages";
+import { EllipsisIcon } from "../ui/icons";
+import type { PipelineRun, WorkspaceSummary } from "../../lib/types";
 
 type WorkspaceListProps = {
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
   onSelectWorkspace: (workspaceId: string) => void;
+  onOpenOptions: (workspace: WorkspaceSummary, trigger: HTMLElement) => void;
   buildingRun: PipelineRun | null;
   onResumeBuild: () => void;
-  collapsed: boolean;
 };
 
 export function WorkspaceList({
   workspaces,
   activeWorkspaceId,
   onSelectWorkspace,
+  onOpenOptions,
   buildingRun,
   onResumeBuild,
-  collapsed,
 }: WorkspaceListProps) {
-  const activeBuildingRun = buildingRun && isActiveRun(buildingRun) ? buildingRun : null;
-  const buildRunHasWorkspace = workspaces.some(
+  const activeRun = isRunActive(buildingRun) ? buildingRun : null;
+  const runHasWorkspace = workspaces.some(
     (workspace) => workspace.workspace_id === buildingRun?.workspace_id,
   );
+  // A failed run whose workspace never landed still needs a way back into the
+  // creator, so it keeps its placeholder row.
   const placeholderRun =
-    activeBuildingRun ?? (buildingRun?.status === "failed" && !buildRunHasWorkspace ? buildingRun : null);
+    activeRun ?? (buildingRun?.status === "failed" && !runHasWorkspace ? buildingRun : null);
+
   return (
     <nav
-      className={cx(
-        "scrollbar-rt flex min-h-0 flex-1 flex-col gap-[3px] overflow-y-auto",
-        collapsed && "opacity-0 max-[720px]:flex-row max-[720px]:gap-1 max-[720px]:overflow-x-auto max-[720px]:opacity-100",
-      )}
+      className="scrollbar-rt flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2"
       aria-label="Workspaces"
     >
-      {workspaces.length === 0 && placeholderRun ? <WorkspaceBuildItem run={placeholderRun} onResume={onResumeBuild} /> : null}
-      {workspaces.map((workspace, index) => (
-        <div key={workspace.workspace_id}>
-          <button
-            className="flex w-full flex-col gap-1 rounded-sm border border-[color-mix(in_srgb,var(--color-text-muted)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-surface)_30%,transparent)] p-2.5 text-left transition-[background-color,border-color] duration-200 ease-research hover:bg-[color-mix(in_srgb,var(--color-surface)_74%,transparent)] data-[building=true]:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] data-[building=true]:bg-accent-subtle data-[selected=true]:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] data-[selected=true]:bg-accent-subtle max-[980px]:min-h-10 max-[980px]:items-center max-[980px]:justify-center max-[980px]:px-[5px] max-[980px]:py-[7px]"
-            type="button"
-            data-selected={workspace.workspace_id === activeWorkspaceId}
-            data-building={activeBuildingRun?.workspace_id === workspace.workspace_id}
-            onClick={() => onSelectWorkspace(workspace.workspace_id)}
+      {placeholderRun && !runHasWorkspace ? (
+        <BuildPlaceholderRow run={placeholderRun} onResume={onResumeBuild} />
+      ) : null}
+      {workspaces.map((workspace) => {
+        const selected = workspace.workspace_id === activeWorkspaceId;
+        const building = activeRun?.workspace_id === workspace.workspace_id ? activeRun : null;
+        return (
+          <div
+            key={workspace.workspace_id}
+            className={cx(
+              "group relative flex items-center gap-2 rounded-md px-2.5 py-2 transition-[background-color] duration-150",
+              selected ? "bg-accent-subtle" : "hover:bg-[#e9ebed]",
+            )}
           >
-            <span className="[overflow-wrap:anywhere] text-[13px] font-semibold leading-[1.3] text-text-primary max-[980px]:max-w-[52px] max-[980px]:truncate max-[980px]:text-center max-[980px]:text-[10px]">{workspace.title}</span>
-            <small className="text-[11px] leading-[1.35] text-text-secondary max-[980px]:hidden">
-              {activeBuildingRun?.workspace_id === workspace.workspace_id ? (
-                <>Building<LoadingEllipsis /></>
+            <button
+              className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left"
+              type="button"
+              aria-current={selected ? "true" : undefined}
+              onClick={() => onSelectWorkspace(workspace.workspace_id)}
+            >
+              <span
+                className={cx(
+                  "block truncate text-[13px] leading-[1.35]",
+                  selected ? "font-semibold text-accent-deep" : "font-medium text-text-primary",
+                )}
+              >
+                {workspace.title}
+              </span>
+              {building ? (
+                <BuildingCaption run={building} selected={selected} />
               ) : (
-                <>{workspace.branch_count} research branch{workspace.branch_count === 1 ? "" : "es"}</>
+                <span
+                  className={cx(
+                    "mt-0.5 block truncate text-[11px] leading-[1.35]",
+                    selected ? "text-text-secondary" : "text-text-muted",
+                  )}
+                >
+                  {workspaceCaption(workspace)}
+                </span>
               )}
-            </small>
-          </button>
-          {index === 0 && placeholderRun && !buildRunHasWorkspace ? (
-            <WorkspaceBuildItem run={placeholderRun} onResume={onResumeBuild} />
-          ) : null}
-        </div>
-      ))}
+            </button>
+            <button
+              className={cx(
+                "grid h-[22px] w-[22px] flex-none place-items-center rounded-[5px] border-0 bg-transparent p-0 opacity-0 transition-[background-color,color,opacity] duration-150 group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100",
+                selected
+                  ? "text-accent-deep hover:bg-accent-border"
+                  : "text-text-muted hover:bg-[#dde0e3] hover:text-text-primary",
+              )}
+              type="button"
+              onClick={(event) => onOpenOptions(workspace, event.currentTarget)}
+              aria-label={`Options for ${workspace.title}`}
+              title="Workspace options"
+            >
+              <EllipsisIcon className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        );
+      })}
+      {workspaces.length === 0 && !placeholderRun ? (
+        <p className="mt-8 px-2.5 text-[11.5px] leading-[1.6] text-text-muted">
+          Workspaces you build will live here.
+        </p>
+      ) : null}
     </nav>
   );
 }
 
-function WorkspaceBuildItem({ run, onResume }: { run: PipelineRun; onResume: () => void }) {
+function BuildingCaption({ run, selected }: { run: PipelineRun; selected: boolean }) {
+  const progress = buildProgress(run);
   return (
-    <button className="mt-0.5 grid w-full gap-1 rounded-sm border border-[color-mix(in_srgb,var(--color-text-muted)_48%,transparent)] bg-[color-mix(in_srgb,var(--color-surface)_42%,transparent)] p-2.5 text-left max-[980px]:justify-items-center max-[980px]:p-1.5" type="button" onClick={onResume}>
-      <span className="[overflow-wrap:anywhere] text-[13px] font-semibold leading-[1.3] text-text-primary max-[980px]:hidden">{run.topic}</span>
-      <span className="hidden h-2 w-2 animate-progress-spin rounded-full border-2 border-accent border-t-transparent max-[980px]:block" aria-hidden="true" />
-      <small className={cx("text-[11px] leading-[1.35] text-text-secondary max-[980px]:hidden", run.status === "failed" && "text-error")}>
-        {run.status === "failed" ? "Workspace build failed" : <>Building workspace<LoadingEllipsis /></>}
-      </small>
+    <>
+      <span
+        className={cx(
+          "mt-0.5 mb-1.5 block truncate text-[11px] leading-[1.35]",
+          selected ? "text-text-secondary" : "text-text-muted",
+        )}
+      >
+        Building{progress.currentLabel ? ` · ${lowerFirst(progress.currentLabel)}…` : "…"}
+      </span>
+      <ProgressBar percent={progress.percent} />
+    </>
+  );
+}
+
+function BuildPlaceholderRow({ run, onResume }: { run: PipelineRun; onResume: () => void }) {
+  const failed = run.status === "failed";
+  const progress = buildProgress(run);
+  return (
+    <button
+      className="rounded-md px-2.5 py-2 text-left transition-[background-color] duration-150 hover:bg-[#e9ebed]"
+      type="button"
+      onClick={onResume}
+    >
+      <span className="block truncate text-[13px] font-medium leading-[1.35] text-text-primary">
+        {run.topic}
+      </span>
+      <span
+        className={cx(
+          "mt-0.5 mb-1.5 block truncate text-[11px] leading-[1.35]",
+          failed ? "text-error" : "text-text-muted",
+        )}
+      >
+        {failed
+          ? "Build failed"
+          : `Building${progress.currentLabel ? ` · ${lowerFirst(progress.currentLabel)}…` : "…"}`}
+      </span>
+      {failed ? null : <ProgressBar percent={progress.percent} />}
     </button>
   );
 }
 
-function LoadingEllipsis() {
+function ProgressBar({ percent }: { percent: number }) {
   return (
-    <span className="inline-flex w-[13px] justify-start" aria-hidden="true">
-      <i className="animate-loading-dot not-italic">.</i>
-      <i className="animate-loading-dot not-italic [animation-delay:120ms]">.</i>
-      <i className="animate-loading-dot not-italic [animation-delay:240ms]">.</i>
+    <span className="block h-[3px] overflow-hidden rounded-[2px] bg-[#dde0e3]" aria-hidden="true">
+      <span
+        className="block h-full rounded-[2px] bg-accent transition-[width] duration-500 ease-research"
+        style={{ width: `${percent}%` }}
+      />
     </span>
   );
 }
 
-function isActiveRun(run: PipelineRun): boolean {
-  return run.status === "queued" || run.status === "running";
+function workspaceCaption(workspace: WorkspaceSummary): string {
+  const updated = relativeTimestamp(workspace.updated_at);
+  const papers = pluralize(workspace.paper_count, "paper");
+  return updated ? `${papers} · updated ${updated}` : papers;
+}
+
+function lowerFirst(value: string): string {
+  return value.charAt(0).toLowerCase() + value.slice(1);
 }

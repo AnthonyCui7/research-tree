@@ -6,40 +6,83 @@
   --color-background: #f7f8f8;
   --color-surface: #ffffff;
   --color-surface-subtle: #f1f3f4;
+  --color-surface-muted: #fbfbfa;
+  --color-sidebar: #f1f3f4;
   --color-border: #d8dce0;
   --color-border-strong: #b9c0c6;
+  --color-hairline: #e7eaec;
+  --color-hairline-soft: #eef0f2;
   --color-text-primary: #1f2328;
   --color-text-secondary: #5b6470;
   --color-text-muted: #737c87;
   --color-accent: #1e7f5b;
   --color-accent-deep: #176647;
   --color-accent-subtle: #e7f5ef;
+  --color-accent-border: #c9e6d8;
+  --color-accent-wash: #f4f9f6;
   --color-agent-canvas: #fbfbfa;
   --color-agent-user-surface: #f1f3f4;
-  --color-agent-user-border: #d8dce0;
+  --color-agent-user-border: #e4e7e9;
   --color-error: #c23b3b;
+  --color-error-surface: #f7e9e9;
+  --color-error-border: #e5c9c9;
+  --color-warning: #8a6a2f;
+  --color-warning-surface: #fdf6ec;
+  --color-warning-border: #ecd9b8;
   --color-edge-line: #94a3b8;
   --color-node-selected: #e7f5ef;
   --color-node-border: #c8ced3;
+  --color-track: #e7ebee;
+
   --radius-sm: 4px;
   --radius-md: 8px;
-  --shadow-panel-left: -10px 0 24px rgb(31 35 40 / 7%);
-  --shadow-control: 0 6px 14px rgb(31 35 40 / 10%);
-  --shadow-popover: 0 8px 22px rgb(31 35 40 / 12%);
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+
+  --shadow-node: 0 1px 2px rgb(31 35 40 / 5%);
+  --shadow-node-hover: 0 3px 12px rgb(31 35 40 / 9%);
+  --shadow-control: 0 2px 8px rgb(31 35 40 / 7%);
+  --shadow-toast: 0 4px 14px rgb(31 35 40 / 8%);
+  --shadow-popover: 0 10px 32px rgb(31 35 40 / 14%);
   --shadow-launcher: 0 10px 24px rgb(31 35 40 / 14%);
-  --shadow-dialog: 0 18px 50px rgb(31 35 40 / 18%);
+  --shadow-panel-left: -10px 0 24px rgb(31 35 40 / 7%);
+  --shadow-slideover: -12px 0 40px rgb(31 35 40 / 14%);
+  --shadow-dialog: 0 18px 56px rgb(31 35 40 / 22%);
+  --shadow-menu: 0 8px 24px rgb(31 35 40 / 13%);
+
   --ease-research: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-exit: cubic-bezier(0.55, 0, 1, 0.45);
+
   --animate-loading-dot: loading-dot 1.1s ease-in-out infinite;
   --animate-progress-spin: progress-spin 800ms linear infinite;
+  --animate-status-pulse: status-pulse 1.4s ease-in-out infinite;
   --animate-agent-thinking-pulse: agent-thinking-pulse 1.05s ease-in-out infinite;
-  --animate-interface-right-enter: interface-right-enter 150ms var(--ease-research);
-  --animate-interface-right-exit: interface-right-exit 120ms var(--ease-exit) forwards;
+  /* Four families, each with a matching exit: edge panels slide from the side
+     they are docked to, centred surfaces rise and settle, anchored menus scale
+     from their trigger, and toasts rise from the stack. Exit durations are
+     mirrored by the constants in `lib/animation.ts`. */
+  --animate-interface-right-enter: interface-right-enter 180ms var(--ease-research);
+  --animate-interface-right-exit: interface-right-exit 150ms var(--ease-exit) forwards;
+  --animate-interface-left-enter: interface-left-enter 180ms var(--ease-research);
+  --animate-interface-left-exit: interface-left-exit 150ms var(--ease-exit) forwards;
   --animate-interface-center-enter: interface-center-enter 200ms var(--ease-research);
-  --animate-interface-center-exit: interface-center-exit 180ms var(--ease-exit) forwards;
-  --z-dropdown: 20;
-  --z-panel: 30;
-  --z-backdrop: 40;
+  --animate-interface-center-exit: interface-center-exit 160ms var(--ease-exit) forwards;
+  --animate-backdrop-enter: backdrop-enter 160ms ease-out;
+  --animate-backdrop-exit: backdrop-exit 160ms ease-in forwards;
+  --animate-dropdown-enter: dropdown-enter 130ms var(--ease-research);
+  --animate-dropdown-exit: dropdown-exit 110ms var(--ease-exit) forwards;
+  --animate-toast-enter: toast-enter 200ms var(--ease-research);
+  --animate-toast-exit: toast-exit 150ms var(--ease-exit) forwards;
+
+  /* Tailwind's z-index namespace is `--z-index-*`; naming these `--z-*` made
+     every `z-menu`/`z-creator` in the app compile to nothing, leaving the
+     overlays to stack on DOM order alone. */
+  --z-index-dropdown: 20;
+  --z-index-panel: 30;
+  --z-index-backdrop: 40;
+  --z-index-overlay: 50;
+  --z-index-menu: 60;
+  --z-index-creator: 70;
 }
 
 @layer base {
@@ -85,13 +128,14 @@
   button:focus-visible,
   input:focus-visible,
   textarea:focus-visible,
-  a:focus-visible {
-    outline: 3px solid color-mix(in srgb, var(--color-accent) 62%, transparent);
+  a:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
     outline-offset: 2px;
   }
 
   dialog::backdrop {
-    background: rgb(31 35 40 / 35%);
+    background: rgb(31 35 40 / 28%);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -111,8 +155,8 @@
   scrollbar-color: var(--color-border-strong) transparent;
 
   &::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
   }
 
   &::-webkit-scrollbar-track {
@@ -120,17 +164,25 @@
   }
 
   &::-webkit-scrollbar-thumb {
-    border: 2px solid transparent;
-    border-radius: 999px;
+    border: 3px solid transparent;
+    border-radius: 6px;
     background: var(--color-border-strong);
     background-clip: content-box;
   }
 }
 
+/* The canvas surface the workspace tree paints on. Unchanged by design. */
 @utility tree-grid-bg {
   background:
     radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--color-text-secondary) 15%, transparent) 1px, transparent 1.1px) 0 0 / 18px 18px,
     var(--color-surface);
+}
+
+/* Dotted field used behind the first-launch empty state, per the design. */
+@utility dot-field-bg {
+  background:
+    radial-gradient(#dcdfe2 1px, transparent 1px) 0 0 / 22px 22px,
+    var(--color-background);
 }
 
 @keyframes loading-dot {
@@ -148,6 +200,16 @@
 @keyframes progress-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
   }
 }
 
@@ -204,5 +266,91 @@
   to {
     opacity: 0;
     transform: translateY(8px) scale(0.99);
+  }
+}
+
+@keyframes interface-left-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes interface-left-exit {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+}
+
+@keyframes backdrop-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes backdrop-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Menus scale out of the corner they are pinned to; the caller sets the
+   transform origin so the motion reads as coming from its own trigger. */
+@keyframes dropdown-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dropdown-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px);
   }
 }

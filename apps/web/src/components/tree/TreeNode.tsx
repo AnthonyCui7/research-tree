@@ -17,7 +17,8 @@ export function TreeNode({ node, selected = false, onSelectNode, measure = false
     <button
       type="button"
       className={cx(
-        "absolute z-[1] flex flex-col items-start gap-1.5 rounded-md border p-3.5 text-left text-text-primary transition-[background-color,border-color,transform] duration-150 enabled:hover:-translate-y-px enabled:hover:border-accent aria-pressed:border-accent aria-pressed:bg-node-selected",
+        "absolute z-[1] flex flex-col items-start rounded-md border text-left text-text-primary transition-[background-color,border-color,transform] duration-150 enabled:hover:-translate-y-px enabled:hover:border-accent aria-pressed:border-accent aria-pressed:bg-node-selected",
+        nodePadding[node.kind],
         node.kind === "root" ? rootTone.border : family?.border,
         node.kind === "root" ? rootTone.root : node.kind === "branch" ? family?.branch : family?.paper,
       )}
@@ -50,9 +51,9 @@ function RootNodeContent({
 }) {
   return (
     <>
-      <span className="text-[11px] font-semibold leading-[1.3] text-text-secondary">Research topic</span>
-      <strong className="[overflow-wrap:anywhere] text-[21px] font-bold leading-[1.12] tracking-normal">{node.title}</strong>
-      <span className="text-xs leading-[1.45] text-text-secondary">{node.overview}</span>
+      <span className={kickerClass}>Research topic</span>
+      <strong className="mt-[5px] [overflow-wrap:anywhere] text-[21px] font-bold leading-[1.12] tracking-normal">{node.title}</strong>
+      <span className="mt-[7px] text-xs leading-[1.5] text-text-secondary">{node.overview}</span>
       <AnchorSummary paper={node.anchorPaper} label="Survey" />
     </>
   );
@@ -65,9 +66,11 @@ function BranchNodeContent({
 }) {
   return (
     <>
-      <span className="text-[11px] font-semibold leading-[1.3] text-text-secondary">Research branch</span>
-      <strong className="[overflow-wrap:anywhere] text-sm font-bold leading-[1.3] tracking-normal">{node.title}</strong>
-      <span className="text-xs leading-[1.45] text-text-secondary">{node.description}</span>
+      <span className={kickerClass}>Research branch</span>
+      <strong className="mt-1.5 [overflow-wrap:anywhere] text-sm font-bold leading-[1.35] tracking-normal">{node.title}</strong>
+      <span className={cx("mt-1.5 text-xs leading-[1.5] text-text-secondary", clampThreeLines)}>
+        {node.description}
+      </span>
       <AnchorSummary paper={node.anchorPaper} label="Branch survey" />
     </>
   );
@@ -76,10 +79,11 @@ function BranchNodeContent({
 function PaperNodeContent({ paper }: { paper: Extract<TreeNodeViewModel, { kind: "paper" }> }) {
   return (
     <>
-      <strong className="[overflow-wrap:anywhere] text-sm font-bold leading-[1.3] tracking-normal">{paper.title}</strong>
-      <span className="text-xs leading-[1.35] text-text-secondary">{authorLine(paper.authors)}</span>
-      <span className="text-[11px] leading-[1.3] text-text-muted">{publicationDate(paper)}</span>
-      <span className="text-xs leading-[1.42] text-text-secondary">
+      <strong className="[overflow-wrap:anywhere] text-sm font-bold leading-[1.35] tracking-normal">{paper.title}</strong>
+      <span className="mt-[5px] text-[11px] leading-[1.35] text-text-muted">
+        {paperMetaLine(paper)}
+      </span>
+      <span className={cx("mt-[7px] text-xs leading-[1.5] text-text-secondary", clampThreeLines)}>
         <b className="mr-1 text-[11px] text-text-primary">TLDR</b>
         {paper.tldr || "Unavailable"}
       </span>
@@ -92,13 +96,30 @@ function AnchorSummary({ paper, label }: { paper: PaperDetails | null; label: st
     return null;
   }
   return (
-    <span className="grid w-full gap-[3px] border-t border-[color-mix(in_srgb,var(--color-border)_80%,transparent)] pt-2 text-[11px] leading-[1.35] text-text-secondary">
-      <span className="text-[10px] text-text-secondary">{label}</span>
+    <span className="mt-2.5 grid w-full gap-[3px] border-t border-[color-mix(in_srgb,var(--color-border)_80%,transparent)] pt-[9px] text-[11px] leading-[1.35] text-text-secondary">
+      <span className={kickerClass}>{label}</span>
       <b className="font-semibold text-text-primary">{paper.title}</b>
-      <em className="text-[10px] not-italic text-text-secondary">{paper.year ?? "n.d."}</em>
+      <em className="text-[10.5px] not-italic text-text-muted">{anchorMetaLine(paper)}</em>
     </span>
   );
 }
+
+/** The design's card kicker: uppercase, letter-spaced, one line. */
+const kickerClass =
+  "text-[10.5px] font-semibold uppercase leading-[1.3] tracking-[0.05em] text-text-muted";
+
+/** Card padding per kind, matching the design's tighter rhythm on smaller cards. */
+const nodePadding = {
+  root: "px-[18px] py-4",
+  branch: "px-4 py-3.5",
+  paper: "px-[15px] py-[13px]",
+} as const;
+
+/**
+ * Body copy is clamped so one long abstract cannot stretch a card far past its
+ * siblings — the full text lives in the inspector, which is where it is read.
+ */
+const clampThreeLines = "line-clamp-3";
 
 const rootTone = {
   border: "border-node-border",
@@ -125,6 +146,23 @@ function familyTone(family: number | "group" | null | undefined) {
     return familyTones[family % 8];
   }
   return familyTones[8];
+}
+
+/** The design's card meta line: `Radford et al. · 2019`. */
+function paperMetaLine(paper: Pick<PaperDetails, "authors" | "publicationDate" | "year">): string {
+  return joinMeta(authorLine(paper.authors), publicationDate(paper));
+}
+
+/** Surveys carry the same line, dated by year alone. */
+function anchorMetaLine(paper: PaperDetails): string {
+  return joinMeta(authorLine(paper.authors), paper.year ? `${paper.year}` : "n.d.");
+}
+
+function joinMeta(authors: string, date: string): string {
+  if (authors === "Authors unavailable") {
+    return date;
+  }
+  return `${authors} · ${date}`;
 }
 
 export function authorLine(authors: string[]): string {

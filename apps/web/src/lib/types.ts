@@ -154,6 +154,13 @@ export type PaperCard = {
   secondary_tags: string[];
   reading_status: string;
   paper_role: string;
+  paper_content?: {
+    status?: string | null;
+    source_type?: string | null;
+    source_url?: string | null;
+    page_count?: number | null;
+    truncated?: boolean | null;
+  } | null;
   problem: string;
   core_idea: string;
   method: string;
@@ -205,7 +212,21 @@ export type TreeViewModel = {
 
 export type TreeNodeViewModel = RootTreeNode | BranchTreeNode | PaperTreeNode;
 
+/**
+ * What the workspace document records about a paper's open-access PDF — enough
+ * to offer the download. The extracted text itself stays on the server, where
+ * `GET /workspaces/{id}/paper-content` serves it; carrying it in every card
+ * would dwarf the editorial content.
+ */
+export type PaperContentSummary = {
+  status: string;
+  sourceUrl: string | null;
+  pageCount: number | null;
+  truncated: boolean;
+};
+
 export type PaperDetails = {
+  paperId: string;
   title: string;
   authors: string[];
   year: number | null;
@@ -218,6 +239,7 @@ export type PaperDetails = {
   importance: string;
   abstract: string;
   similarPapers: SimilarPaper[];
+  content: PaperContentSummary | null;
 };
 
 export type RootTreeNode = {
@@ -246,6 +268,8 @@ export type BranchTreeNode = {
   tags: string[];
   openQuestions: string[];
   anchorPaper: PaperDetails | null;
+  /** Papers laid out on this branch's reading paths. */
+  paperCount: number;
   position: Point;
   size: NodeSize;
 };
@@ -254,6 +278,13 @@ export type PaperTreeNode = PaperDetails & {
   id: TreeNodeId;
   kind: "paper";
   family: number | "group" | null;
+  /** The branch this paper's reading path belongs to. */
+  branchId: string;
+  branchTitle: string;
+  /** 1-based position in that reading path, and the path's length. */
+  readingIndex: number;
+  readingLength: number;
+  whyReadHere: string;
   position: Point;
   size: NodeSize;
 };

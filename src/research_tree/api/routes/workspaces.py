@@ -14,6 +14,7 @@ from research_tree.api.dependencies import (
 from research_tree.api.schemas import (
     CreateWorkspaceRequest,
     DeleteWorkspaceRequest,
+    PaperContentResponse,
     PipelineRerunApiRequest,
     PipelineRunResponse,
     PipelineRunsResponse,
@@ -200,6 +201,17 @@ def delete_workspace(
             or (request or DeleteWorkspaceRequest()).expected_version_hash
         ),
     )
+
+
+# The paper id travels as a query parameter because it can be a DOI or a title —
+# values carrying slashes and spaces that no single path segment can hold.
+@router.get("/{workspace_id}/paper-content", response_model=PaperContentResponse)
+def get_paper_content(
+    workspace_id: str,
+    paper_id: str,
+    service: WorkspaceQueryService = Depends(get_workspace_query_service),
+) -> dict[str, object]:
+    return service.get_paper_content(workspace_id, paper_id)
 
 
 @router.get("/{workspace_id}/versions", response_model=WorkspaceVersionsResponse)

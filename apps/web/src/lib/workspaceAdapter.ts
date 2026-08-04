@@ -2,6 +2,7 @@ import type {
   BranchNode,
   BranchTreeNode,
   PaperCard,
+  PaperContentSummary,
   PaperDetails,
   PaperPath,
   PaperStep,
@@ -88,7 +89,12 @@ export function normalizeWorkspaceForTree(
     }))
     .filter((center): center is number => center !== null);
 
-  const rootCenterY = average(childCenters, TOP_PADDING + rootSize.height / 2);
+  // A root card taller than the whole tree would otherwise centre itself above
+  // the canvas origin and lose its first lines to the scroll container.
+  const rootCenterY = Math.max(
+    TOP_PADDING + rootSize.height / 2,
+    average(childCenters, TOP_PADDING + rootSize.height / 2),
+  );
   const rootNode: RootTreeNode = {
     id: rootNodeViewId,
     kind: "root",
@@ -149,7 +155,11 @@ export function normalizeWorkspaceForTree(
     currentVersionHash: currentVersion,
     canvas: {
       width: Math.max(1040, state.maxRight + 48),
-      height: Math.max(520, state.nextY + BOTTOM_PADDING),
+      height: Math.max(
+        520,
+        state.nextY + BOTTOM_PADDING,
+        rootNode.position.y + rootSize.height + BOTTOM_PADDING,
+      ),
     },
     root: rootNode,
     nodes: state.nodes,
@@ -185,6 +195,11 @@ function layoutBranch({
   }
 
   const branchX = branchPositionX(depth);
+  // Everything the subtree places lands after these marks, so the whole group
+  // can be nudged down as one once the branch card's own height is known.
+  const subtreeNodeStart = state.nodes.length;
+  const subtreeEdgeStart = state.edges.length;
+  const spanTop = state.nextY;
   const childCenters = (childrenByParent.get(branch.node_id) ?? [])
     .map((childId) =>
       layoutBranch({
@@ -210,11 +225,20 @@ function layoutBranch({
     branch.survey_anchor_paper_id ? [branch.survey_anchor_paper_id] : [],
   );
   const branchSize = branchNodeSize(branch, branchAnchor, measuredHeights?.[branch.node_id]);
-  const fallbackCenterY = state.nextY + branchSize.height / 2;
-  if (childOrPathCenters.length === 0) {
-    state.nextY += branchSize.height + ROW_GAP;
-  }
-  const centerY = average(childOrPathCenters, fallbackCenterY);
+  // The branch's papers were pushed by layoutPath above, so they can be counted
+  // here rather than threaded back out of every path.
+  const branchPaperCount = state.nodes.reduce(
+    (total, node) => total + (node.kind === "paper" && node.branchId === branch.node_id ? 1 : 0),
+    0,
+  );
+  const centerY = reserveBranchRow({
+    state,
+    branchHeight: branchSize.height,
+    childOrPathCenters,
+    spanTop,
+    subtreeNodeStart,
+    subtreeEdgeStart,
+  });
   const branchNode: BranchTreeNode = {
     id: branch.node_id,
     kind: "branch",
@@ -230,6 +254,7 @@ function layoutBranch({
     tags: branch.tags,
     openQuestions: branch.open_questions,
     anchorPaper: branchAnchor,
+    paperCount: branchPaperCount,
     position: {
       x: branchX,
       y: centerY - branchSize.height / 2,
@@ -239,6 +264,68 @@ function layoutBranch({
   state.nodes.push(branchNode);
   state.maxRight = Math.max(state.maxRight, branchX + branchSize.width);
   return centerY;
+}
+
+/**
+ * Places a branch card on its subtree and reserves the vertical room it needs.
+ *
+ * A branch is centred on the papers it introduces, but it is not necessarily
+ * shorter than them: a branch carrying a survey block can stand taller than its
+ * single-paper row. Reserving only the papers' height let such a card spill into
+ * the row below and sit flush against the next branch. The card's own height is
+ * therefore folded into the reservation — pushing the subtree down when the card
+ * overhangs the top, and extending `nextY` when it overhangs the bottom.
+ */
+function reserveBranchRow({
+  state,
+  branchHeight,
+  childOrPathCenters,
+  spanTop,
+  subtreeNodeStart,
+  subtreeEdgeStart,
+}: {
+  state: LayoutState;
+  branchHeight: number;
+  childOrPathCenters: number[];
+  spanTop: number;
+  subtreeNodeStart: number;
+  subtreeEdgeStart: number;
+}): number {
+  if (childOrPathCenters.length === 0) {
+    state.nextY = spanTop + branchHeight + ROW_GAP;
+    return spanTop + branchHeight / 2;
+  }
+  const spanBottom = state.nextY - ROW_GAP;
+  const rawCenterY = average(childOrPathCenters, spanTop + branchHeight / 2);
+  const overhangAbove = Math.max(0, spanTop - (rawCenterY - branchHeight / 2));
+  if (overhangAbove > 0) {
+    shiftPlacedSubtree(state, subtreeNodeStart, subtreeEdgeStart, overhangAbove);
+  }
+  const centerY = rawCenterY + overhangAbove;
+  state.nextY =
+    Math.max(spanBottom + overhangAbove, centerY + branchHeight / 2) + ROW_GAP;
+  return centerY;
+}
+
+/**
+ * Moves everything a subtree has already placed. Timeline edges carry resolved
+ * points rather than node references, so they have to travel with their nodes;
+ * tree edges are derived from final positions once layout is done.
+ */
+function shiftPlacedSubtree(
+  state: LayoutState,
+  nodeStart: number,
+  edgeStart: number,
+  distance: number,
+): void {
+  for (let index = nodeStart; index < state.nodes.length; index += 1) {
+    state.nodes[index]!.position.y += distance;
+  }
+  for (let index = edgeStart; index < state.edges.length; index += 1) {
+    const edge = state.edges[index]!;
+    edge.from.y += distance;
+    edge.to.y += distance;
+  }
 }
 
 function layoutPath({
@@ -258,6 +345,12 @@ function layoutPath({
   measuredHeights?: MeasuredNodeHeights;
   state: LayoutState;
 }): number | null {
+  const whyReadHereById = new Map(
+    (Array.isArray(path.paper_steps) ? path.paper_steps : []).map((step) => [
+      step.paper_id,
+      step.why_read_here ?? "",
+    ]),
+  );
   const stepPapers = pathPaperIds(path).flatMap((paperId) => {
     const paper = workspace.paper_cards[paperId];
     return paper && !isSurveyPaper(paper) ? [paper] : [];
@@ -274,7 +367,10 @@ function layoutPath({
     paperNodeViewModel({
       paper,
       path,
+      branch,
       index,
+      readingLength: stepPapers.length,
+      whyReadHere: whyReadHereById.get(paper.paper_id) ?? "",
       family,
       measuredHeights,
       position: {
@@ -360,14 +456,20 @@ function legacyStepOrder(left: PaperStep, right: PaperStep): number {
 function paperNodeViewModel({
   paper,
   path,
+  branch,
   index,
+  readingLength,
+  whyReadHere,
   family,
   measuredHeights,
   position,
 }: {
   paper: PaperCard;
   path: PaperPath;
+  branch: BranchNode;
   index: number;
+  readingLength: number;
+  whyReadHere: string;
   family: number | null;
   measuredHeights?: MeasuredNodeHeights;
   position: Point;
@@ -377,6 +479,11 @@ function paperNodeViewModel({
     id,
     kind: "paper",
     family,
+    branchId: branch.node_id,
+    branchTitle: branch.label,
+    readingIndex: index + 1,
+    readingLength,
+    whyReadHere: whyReadHere.trim(),
     ...paperDetails(paper),
     position,
     size: paperNodeSize(paper, measuredHeights?.[id]),
@@ -395,6 +502,7 @@ function anchorPaper(workspace: WorkspaceDocument, paperIds: string[]): PaperDet
 
 function paperDetails(paper: PaperCard): PaperDetails {
   return {
+    paperId: paper.paper_id,
     title: paper.title,
     authors: Array.isArray(paper.authors) ? paper.authors : [],
     year: paper.year ?? null,
@@ -407,6 +515,30 @@ function paperDetails(paper: PaperCard): PaperDetails {
     importance: paper.importance?.trim() || "",
     abstract: paper.abstract || "",
     similarPapers: Array.isArray(paper.similar_papers) ? paper.similar_papers : [],
+    content: paperContentSummary(paper),
+  };
+}
+
+/**
+ * Enrichment records the open-access PDF it managed to reach, if any. A card
+ * with no record — or one whose retrieval failed — has no PDF to offer, which
+ * is what disables the download and the reader for that paper.
+ */
+function paperContentSummary(paper: PaperCard): PaperContentSummary | null {
+  const content = paper.paper_content;
+  if (!content) {
+    return null;
+  }
+  const sourceUrl = content.source_url?.trim() || null;
+  const status = content.status?.trim() || "unavailable";
+  if (!status.startsWith("available") && !sourceUrl) {
+    return null;
+  }
+  return {
+    status,
+    sourceUrl,
+    pageCount: typeof content.page_count === "number" ? content.page_count : null,
+    truncated: Boolean(content.truncated),
   };
 }
 
@@ -443,9 +575,9 @@ function rootNodeSize(
     return { width: ROOT_WIDTH, height: measuredHeight };
   }
   const contentHeights = [
-    estimatedTextHeight("Research topic", 14.3, 31),
+    estimatedTextHeight("Research topic", 13.65, 31),
     estimatedTextHeight(root.label, 23.52, 31),
-    estimatedTextHeight(root.overview, 17.4, 54),
+    estimatedTextHeight(root.overview, 18, 54),
     ...(anchor ? [anchorSummaryEstimate(anchor.title, 46)] : []),
   ];
   return {
@@ -463,9 +595,9 @@ function branchNodeSize(
     return { width: BRANCH_WIDTH, height: measuredHeight };
   }
   const contentHeights = [
-    estimatedTextHeight("Research branch", 14.3, 34),
-    estimatedTextHeight(branch.label, 18.2, 34),
-    estimatedTextHeight(branch.description, 17.4, 43),
+    estimatedTextHeight("Research branch", 13.65, 34),
+    estimatedTextHeight(branch.label, 19.1, 34),
+    Math.min(3, fallbackLineCount(branch.description, 43, 0)) * 18,
     ...(anchor ? [anchorSummaryEstimate(anchor.title, 40)] : []),
   ];
   return {
@@ -479,10 +611,10 @@ function paperNodeSize(paper: PaperCard, measuredHeight?: number) {
     return { width: PAPER_WIDTH, height: measuredHeight };
   }
   const contentHeights = [
-    estimatedTextHeight(paper.title, 18.2, 39),
-    estimatedTextHeight(compactAuthorLine(paper.authors), 16.2, 42),
-    estimatedTextHeight("Date", 14.3, 42),
-    estimatedTextHeight(paper.tldr || "Unavailable", 17.04, 46, 6),
+    estimatedTextHeight(paper.title, 19.1, 39),
+    estimatedTextHeight(`${compactAuthorLine(paper.authors)} · Date`, 14.85, 42),
+    // Card body copy is clamped to three lines; see TreeNode.
+    Math.min(3, fallbackLineCount(paper.tldr || "Unavailable", 46, 6)) * 18,
   ];
   return {
     width: PAPER_WIDTH,
@@ -497,9 +629,11 @@ function stackedNodeHeight(contentHeights: number[]): number {
 }
 
 function anchorSummaryEstimate(title: string, fallbackCharactersPerLine: number): number {
-  const labelAndYearHeight = 13.5 * 2;
+  const labelAndYearHeight = 13.65 + 14.85;
   const anchorGaps = 3 * 2;
-  const anchorTopRule = 8 + 1;
+  // Top margin, rule padding and the rule itself, less the stacking gap already
+  // counted by stackedNodeHeight.
+  const anchorTopRule = 10 + 9 + 1 - 6;
   return anchorTopRule + labelAndYearHeight + anchorGaps + estimatedTextHeight(
     title,
     14.85,

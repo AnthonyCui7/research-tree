@@ -115,13 +115,20 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
   },
 
   async runAgent(workspaceId, message, model, conversationHistory = [], threadId = null) {
-    return postJson<AgentRunResult>(`/workspaces/${encodeURIComponent(workspaceId)}/agent`, {
-      message,
-      model,
-      conversation_history: conversationHistory,
-      thread_id: threadId,
-      require_approval: true,
-      allow_pipeline_rerun: true,
+    return requestJson<AgentRunResult>(`/workspaces/${encodeURIComponent(workspaceId)}/agent`, {
+      method: "POST",
+      body: JSON.stringify({
+        message,
+        model,
+        conversation_history: conversationHistory,
+        thread_id: threadId,
+        require_approval: true,
+        allow_pipeline_rerun: true,
+      }),
+      // An agent run is a tool loop over the whole workspace, and a single
+      // reasoning turn in it can take half a minute on its own. The ordinary
+      // read timeout would abandon answers the server goes on to finish.
+      signal: AbortSignal.timeout(AGENT_REQUEST_TIMEOUT_MS),
     });
   },
 
@@ -143,6 +150,7 @@ async function postJson<T = unknown>(path: string, body: unknown): Promise<T> {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const AGENT_REQUEST_TIMEOUT_MS = 300_000;
 
 async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;

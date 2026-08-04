@@ -1,12 +1,23 @@
-import { messageFrom } from "../../lib/apiError";
-import { primaryActionClass, secondaryActionClass } from "../../lib/controlClasses";
 import { useEffect, useRef, useState } from "react";
-import { pipelineRunEventsUrl, repositoryWorkspaceGateway } from "../../data/workspaceApi";
+import { messageFrom } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
+import { DIALOG_EXIT_MS } from "../../lib/animation";
+import { pipelineRunEventsUrl, repositoryWorkspaceGateway } from "../../data/workspaceApi";
+import { buildProgress, isOpenable } from "../../lib/pipelineStages";
+import {
+  exampleChipClass,
+  ghostActionClass,
+  primaryActionClass,
+  secondaryActionClass,
+  textInputClass,
+  tintedActionClass,
+} from "../../lib/controlClasses";
+import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, CloseIcon } from "../ui/icons";
 import type { PipelineRun, TopicReview } from "../../lib/types";
 
 type WorkspaceCreatorProps = {
   open: boolean;
+  initialTopic?: string;
   onClose: () => void;
   onCreated: (workspaceId: string, run: PipelineRun) => Promise<void>;
   onOpenExisting: (workspaceId: string) => void;
@@ -15,8 +26,11 @@ type WorkspaceCreatorProps = {
   onRunFinished: (runId: string) => void;
 };
 
+const EXAMPLE_TOPICS = ["Speculative decoding", "Protein language models", "Mechanistic interpretability"];
+
 export function WorkspaceCreator({
   open,
+  initialTopic = "",
   onClose,
   onCreated,
   onOpenExisting,
@@ -24,7 +38,7 @@ export function WorkspaceCreator({
   onRunStarted,
   onRunFinished,
 }: WorkspaceCreatorProps) {
-  const [topic, setTopic] = useState("");
+  const [topic, setTopic] = useState(initialTopic);
   const [review, setReview] = useState<TopicReview | null>(null);
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,7 +47,7 @@ export function WorkspaceCreator({
   const [present, setPresent] = useState(open);
   const [closing, setClosing] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const topicInputRef = useRef<HTMLTextAreaElement>(null);
+  const topicInputRef = useRef<HTMLInputElement>(null);
   const readyRunIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -47,7 +61,7 @@ export function WorkspaceCreator({
     const timer = window.setTimeout(() => {
       dialogRef.current?.close();
       setPresent(false);
-    }, 200);
+    }, DIALOG_EXIT_MS);
     return () => window.clearTimeout(timer);
   }, [open, present]);
 
@@ -56,6 +70,11 @@ export function WorkspaceCreator({
       dialogRef.current.showModal();
     }
   }, [present]);
+
+  useEffect(() => {
+    if (!open) return;
+    setTopic((current) => (current ? current : initialTopic));
+  }, [initialTopic, open]);
 
   useEffect(() => {
     if (!open || review || run) return;
@@ -91,31 +110,35 @@ export function WorkspaceCreator({
       setRun(next);
       onRunStarted(next);
       if (["completed", "completed_with_warnings"].includes(next.status)) {
-        void onCreated(next.workspace_id, next).then(() => {
-          onRunFinished(next.run_id);
-          readyRunIdRef.current = null;
-          setTopic("");
-          setReview(null);
-          setRun(null);
-          setError(null);
-          setCanceling(false);
-        }).catch((requestError: unknown) => setError(messageFrom(requestError)));
-        return;
-      }
-      if (next.status === "failed") {
-        if (readyRunIdRef.current === next.run_id || workspaceIsReadyForUse(next)) {
-          void onCreated(next.workspace_id, next).then(() => {
+        void onCreated(next.workspace_id, next)
+          .then(() => {
             onRunFinished(next.run_id);
             readyRunIdRef.current = null;
             setTopic("");
             setReview(null);
             setRun(null);
+            setError(null);
             setCanceling(false);
-          }).catch((requestError: unknown) => setError(messageFrom(requestError)));
+          })
+          .catch((requestError: unknown) => setError(messageFrom(requestError)));
+        return;
+      }
+      if (next.status === "failed") {
+        if (readyRunIdRef.current === next.run_id || isOpenable(next)) {
+          void onCreated(next.workspace_id, next)
+            .then(() => {
+              onRunFinished(next.run_id);
+              readyRunIdRef.current = null;
+              setTopic("");
+              setReview(null);
+              setRun(null);
+              setCanceling(false);
+            })
+            .catch((requestError: unknown) => setError(messageFrom(requestError)));
         }
         return;
       }
-      if (workspaceIsReadyForUse(next) && readyRunIdRef.current !== next.run_id) {
+      if (isOpenable(next) && readyRunIdRef.current !== next.run_id) {
         readyRunIdRef.current = next.run_id;
         void onCreated(next.workspace_id, next).catch((requestError: unknown) => {
           readyRunIdRef.current = null;
@@ -136,7 +159,10 @@ export function WorkspaceCreator({
     return null;
   }
 
+  const step = run ? 2 : review ? 1 : 0;
+
   async function checkTopic() {
+    if (!topic.trim() || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -203,6 +229,7 @@ export function WorkspaceCreator({
 
   function close() {
     if (run && ["queued", "running"].includes(run.status)) {
+      // The build keeps going on the server; the sidebar carries its progress.
       onClose();
       return;
     }
@@ -219,101 +246,402 @@ export function WorkspaceCreator({
   return (
     <dialog
       ref={dialogRef}
-      className="fixed inset-0 z-backdrop grid h-full max-h-none w-full max-w-none place-items-center border-0 bg-transparent p-6 max-[720px]:items-end max-[720px]:p-0"
-      aria-labelledby="creation-title"
+      className={cx(
+        "fixed inset-0 z-creator m-0 flex h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-transparent p-6 [&::backdrop]:bg-[rgb(31_35_40_/_28%)]",
+        closing
+          ? "[&::backdrop]:animate-backdrop-exit"
+          : "[&::backdrop]:animate-backdrop-enter",
+      )}
+      aria-labelledby="creator-title"
       onCancel={(event) => {
         event.preventDefault();
         close();
       }}
       onMouseDown={(event) => {
-      if (event.target === event.currentTarget) close();
-    }}>
-      <section className="max-h-[min(760px,calc(100vh_-_48px))] w-full max-w-[540px] animate-interface-center-enter overflow-y-auto rounded-[10px] border border-border bg-surface shadow-dialog data-[state=closing]:pointer-events-none data-[state=closing]:animate-interface-center-exit max-[720px]:max-h-[88vh] max-[720px]:w-full max-[720px]:rounded-t-md max-[720px]:rounded-b-none" data-state={closing ? "closing" : "open"}>
-        <header className="flex min-w-0 items-center justify-between gap-[18px] border-b border-border px-6 pt-[21px] pb-[18px] max-[720px]:p-[18px]">
-          <div className="grid min-w-0 gap-[5px]">
-            <span className="text-[11px] font-semibold text-text-secondary">{run ? "Workspace build" : "New workspace"}</span>
-            <h2 className="m-0 text-balance text-base font-bold leading-tight tracking-normal text-text-primary [overflow-wrap:anywhere]" id="creation-title">
-              {run ? run.topic : review ? "Review research focus" : "Start with a research focus"}
-            </h2>
-          </div>
-          <button className="grid h-8 w-8 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-[background-color,border-color,color,transform] duration-200 ease-research enabled:hover:bg-surface-subtle enabled:hover:text-text-primary enabled:active:scale-[0.94] disabled:cursor-not-allowed disabled:text-text-muted [&_svg]:h-[18px] [&_svg]:w-[18px] max-[720px]:h-10 max-[720px]:w-10" type="button" onClick={close} aria-label="Close new workspace" title="Close">
-            <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+        if (event.target === event.currentTarget) close();
+      }}
+    >
+      <section
+        className={cx(
+          "flex max-h-[min(640px,calc(100vh-48px))] w-[540px] max-w-full flex-col overflow-hidden rounded-[14px] bg-surface shadow-dialog",
+          closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
+        )}
+      >
+        <header className="flex flex-none items-center gap-2 border-b border-hairline px-5 py-3.5">
+          <h2 className="m-0 flex-1 text-[13.5px] font-semibold text-text-primary" id="creator-title">
+            New workspace
+          </h2>
+          <button
+            className="grid h-[26px] w-[26px] flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
+            type="button"
+            onClick={close}
+            aria-label="Close new workspace"
+            title="Close"
+          >
+            <CloseIcon className="h-3 w-3" />
           </button>
         </header>
 
-        {!review && !run ? (
-          <form className="grid gap-[18px] p-6 max-[720px]:p-5 max-[720px]:px-[18px]" onSubmit={(event) => { event.preventDefault(); void checkTopic(); }}>
-            <p className="m-0 text-[13px] leading-[1.55] text-text-secondary">Enter a field, research question, method, benchmark, or survey.</p>
-            <label className="grid gap-2 text-xs font-semibold text-text-primary">
-              Research focus
-              <textarea
-                className="min-h-[116px] w-full resize-y rounded-sm border border-border-strong bg-surface px-3.5 py-[13px] text-sm leading-normal text-text-primary outline-0 transition-[border-color,box-shadow] duration-150 placeholder:text-text-secondary focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-subtle)]"
+        <Stepper step={step} />
+
+        {step === 0 ? (
+          <>
+            <form
+              className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pb-5"
+              id="creator-topic-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void checkTopic();
+              }}
+            >
+              <h3 className="m-0 text-[17px] font-bold tracking-[-0.01em] text-text-primary">
+                What field do you want to map?
+              </h3>
+              <p className="mt-2 mb-0 text-[13px] leading-[1.6] text-text-secondary">
+                One topic becomes a durable map: branches, key papers, and reading paths. You confirm
+                it before anything runs.
+              </p>
+              <label className="mt-[18px] block text-[13px] font-bold text-text-primary" htmlFor="creator-topic">
+                Topic
+              </label>
+              <input
+                className={cx(textInputClass, "mt-2")}
+                id="creator-topic"
                 ref={topicInputRef}
+                type="text"
                 value={topic}
                 onChange={(event) => setTopic(event.target.value)}
-                placeholder="A field, research question, method, benchmark, or survey"
+                placeholder="e.g. Speculative decoding"
                 maxLength={240}
               />
-            </label>
-            <button className={primaryActionClass} type="submit" disabled={busy || !topic.trim()}>
-              {busy ? "Checking…" : "Review focus"}
-            </button>
-          </form>
-        ) : null}
-
-        {review && !run ? (
-          <div className="grid gap-[18px] p-6 max-[720px]:p-5 max-[720px]:px-[18px]">
-            {review.existing_workspace ? (
-              <>
-                <p className="m-0 text-[13px] leading-[1.55] text-text-secondary">A workspace already exists for this research focus. Enter a different focus or open the existing workspace.</p>
-                <button className={primaryActionClass} type="button" onClick={() => {
-                  onOpenExisting(review.existing_workspace!.workspace_id);
-                  close();
-                }}>
-                  Open {review.existing_workspace.title}
-                </button>
-              </>
-            ) : review.is_research_topic ? (
-              <>
-                <dl className="m-0 grid border-t border-border">
-                  <div className="grid grid-cols-[116px_minmax(0,1fr)] gap-4 border-b border-border py-[13px] max-[520px]:grid-cols-1 max-[520px]:gap-[5px]"><dt className="m-0 text-[13px] text-text-secondary">Extracted focus</dt><dd className="m-0 text-[13px] font-medium leading-[1.45] text-text-primary [overflow-wrap:anywhere]">{review.normalized_topic}</dd></div>
-                  {review.source_paper ? <div className="grid grid-cols-[116px_minmax(0,1fr)] gap-4 border-b border-border py-[13px] max-[520px]:grid-cols-1 max-[520px]:gap-[5px]"><dt className="m-0 text-[13px] text-text-secondary">Linked paper</dt><dd className="m-0 text-[13px] font-medium leading-[1.45] text-text-primary [overflow-wrap:anywhere]">{review.source_paper.title}</dd></div> : null}
-                  <div className="grid grid-cols-[116px_minmax(0,1fr)] gap-4 border-b border-border py-[13px] max-[520px]:grid-cols-1 max-[520px]:gap-[5px]"><dt className="m-0 text-[13px] text-text-secondary">Workspace</dt><dd className="m-0 text-[13px] font-medium leading-[1.45] text-text-primary [overflow-wrap:anywhere]">Branches, reading paths, and paper notes</dd></div>
-                </dl>
-                <div className="flex justify-end gap-2 max-[520px]:flex-col-reverse">
-                  <button className={cx(secondaryActionClass, "max-[520px]:w-full")} type="button" onClick={() => setReview(null)}>Edit topic</button>
-                  <button className={primaryActionClass} type="button" disabled={busy} onClick={() => void createWorkspace()}>
-                    {busy ? "Starting…" : "Build workspace"}
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-text-muted">Try:</span>
+                {EXAMPLE_TOPICS.map((example) => (
+                  <button
+                    className={exampleChipClass}
+                    key={example}
+                    type="button"
+                    onClick={() => {
+                      setTopic(example);
+                      topicInputRef.current?.focus();
+                    }}
+                  >
+                    {example}
                   </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="m-0 text-[13px] leading-[1.55] text-text-secondary">{review.guidance || "This doesn't appear to be a research topic. Try a specific field or question."}</p>
-                <button className={cx(secondaryActionClass, "max-[520px]:w-full")} type="button" onClick={() => setReview(null)}>Try another topic</button>
-              </>
-            )}
-          </div>
+                ))}
+              </div>
+              {error ? <InlineError message={error} /> : null}
+            </form>
+            <Footer>
+              <button
+                className={cx(primaryActionClass, "ml-auto")}
+                type="submit"
+                form="creator-topic-form"
+                disabled={busy || !topic.trim()}
+              >
+                {busy ? "Checking…" : "Review topic"}
+                {busy ? null : <ArrowRightIcon className="h-3 w-3" />}
+              </button>
+            </Footer>
+          </>
         ) : null}
 
-        {run ? (
-          <PipelineProgress
-            run={run}
-            canceling={canceling}
-            onCancel={() => void cancelRun()}
-            onStartOver={startOver}
-          />
+        {step === 1 && review ? (
+          <>
+            <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pb-5">
+              <ReviewBody review={review} />
+              {error ? <InlineError message={error} /> : null}
+            </div>
+            <Footer>
+              <button className={secondaryActionClass} type="button" onClick={() => setReview(null)}>
+                <ArrowLeftIcon className="h-3 w-3" />
+                Back
+              </button>
+              {review.existing_workspace ? (
+                <button
+                  className={cx(primaryActionClass, "ml-auto")}
+                  type="button"
+                  onClick={() => {
+                    onOpenExisting(review.existing_workspace!.workspace_id);
+                    close();
+                  }}
+                >
+                  Open it instead
+                </button>
+              ) : review.can_create ? (
+                <button
+                  className={cx(primaryActionClass, "ml-auto")}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void createWorkspace()}
+                >
+                  {busy ? "Starting…" : "Build workspace"}
+                </button>
+              ) : null}
+            </Footer>
+          </>
         ) : null}
-        {error ? <p className={inlineErrorClass} role="alert">{error}</p> : null}
+
+        {step === 2 && run ? (
+          <>
+            <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[22px] pb-5" aria-live="polite">
+              <BuildBody run={run} />
+              {error ? <InlineError message={error} /> : null}
+            </div>
+            <Footer>
+              {["queued", "running"].includes(run.status) ? (
+                <>
+                  <button
+                    className={cx(ghostActionClass, "hover:text-error")}
+                    type="button"
+                    onClick={() => void cancelRun()}
+                    disabled={canceling}
+                  >
+                    {canceling ? "Cancelling…" : "Cancel build"}
+                  </button>
+                  {isOpenable(run) ? (
+                    <button className={cx(tintedActionClass, "ml-auto")} type="button" onClick={close}>
+                      Open now · summaries still filling in
+                      <ArrowRightIcon className="h-3 w-3" />
+                    </button>
+                  ) : null}
+                </>
+              ) : (
+                <button className={cx(secondaryActionClass, "ml-auto")} type="button" onClick={startOver}>
+                  Start over
+                </button>
+              )}
+            </Footer>
+          </>
+        ) : null}
       </section>
     </dialog>
   );
 }
 
-function workspaceIsReadyForUse(run: PipelineRun): boolean {
-  const hydrateStatus = run.stages.hydrate?.status;
-  return hydrateStatus === "completed" || hydrateStatus === "completed_with_warnings";
+/* -------------------------------------------------------------- stepper --- */
+
+const STEP_LABELS = ["Topic", "Confirm", "Build"];
+
+function Stepper({ step }: { step: number }) {
+  return (
+    <div className="flex flex-none items-center px-5 pt-3.5 pb-0.5" aria-hidden="true">
+      {STEP_LABELS.map((label, index) => (
+        <div className="flex min-w-0 items-center" key={label}>
+          {index > 0 ? (
+            <span
+              className={cx(
+                "mx-2 h-[1.5px] w-[clamp(16px,6vw,54px)] flex-none",
+                step >= index ? "bg-accent-border" : "bg-hairline",
+              )}
+            />
+          ) : null}
+          <span className="flex items-center gap-[7px]">
+            <span
+              className={cx(
+                "grid h-[18px] w-[18px] flex-none place-items-center rounded-full border-[1.5px] text-[9.5px] font-bold",
+                step > index
+                  ? "border-accent-border bg-accent-subtle text-accent-deep"
+                  : step === index
+                    ? "border-accent bg-accent text-white"
+                    : "border-border bg-surface text-text-muted",
+              )}
+            >
+              {step > index ? <CheckIcon className="h-2 w-2" /> : index + 1}
+            </span>
+            <span
+              className={cx(
+                "text-[11px] font-semibold whitespace-nowrap",
+                step > index ? "text-accent-deep" : step === index ? "text-text-primary" : "text-text-muted",
+              )}
+            >
+              {label}
+            </span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
 }
+
+function Footer({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-none items-center gap-2 border-t border-hairline bg-surface-muted px-5 py-3.5">
+      {children}
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------- review --- */
+
+function ReviewBody({ review }: { review: TopicReview }) {
+  if (!review.is_research_topic) {
+    return (
+      <>
+        <div className="flex items-center gap-2.5 rounded-lg border border-warning-border bg-warning-surface px-3.5 py-3 text-xs leading-[1.55] text-warning">
+          Not recognized as a research field.
+        </div>
+        <h3 className="mt-3.5 mb-0 text-[21px] font-bold tracking-[-0.015em] text-text-primary [overflow-wrap:anywhere]">
+          {review.submitted_topic}
+        </h3>
+        <p className="mt-2 mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.62] text-text-secondary">
+          {review.guidance || "Try a specific field, method, benchmark, or research question."}
+        </p>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-[9px]">
+        <span className="grid h-[22px] w-[22px] flex-none place-items-center rounded-full bg-accent-subtle text-accent-deep" aria-hidden="true">
+          <CheckIcon className="h-[11px] w-[11px]" />
+        </span>
+        <span className="text-[12.5px] font-semibold text-accent-deep">Recognized research field</span>
+      </div>
+      <h3 className="mt-3 mb-0 text-[21px] font-bold tracking-[-0.015em] text-text-primary [overflow-wrap:anywhere]">
+        {review.normalized_topic}
+      </h3>
+      {review.guidance ? (
+        <p className="mt-2 mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.62] text-text-secondary">
+          {review.guidance}
+        </p>
+      ) : null}
+      <div className="mt-[18px] border-t border-hairline-soft pt-4">
+        <ReviewFact label="Scope">
+          Branches, reading paths, and a paper card for every paper on them.
+        </ReviewFact>
+        <ReviewFact label="Linked paper">
+          {review.source_paper
+            ? `${review.source_paper.title} will anchor the map.`
+            : "None detected. Paste an arXiv link to anchor the map."}
+        </ReviewFact>
+        {review.model ? <ReviewFact label="Model">{review.model}</ReviewFact> : null}
+      </div>
+      {review.existing_workspace ? (
+        <div className="mt-4 rounded-lg border border-warning-border bg-warning-surface px-3.5 py-3 text-xs leading-[1.55] text-warning">
+          You already have a “{review.existing_workspace.title}” workspace for this topic.
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ReviewFact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <section className="mt-4 first:mt-0">
+      <h4 className="m-0 text-[13px] font-bold text-text-primary">{label}</h4>
+      <p className="mt-1.5 mb-0 w-[min(100%,62ch)] text-[12.5px] leading-[1.62] text-text-secondary [overflow-wrap:anywhere]">
+        {children}
+      </p>
+    </section>
+  );
+}
+
+/* ---------------------------------------------------------------- build --- */
+
+function BuildBody({ run }: { run: PipelineRun }) {
+  const progress = buildProgress(run);
+  const warnings = (run.warnings ?? []).map((warning) => warning.trim()).filter(Boolean);
+  const cancelled = run.status === "cancelled";
+  const failed = run.status === "failed";
+
+  return (
+    <>
+      <div className="flex items-baseline gap-2.5">
+        <h3 className="m-0 flex-1 text-[18px] font-bold tracking-[-0.015em] text-text-primary [overflow-wrap:anywhere]">
+          Mapping {run.topic}
+        </h3>
+        <span className="text-[22px] font-bold tracking-[-0.02em] text-accent tabular-nums">
+          {progress.percent}%
+        </span>
+      </div>
+      <div className="mt-3.5 h-1.5 overflow-hidden rounded-[3px] bg-track">
+        <div
+          className="h-full rounded-[3px] bg-accent transition-[width] duration-500 ease-research"
+          style={{ width: `${progress.percent}%` }}
+        />
+      </div>
+      <ol className="m-0 mt-[22px] flex list-none flex-col gap-[11px] p-0">
+        {progress.stages.map((stage) => (
+          <li className="flex items-center gap-[11px]" key={stage.id}>
+            <StageMark state={stage.state} />
+            <span
+              className={cx(
+                "text-[13px]",
+                stage.state === "waiting"
+                  ? "font-medium text-text-muted"
+                  : stage.state === "failed"
+                    ? "font-medium text-error"
+                    : stage.state === "current"
+                      ? "font-semibold text-text-primary"
+                      : "font-medium text-text-primary",
+              )}
+            >
+              {stage.label}
+            </span>
+          </li>
+        ))}
+      </ol>
+      {warnings.length > 0 ? (
+        <div className="mt-4 grid gap-1 rounded-lg border border-warning-border bg-warning-surface px-3.5 py-3 text-xs leading-[1.5] text-warning">
+          <strong className="text-[11px] font-semibold">
+            {warnings.length === 1 ? "Warning" : "Warnings"}
+          </strong>
+          {warnings.map((warning, index) => (
+            <span className="[overflow-wrap:anywhere]" key={`${index}:${warning}`}>
+              {warning}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {failed ? (
+        <p className="mt-4 mb-0 rounded-lg border border-error-border bg-error-surface px-3.5 py-3 text-xs leading-[1.5] text-error">
+          {run.error || "The workspace could not be built. Your existing workspaces are unchanged."}
+        </p>
+      ) : null}
+      {cancelled ? (
+        <p className="mt-4 mb-0 rounded-lg border border-border bg-surface-subtle px-3.5 py-3 text-xs leading-[1.5] text-text-secondary">
+          Build cancelled. Your existing workspaces are unchanged.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function StageMark({ state }: { state: "done" | "current" | "waiting" | "failed" }) {
+  if (state === "done") {
+    return (
+      <span className="grid h-[18px] w-[18px] flex-none place-items-center rounded-full bg-accent-subtle text-accent-deep" aria-hidden="true">
+        <CheckIcon className="h-[9px] w-[9px]" />
+      </span>
+    );
+  }
+  if (state === "current") {
+    return (
+      <span
+        className="h-[18px] w-[18px] flex-none animate-progress-spin rounded-full border-2 border-track border-t-accent"
+        aria-hidden="true"
+      />
+    );
+  }
+  if (state === "failed") {
+    return (
+      <span className="h-[18px] w-[18px] flex-none rounded-full border-2 border-error bg-error-surface" aria-hidden="true" />
+    );
+  }
+  return <span className="h-[18px] w-[18px] flex-none rounded-full border-2 border-track" aria-hidden="true" />;
+}
+
+function InlineError({ message }: { message: string }) {
+  return (
+    <p className="mt-4 mb-0 rounded-lg border border-error-border bg-error-surface px-3.5 py-3 text-xs leading-[1.5] text-error" role="alert">
+      {message}
+    </p>
+  );
+}
+
+/* -------------------------------------------------------------- helpers --- */
 
 /** Statuses the server will send no further updates for. */
 const TERMINAL_RUN_STATUSES: PipelineRun["status"][] = [
@@ -334,86 +662,4 @@ function parsePipelineRun(data: string): PipelineRun | null {
   } catch {
     return null;
   }
-}
-
-function PipelineProgress({
-  run,
-  canceling,
-  onCancel,
-  onStartOver,
-}: {
-  run: PipelineRun;
-  canceling: boolean;
-  onCancel: () => void;
-  onStartOver: () => void;
-}) {
-  const stages = [
-    ["candidates", "Searching papers"],
-    ["construct", "Building structure"],
-    ["hydrate", "Loading details"],
-    ["related", "Finding related work"],
-  ] as const;
-  const warnings = (run.warnings ?? []).map((warning) => warning.trim()).filter(Boolean);
-  return (
-    <div className="grid gap-[18px] p-6 max-[720px]:p-5 max-[720px]:px-[18px]" aria-live="polite">
-      <ol className="m-0 grid list-none p-0">
-        {stages.map(([stage, label]) => {
-          const status = run.stages[stage]?.status || (run.requested_stages.includes(stage) ? "waiting" : "reused");
-          return <li className="grid grid-cols-[18px_minmax(0,1fr)] gap-2.5 border-b border-border py-[13px]" key={stage}><span className={stageDotClass(status)} aria-hidden="true" /> <div className="grid gap-[3px]"><strong className="text-[13px]">{label}</strong><small className="text-[11px] text-text-secondary">{stageStatus(status)}</small></div></li>;
-        })}
-      </ol>
-      {warnings.length > 0 ? (
-        <div className="grid gap-1 rounded-sm bg-surface-subtle px-3 py-2.5 text-xs leading-[1.45] text-text-secondary">
-          <strong className="text-[11px] font-semibold text-text-primary">{warnings.length === 1 ? "Warning" : "Warnings"}</strong>
-          {warnings.map((warning, index) => (
-            <span className="[overflow-wrap:anywhere]" key={`${index}:${warning}`}>{warning}</span>
-          ))}
-        </div>
-      ) : null}
-      {["queued", "running"].includes(run.status) ? (
-        <button className="mt-0.5 min-w-28 justify-self-center rounded-sm border border-[color-mix(in_srgb,var(--color-text-muted)_46%,transparent)] bg-surface px-3.5 py-2 text-xs font-semibold text-text-secondary transition-[background-color,border-color,color] duration-200 ease-research enabled:hover:border-error enabled:hover:bg-[color-mix(in_srgb,var(--color-error)_7%,var(--color-surface))] enabled:hover:text-error disabled:cursor-not-allowed disabled:text-text-muted" type="button" onClick={onCancel} disabled={canceling}>
-          {canceling ? "Cancelling…" : "Cancel"}
-        </button>
-      ) : null}
-      {run.status === "failed" ? (
-        <div className="grid gap-2.5">
-          <p className="m-0 rounded-sm bg-[color-mix(in_srgb,var(--color-error)_9%,var(--color-surface))] px-3 py-2.5 text-xs leading-[1.45] text-error">
-            {run.error || "The workspace could not be built. Your existing workspaces are unchanged."}
-          </p>
-          <button className={cx(secondaryActionClass, "justify-self-center")} type="button" onClick={onStartOver}>Start over</button>
-        </div>
-      ) : null}
-      {run.status === "cancelled" ? (
-        // A cancelled run offers no Cancel button and no failure block, so
-        // without this the only way out of the dialog is the close control.
-        <div className="grid gap-2.5">
-          <p className="m-0 rounded-sm bg-surface-subtle px-3 py-2.5 text-xs leading-[1.45] text-text-secondary">
-            Build cancelled. Your existing workspaces are unchanged.
-          </p>
-          <button className={cx(secondaryActionClass, "justify-self-center")} type="button" onClick={onStartOver}>Start over</button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-const inlineErrorClass = "mx-6 mt-0 mb-5 rounded-sm bg-[color-mix(in_srgb,var(--color-error)_9%,var(--color-surface))] px-3 py-2.5 text-xs leading-[1.45] text-error";
-
-function stageDotClass(status: string): string {
-  return cx(
-    "mt-1 h-2.5 w-2.5 rounded-full border-2 border-border-strong",
-    status === "running" && "animate-progress-spin border-accent border-t-transparent",
-    status.startsWith("completed") && "border-accent bg-accent",
-    status === "failed" && "border-error bg-[color-mix(in_srgb,var(--color-error)_12%,var(--color-surface))]",
-  );
-}
-
-function stageStatus(status: string) {
-  if (status === "running") return "In progress";
-  if (status === "failed") return "Failed";
-  if (status === "cancelled") return "Cancelled";
-  if (status === "completed") return "Complete";
-  if (status === "completed_with_warnings") return "Complete — with warnings";
-  if (status === "reused") return "Reused from the prior run";
-  return "Waiting";
 }

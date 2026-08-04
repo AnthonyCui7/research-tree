@@ -1,44 +1,60 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
+import { ProfileMenu } from "./ProfileMenu";
 import { TreeCanvas } from "../tree/TreeCanvas";
-import { FloatingInspector } from "../tree/FloatingInspector";
-import { WorkspaceEmptyState } from "../workspace/WorkspaceEmptyState";
+import { SearchOverlay } from "../search/SearchOverlay";
+import { NodeInspector, inspectorLabel } from "../inspector/NodeInspector";
+import { RightPanel, RIGHT_PANEL_DEFAULT_WIDTH } from "../panel/RightPanel";
+import { WorkspaceEmptyState, WorkspaceNotice } from "../workspace/WorkspaceEmptyState";
 import { WorkspaceCreator } from "../workspace/WorkspaceCreator";
 import { WorkspaceHistory } from "../workspace/WorkspaceHistory";
 import { WorkspaceAgent } from "../workspace/WorkspaceAgent";
-import agentIcon from "../../assets/lucide-message-square-text.svg";
+import { DeleteWorkspaceDialog } from "../workspace/DeleteWorkspaceDialog";
+import { Toast, ToastStack } from "../ui/Toast";
+import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
+import { ClockIcon, TrashIcon } from "../ui/icons";
 import { cx } from "../../lib/cx";
-import type { PipelineRun, TreeNodeId, TreeViewModel, WorkspaceDocument, WorkspaceSummary } from "../../lib/types";
+import { useAgentSession } from "../../data/useAgentSession";
+import { PANEL_EXIT_MS, useExitAnimation } from "../../lib/animation";
+import { isRunActive } from "../../lib/pipelineStages";
+import type {
+  PipelineRun,
+  TreeNodeId,
+  TreeViewModel,
+  WorkspaceDocument,
+  WorkspaceSummary,
+} from "../../lib/types";
+
+export type UtilityPanel = "inspector" | "agent" | "history";
 
 type AppShellProps = {
   status: "loading" | "ready" | "error";
   error: string | null;
   live: boolean;
   workspaces: WorkspaceSummary[];
-  activeWorkspaceId: string | null;
+  activeSummary: WorkspaceSummary | null;
   tree: TreeViewModel | null;
   activeWorkspace: WorkspaceDocument | null;
   workspaceLoading: boolean;
   workspaceError: string | null;
   selectedNodeId: TreeNodeId | null;
-  onSelectWorkspace: (workspaceId: string) => void;
-  onSelectNode: (nodeId: TreeNodeId) => void;
-  onCloseInspector: () => void;
+  panel: UtilityPanel | null;
   creatorOpen: boolean;
-  utilityPanel: "history" | "agent" | null;
+  creatorTopic: string;
   sidebarCollapsed: boolean;
   buildingRun: PipelineRun | null;
-  onOpenCreator: () => void;
+  onSelectWorkspace: (workspaceId: string) => void;
+  onSelectNode: (nodeId: TreeNodeId) => void;
+  onOpenPanel: (panel: UtilityPanel) => void;
+  onClosePanel: () => void;
+  onOpenCreator: (topic?: string) => void;
   onCloseCreator: () => void;
   onCreated: (workspaceId: string, run: PipelineRun) => Promise<void>;
-  onOpenUtility: (panel: "history" | "agent" | null) => void;
-  onCloseUtility: () => void;
   onWorkspaceChanged: () => Promise<void>;
   onWorkspaceDeleted: () => Promise<void>;
   onToggleSidebar: () => void;
   onRefresh: () => void;
-  onResumeBuild: () => void;
   onPipelineStarted: (run: PipelineRun) => void;
   onPipelineFinished: (runId: string) => void;
 };
@@ -48,42 +64,50 @@ export function AppShell({
   error,
   live,
   workspaces,
-  activeWorkspaceId,
+  activeSummary,
   tree,
   activeWorkspace,
   workspaceLoading,
   workspaceError,
   selectedNodeId,
-  onSelectWorkspace,
-  onSelectNode,
-  onCloseInspector,
+  panel,
   creatorOpen,
-  utilityPanel,
+  creatorTopic,
   sidebarCollapsed,
   buildingRun,
+  onSelectWorkspace,
+  onSelectNode,
+  onOpenPanel,
+  onClosePanel,
   onOpenCreator,
   onCloseCreator,
   onCreated,
-  onOpenUtility,
-  onCloseUtility,
   onWorkspaceChanged,
   onWorkspaceDeleted,
   onToggleSidebar,
   onRefresh,
-  onResumeBuild,
   onPipelineStarted,
   onPipelineFinished,
 }: AppShellProps) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [profileAnchor, setProfileAnchor] = useState<MenuAnchor | null>(null);
+  const [optionsMenu, setOptionsMenu] = useState<
+    { workspace: WorkspaceSummary; anchor: MenuAnchor } | null
+  >(null);
+  const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
+  const [panelWidth, setPanelWidth] = useState(RIGHT_PANEL_DEFAULT_WIDTH);
   // A failed background refresh keeps the workspaces already on screen, so the
   // failure has nowhere else to appear. Dismissal is tracked by message, so a
   // later — different — failure still speaks up.
   const [dismissedError, setDismissedError] = useState<string | null>(null);
-  const selectedNode = tree && selectedNodeId ? tree.nodesById[selectedNodeId] ?? null : null;
-  const activePipelineRunning =
-    buildingRun?.workspace_id === activeWorkspaceId &&
-    (buildingRun.status === "queued" || buildingRun.status === "running");
-  const refreshError =
-    status !== "error" && error && error !== dismissedError ? error : null;
+
+  const activeWorkspaceId = activeSummary?.workspace_id ?? null;
+  const selectedNode = tree && selectedNodeId ? (tree.nodesById[selectedNodeId] ?? null) : null;
+  const activeRunning =
+    buildingRun?.workspace_id === activeWorkspaceId && isRunActive(buildingRun);
+  const refreshError = status !== "error" && error && error !== dismissedError ? error : null;
+  const session = useAgentSession(activeWorkspace?.workspace_id ?? null, onWorkspaceChanged);
+
   // A refresh that succeeds re-arms the strip, so the same failure returning
   // after a good refresh is reported again rather than silently swallowed.
   useEffect(() => {
@@ -92,136 +116,263 @@ export function AppShell({
     }
   }, [error]);
 
-  return (
-    <div
-      className={cx(
-        "grid h-screen w-screen bg-surface transition-[grid-template-columns] duration-[260ms] ease-research",
-        sidebarCollapsed
-          ? "grid-cols-[0_minmax(0,1fr)] max-[720px]:grid-cols-[minmax(0,1fr)] max-[720px]:grid-rows-[56px_minmax(0,1fr)]"
-          : "grid-cols-[252px_minmax(0,1fr)] max-[980px]:grid-cols-[68px_minmax(0,1fr)] max-[420px]:grid-cols-[60px_minmax(0,1fr)]",
-      )}
-    >
-      <Sidebar
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        onSelectWorkspace={onSelectWorkspace}
-        onNewWorkspace={onOpenCreator}
-        collapsed={sidebarCollapsed}
-        onToggleSidebar={onToggleSidebar}
-        buildingRun={buildingRun}
-        onResumeBuild={onResumeBuild}
-        live={live}
-      />
-      <button
-        className="fixed bottom-4 left-4 z-[calc(var(--z-panel)_+_1)] grid h-10 w-10 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-surface shadow-launcher transition-none enabled:hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-border-strong [&_img]:h-5 [&_img]:w-5"
-        type="button"
-        onClick={() => onOpenUtility("agent")}
-        disabled={!tree || activePipelineRunning}
-        aria-label="Open Assistant"
-        title="Assistant"
-      >
-        <img src={agentIcon} alt="" aria-hidden="true" />
-      </button>
+  useEffect(() => {
+    if (!tree) {
+      setSearchOpen(false);
+    }
+  }, [tree]);
 
-      <main className="grid h-full min-w-0 grid-rows-[64px_minmax(0,1fr)] max-[720px]:grid-rows-[auto_minmax(0,1fr)]" aria-label="Research workspace">
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (tree) setSearchOpen((open) => !open);
+        return;
+      }
+      // One Escape closes one thing, outermost first. Anything layered above the
+      // panel — search, a dialog, a menu — claims the key before it reaches here.
+      if (event.key === "Escape" && panel) {
+        onClosePanel();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClosePanel, panel, tree]);
+
+  const historyReady = Boolean(activeWorkspace && tree?.currentVersionHash);
+  const panelOpen = Boolean(
+    (panel === "inspector" && selectedNode) ||
+      (panel === "agent" && activeWorkspace) ||
+      (panel === "history" && historyReady),
+  );
+  const panelPresence = useExitAnimation(panelOpen, PANEL_EXIT_MS);
+  const sidebarPresence = useExitAnimation(!sidebarCollapsed, PANEL_EXIT_MS);
+
+  // What the panel was showing when it was told to close. The mode itself is
+  // cleared immediately, but the panel is still on screen playing its exit, and
+  // an empty box sliding out reads as a glitch.
+  const lastPanelRef = useRef<UtilityPanel | null>(null);
+  useEffect(() => {
+    if (panelOpen && panel) {
+      lastPanelRef.current = panel;
+    }
+  }, [panel, panelOpen]);
+  const shownPanel = panel ?? lastPanelRef.current;
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-background">
+      {sidebarPresence.present ? (
+        <>
+          <Sidebar
+            closing={sidebarPresence.closing}
+            workspaces={workspaces}
+            activeWorkspaceId={activeWorkspaceId}
+            onSelectWorkspace={onSelectWorkspace}
+            onOpenOptions={(workspace, trigger) =>
+              setOptionsMenu({ workspace, anchor: anchorFromEvent(trigger, "left") })
+            }
+            onNewWorkspace={() => onOpenCreator()}
+            onToggleSidebar={onToggleSidebar}
+            onOpenAgent={() => (panel === "agent" ? onClosePanel() : onOpenPanel("agent"))}
+            agentActive={panel === "agent"}
+            agentDisabled={!activeWorkspace || activeRunning}
+            buildingRun={buildingRun}
+            onResumeBuild={() => onOpenCreator()}
+            live={live}
+          />
+          <div
+            className={cx(
+              "fixed inset-0 z-backdrop hidden bg-[rgb(31_35_40_/_28%)] max-[900px]:block",
+              sidebarPresence.closing ? "animate-backdrop-exit" : "animate-backdrop-enter",
+            )}
+            role="presentation"
+            onClick={onToggleSidebar}
+          />
+        </>
+      ) : null}
+
+      <main className="flex min-w-0 flex-1 flex-col" aria-label="Research workspace">
         <TopBar
-          workspaceTitle={tree?.title ?? "Workspace"}
-          tree={tree}
-          onSelectNode={onSelectNode}
-          onOpenHistory={() => onOpenUtility("history")}
+          workspaceTitle={tree?.title ?? activeSummary?.title ?? "Research Tree"}
+          branchCount={tree?.branchCount ?? null}
+          paperCount={tree?.paperCount ?? null}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}
+          onOpenSearch={() => setSearchOpen(true)}
+          searchDisabled={!tree}
+          onToggleHistory={() => (panel === "history" ? onClosePanel() : onOpenPanel("history"))}
+          historyActive={panel === "history"}
+          historyDisabled={!historyReady}
+          onToggleProfile={(trigger) =>
+            setProfileAnchor((current) => (current ? null : anchorFromEvent(trigger, "right")))
+          }
+          profileOpen={profileAnchor !== null}
         />
-        <section className="relative min-h-0 min-w-0 overflow-hidden bg-background" aria-live={status === "loading" ? "polite" : "off"}>
-          {status === "loading" || (status === "ready" && !tree && workspaceLoading) ? (
-            <WorkspaceEmptyState title="Loading workspace" detail="Loading…" />
-          ) : null}
-          {status === "error" ? (
-            <WorkspaceEmptyState
-              title="Workspaces unavailable"
-              detail={error ?? "Your workspaces could not be loaded. Refresh and try again."}
-              tone="error"
-              actionLabel="Retry"
-              onAction={onRefresh}
-            />
-          ) : null}
-          {status === "ready" && !tree && !workspaceLoading && workspaceError ? (
-            <WorkspaceEmptyState
-              title="Workspace failed to load"
-              detail={workspaceError}
-              tone="error"
-              actionLabel="Retry"
-              onAction={onRefresh}
-            />
-          ) : null}
-          {status === "ready" && !tree && !workspaceLoading && !workspaceError ? (
-            <WorkspaceEmptyState
-              title="No workspaces"
-              detail="Enter a topic to build a workspace."
-              actionLabel="Create workspace"
-              onAction={onOpenCreator}
-            />
-          ) : null}
-          {status === "ready" && tree ? (
-            <>
+
+        <div className="relative flex min-h-0 flex-1">
+          <section
+            className="relative min-h-0 min-w-0 flex-1 overflow-hidden"
+            aria-live={status === "loading" ? "polite" : "off"}
+          >
+            {status === "loading" || (status === "ready" && !tree && workspaceLoading) ? (
+              <WorkspaceNotice title="Loading workspace" detail="Reading the saved structure…" />
+            ) : null}
+            {status === "error" ? (
+              <WorkspaceNotice
+                title="Workspaces unavailable"
+                detail={error ?? "Your workspaces could not be loaded. Refresh and try again."}
+                tone="error"
+                actionLabel="Retry"
+                onAction={onRefresh}
+              />
+            ) : null}
+            {status === "ready" && !tree && !workspaceLoading && workspaceError ? (
+              <WorkspaceNotice
+                title="Workspace failed to load"
+                detail={workspaceError}
+                tone="error"
+                actionLabel="Retry"
+                onAction={onRefresh}
+              />
+            ) : null}
+            {status === "ready" && !tree && !workspaceLoading && !workspaceError ? (
+              <WorkspaceEmptyState
+                onCreate={(topic) => onOpenCreator(topic)}
+                disabled={isRunActive(buildingRun)}
+              />
+            ) : null}
+            {status === "ready" && tree ? (
               <TreeCanvas
                 tree={tree}
                 workspace={activeWorkspace}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={onSelectNode}
               />
-              {utilityPanel === null ? (
-                <FloatingInspector
+            ) : null}
+
+            {refreshError ? (
+              <ToastStack>
+                <Toast
+                  tone="error"
+                  onDismiss={() => setDismissedError(refreshError)}
+                  dismissLabel="Dismiss workspace refresh error"
+                >
+                  {refreshError}
+                </Toast>
+              </ToastStack>
+            ) : null}
+          </section>
+
+          {panelPresence.present && shownPanel ? (
+            <RightPanel
+              label={
+                shownPanel === "agent"
+                  ? "Workspace assistant"
+                  : shownPanel === "history"
+                    ? "Version history"
+                    : selectedNode
+                      ? inspectorLabel(selectedNode)
+                      : "Details"
+              }
+              tone={shownPanel === "agent" ? "agent" : "surface"}
+              closing={panelPresence.closing}
+              width={panelWidth}
+              onWidth={setPanelWidth}
+              sidebarCollapsed={sidebarCollapsed}
+            >
+              {shownPanel === "inspector" && selectedNode && tree ? (
+                <NodeInspector
                   node={selectedNode}
-                  onClose={onCloseInspector}
-                  sidebarCollapsed={sidebarCollapsed}
+                  tree={tree}
+                  updatedAt={activeSummary?.updated_at ?? null}
+                  onSelectNode={onSelectNode}
+                  onClose={onClosePanel}
                 />
               ) : null}
-              {/* Keying on the workspace id discards panel state on a switch.
-                  Without it a pending review, an armed delete confirmation, or a
-                  chat transcript would carry over onto a different workspace. */}
-              {activeWorkspace && tree?.currentVersionHash ? (
+              {shownPanel === "agent" && activeWorkspace ? (
+                <WorkspaceAgent
+                  session={session}
+                  tree={tree}
+                  onClose={onClosePanel}
+                />
+              ) : null}
+              {shownPanel === "history" && activeWorkspace && tree?.currentVersionHash ? (
                 <WorkspaceHistory
                   key={`history:${activeWorkspace.workspace_id}`}
-                  open={utilityPanel === "history"}
                   workspaceId={activeWorkspace.workspace_id}
-                  workspaceTitle={activeWorkspace.title}
                   currentVersionHash={tree.currentVersionHash}
-                  onClose={onCloseUtility}
+                  onClose={onClosePanel}
                   onChanged={onWorkspaceChanged}
-                  onDeleted={onWorkspaceDeleted}
                 />
               ) : null}
-              {activeWorkspace ? (
-                <WorkspaceAgent
-                  key={`agent:${activeWorkspace.workspace_id}`}
-                  open={utilityPanel === "agent"}
-                  workspaceId={activeWorkspace.workspace_id}
-                  sidebarCollapsed={sidebarCollapsed}
-                  onClose={onCloseUtility}
-                  onWorkspaceChanged={onWorkspaceChanged}
-                />
-              ) : null}
-            </>
+            </RightPanel>
           ) : null}
-          {refreshError ? (
-            <div className="absolute right-6 bottom-6 z-[2] flex max-w-[min(420px,calc(100%_-_48px))] items-start gap-2 rounded-sm border border-[color-mix(in_srgb,var(--color-error)_26%,transparent)] bg-[color-mix(in_srgb,var(--color-error)_9%,var(--color-surface))] px-3 py-2.5 text-xs leading-[1.45] text-error shadow-control max-[720px]:right-3 max-[720px]:bottom-3" role="alert">
-              <span className="min-w-0">{refreshError}</span>
-              <button
-                className="grid h-5 w-5 flex-none place-items-center rounded-sm border-0 bg-transparent p-0 text-error transition-[background-color] duration-150 hover:bg-[color-mix(in_srgb,var(--color-error)_14%,transparent)] [&_svg]:h-3.5 [&_svg]:w-3.5 max-[720px]:h-8 max-[720px]:w-8"
-                type="button"
-                onClick={() => setDismissedError(refreshError)}
-                aria-label="Dismiss workspace refresh error"
-                title="Dismiss"
-              >
-                <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="m4 4 8 8M12 4l-8 8" /></svg>
-              </button>
-            </div>
-          ) : null}
-        </section>
+        </div>
       </main>
+
+      {searchOpen && tree ? (
+        <SearchOverlay
+          tree={tree}
+          onSelectNode={onSelectNode}
+          onClose={() => setSearchOpen(false)}
+        />
+      ) : null}
+
+      {profileAnchor ? (
+        <ProfileMenu
+          anchor={profileAnchor}
+          onClose={() => setProfileAnchor(null)}
+          onRefresh={onRefresh}
+          onToggleSidebar={onToggleSidebar}
+          sidebarCollapsed={sidebarCollapsed}
+          live={live}
+        />
+      ) : null}
+
+      {optionsMenu ? (
+        <PopoverMenu
+          anchor={optionsMenu.anchor}
+          onClose={() => setOptionsMenu(null)}
+          label={`Options for ${optionsMenu.workspace.title}`}
+        >
+          <MenuSection>
+            <MenuItem
+              icon={<ClockIcon className="h-[13px] w-[13px]" />}
+              onClick={() => {
+                onSelectWorkspace(optionsMenu.workspace.workspace_id);
+                onOpenPanel("history");
+              }}
+            >
+              Version history
+            </MenuItem>
+          </MenuSection>
+          <MenuSection>
+            <MenuItem
+              tone="danger"
+              icon={<TrashIcon className="h-[13px] w-[13px]" />}
+              onClick={() => setDeleteTarget(optionsMenu.workspace)}
+            >
+              Delete workspace…
+            </MenuItem>
+          </MenuSection>
+        </PopoverMenu>
+      ) : null}
+
+      {deleteTarget ? (
+        <DeleteWorkspaceDialog
+          workspace={deleteTarget}
+          onCancel={() => setDeleteTarget(null)}
+          onChanged={onWorkspaceChanged}
+          onDeleted={async () => {
+            setDeleteTarget(null);
+            await onWorkspaceDeleted();
+          }}
+        />
+      ) : null}
+
       <WorkspaceCreator
         open={creatorOpen}
+        initialTopic={creatorTopic}
         onClose={onCloseCreator}
         onCreated={onCreated}
         onOpenExisting={onSelectWorkspace}

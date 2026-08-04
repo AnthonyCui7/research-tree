@@ -1,104 +1,111 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { TreeNodeId, TreeViewModel } from "../../lib/types";
+import { cx } from "../../lib/cx";
+import { pluralize } from "../../lib/format";
+import { outlineIconButtonClass } from "../../lib/controlClasses";
+import { ClockIcon, SearchIcon, SidebarIcon } from "../ui/icons";
 
 type TopBarProps = {
   workspaceTitle: string;
-  tree: TreeViewModel | null;
-  onSelectNode: (nodeId: TreeNodeId) => void;
-  onOpenHistory: () => void;
+  branchCount: number | null;
+  paperCount: number | null;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  onOpenSearch: () => void;
+  searchDisabled: boolean;
+  onToggleHistory: () => void;
+  historyActive: boolean;
+  historyDisabled: boolean;
+  onToggleProfile: (trigger: HTMLElement) => void;
+  profileOpen: boolean;
 };
 
 export function TopBar({
   workspaceTitle,
-  tree,
-  onSelectNode,
-  onOpenHistory,
+  branchCount,
+  paperCount,
   sidebarCollapsed,
   onToggleSidebar,
+  onOpenSearch,
+  searchDisabled,
+  onToggleHistory,
+  historyActive,
+  historyDisabled,
+  onToggleProfile,
+  profileOpen,
 }: TopBarProps) {
-  const [query, setQuery] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const searchRef = useRef<HTMLDivElement>(null);
-  const results = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!tree || !normalized) return [];
-    return tree.nodes.filter((node) => searchText(node).includes(normalized)).slice(0, 8);
-  }, [query, tree]);
-
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        inputRef.current?.focus();
-      }
-      if (event.key === "Escape") {
-        setQuery("");
-        inputRef.current?.blur();
-      }
-    }
-    function onPointerDown(event: PointerEvent) {
-      if (!searchRef.current?.contains(event.target as Node)) {
-        setQuery("");
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("pointerdown", onPointerDown);
-    };
-  }, []);
+  const counts =
+    branchCount === null || paperCount === null
+      ? null
+      : `${pluralize(branchCount, "branch", "branches")} · ${pluralize(paperCount, "paper")}`;
 
   return (
-    <header className="relative z-[calc(var(--z-panel)_+_1)] grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-[18px] border-b border-border bg-surface px-5 max-[720px]:h-auto max-[720px]:grid-cols-[minmax(0,1fr)_auto] max-[720px]:grid-rows-[auto_auto] max-[720px]:gap-x-3 max-[720px]:gap-y-2.5 max-[720px]:p-3">
-      <div className="flex min-w-0 items-center gap-3">
-        {sidebarCollapsed ? <button className="grid h-8 w-8 flex-none place-items-center rounded-md border border-border bg-surface p-0 text-text-secondary transition-[background-color,border-color,color,transform] duration-200 ease-research enabled:hover:border-border enabled:hover:bg-surface enabled:hover:text-text-primary enabled:active:scale-[0.94] disabled:cursor-not-allowed disabled:text-text-muted [&_svg]:h-[18px] [&_svg]:w-[18px]" type="button" onClick={onToggleSidebar} aria-label="Show workspace sidebar" title="Show sidebar">
-          <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3.5" width="14" height="13" rx="2" />
-            <path d="M8.5 3.5v13" />
-          </svg>
-        </button> : null}
-        <strong className="min-w-0 truncate text-[15px] font-semibold leading-normal tracking-normal text-text-primary">{workspaceTitle}</strong>
+    <header className="flex h-[52px] flex-none items-center gap-2.5 border-b border-border bg-surface px-3.5">
+      {sidebarCollapsed ? (
+        <button
+          className={outlineIconButtonClass}
+          type="button"
+          onClick={onToggleSidebar}
+          aria-label="Show workspace sidebar"
+          title="Open sidebar"
+        >
+          <SidebarIcon className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+
+      <div className="flex max-w-[32%] min-w-0 flex-none items-baseline gap-2 overflow-hidden">
+        <span className="truncate text-sm font-semibold tracking-[-0.01em] text-text-primary">
+          {workspaceTitle}
+        </span>
+        {counts ? (
+          <span className="min-w-0 truncate text-[11.5px] whitespace-nowrap text-text-muted max-[720px]:hidden">
+            {counts}
+          </span>
+        ) : null}
       </div>
-      <div className="flex min-w-0 items-center justify-center gap-2 max-[720px]:col-span-full max-[720px]:row-start-2 max-[720px]:w-full">
-        <button className="min-h-[34px] flex-none rounded-sm border border-border-strong bg-surface px-[11px] py-[7px] text-xs font-semibold text-text-primary transition-[background-color,border-color,color,transform] duration-200 ease-research enabled:hover:border-accent enabled:hover:bg-accent-subtle enabled:hover:text-accent-deep disabled:cursor-not-allowed disabled:border-border disabled:bg-surface-subtle disabled:text-text-muted" type="button" onClick={onOpenHistory} disabled={!tree?.currentVersionHash}>History</button>
-        <div className="relative min-w-0 flex-1" ref={searchRef}>
-          <label className="grid w-[300px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-sm border border-border bg-surface-subtle px-[9px] py-[7px] transition-[background-color,border-color] duration-200 ease-research focus-within:border-accent focus-within:bg-surface max-[720px]:w-full">
-            <span className="sr-only">Search papers and branches in this workspace</span>
-            <input className="w-full min-w-0 border-0 bg-transparent text-xs text-text-primary outline-0 placeholder:text-text-secondary" ref={inputRef} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search papers and branches" disabled={!tree} />
-            <kbd className="rounded-[3px] border border-border bg-surface px-1 py-0.5 font-sans text-[10px] text-text-secondary">⌘K</kbd>
-          </label>
-          {query.trim() ? (
-            <div className="scrollbar-rt absolute top-[calc(100%_+_6px)] right-0 z-dropdown max-h-[min(460px,70vh)] w-[min(420px,calc(100vw_-_32px))] overflow-y-auto rounded-md border border-border-strong bg-surface shadow-popover" aria-label="Workspace search results">
-              {results.length > 0 ? results.map((node) => (
-                <button className="grid w-full gap-[3px] border-0 border-b border-border bg-transparent px-[13px] py-[11px] text-left last:border-b-0 hover:bg-accent-subtle" key={node.id} type="button" onClick={() => { onSelectNode(node.id); setQuery(""); }}>
-                  <span className="text-[10px] text-text-secondary">{node.kind === "root" ? "Topic" : node.kind === "branch" ? "Branch" : "Paper"}</span>
-                  <strong className="text-[13px] leading-[1.35]">{node.title}</strong>
-                </button>
-              )) : <p className="m-0 p-[15px] text-[13px] text-text-secondary">No matches in this workspace.</p>}
-            </div>
-          ) : null}
-        </div>
+
+      <div className="flex min-w-0 flex-1 justify-center overflow-hidden">
+        <button
+          className="flex w-[min(340px,100%)] min-w-0 items-center gap-2 overflow-hidden rounded-md border border-transparent bg-surface-subtle px-2.5 py-1.5 text-[12.5px] text-text-muted transition-[background-color,border-color] duration-150 enabled:hover:border-border enabled:hover:bg-[#eef0f2] disabled:cursor-not-allowed disabled:opacity-60"
+          type="button"
+          onClick={onOpenSearch}
+          disabled={searchDisabled}
+        >
+          <SearchIcon className="h-[13px] w-[13px] flex-none" />
+          <span className="min-w-0 flex-1 truncate text-left">Search branches and papers…</span>
+          <kbd className="flex-none rounded-sm border border-border bg-surface px-[5px] py-px font-sans text-[10.5px] text-text-muted max-[520px]:hidden">
+            ⌘K
+          </kbd>
+        </button>
       </div>
-      <div className="flex min-w-[132px] items-center justify-self-end gap-2 max-[980px]:hidden" aria-label="Profile and sign-in status">
-        <div className="grid h-[30px] w-[30px] flex-none place-items-center rounded-full border border-border-strong bg-surface text-[10px] font-bold text-accent-deep" aria-hidden="true">RT</div>
-        <div className="grid min-w-0 gap-0.5">
-          <span className="truncate text-[11px] font-semibold text-text-primary">Local profile</span>
-          <button className="w-fit border-0 bg-transparent p-0 text-[10px] text-text-secondary disabled:cursor-default disabled:text-text-muted" type="button" disabled title="Accounts are not available in the local build">Sign in later</button>
-        </div>
-      </div>
+
+      <button
+        className={cx(
+          "flex flex-none items-center gap-1.5 rounded-[7px] border px-3 py-1.5 text-[12.5px] font-semibold transition-[background-color,border-color,color] duration-150 disabled:cursor-not-allowed disabled:border-border disabled:text-border-strong",
+          historyActive
+            ? "border-border-strong bg-surface-subtle text-text-primary"
+            : "border-border bg-surface text-text-secondary enabled:hover:bg-surface-subtle enabled:hover:text-text-primary",
+        )}
+        type="button"
+        onClick={onToggleHistory}
+        disabled={historyDisabled}
+        aria-pressed={historyActive}
+      >
+        <ClockIcon className="h-[13px] w-[13px]" />
+        <span className="max-[640px]:hidden">History</span>
+      </button>
+
+      <span className="h-5 w-px flex-none bg-border" aria-hidden="true" />
+
+      <button
+        className="grid h-[30px] w-[30px] flex-none place-items-center rounded-full border-0 bg-accent-subtle p-0 text-[11px] font-semibold text-accent-deep transition-[box-shadow] duration-150 hover:shadow-[0_0_0_2px_var(--color-accent-border)] aria-expanded:shadow-[0_0_0_2px_var(--color-accent-border)]"
+        type="button"
+        onClick={(event) => onToggleProfile(event.currentTarget)}
+        aria-haspopup="menu"
+        aria-expanded={profileOpen}
+        aria-label="Account"
+        title="Account"
+      >
+        RT
+      </button>
     </header>
   );
-}
-
-function searchText(node: TreeViewModel["nodes"][number]): string {
-  if (node.kind === "root") {
-    return `${node.title} ${node.overview} ${node.keyTerms.join(" ")}`.toLowerCase();
-  }
-  if (node.kind === "branch") {
-    return `${node.title} ${node.description} ${node.whyItMatters} ${node.tags.join(" ")}`.toLowerCase();
-  }
-  return `${node.title} ${node.authors.join(" ")} ${node.tldr || ""} ${node.importance}`.toLowerCase();
 }

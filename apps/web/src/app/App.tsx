@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppShell } from "../components/layout/AppShell";
+import { AppShell, type UtilityPanel } from "../components/layout/AppShell";
 import { useWorkspaceCollection } from "../data/useWorkspaceCollection";
 import { useActiveWorkspace } from "../data/useActiveWorkspace";
 import { normalizeWorkspaceForTree } from "../lib/workspaceAdapter";
@@ -11,8 +11,9 @@ export function App() {
   const { status, workspaces, error, live, refresh } = useWorkspaceCollection();
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<TreeNodeId | null>(null);
+  const [panel, setPanel] = useState<UtilityPanel | null>(null);
   const [creatorOpen, setCreatorOpen] = useState(false);
-  const [utilityPanel, setUtilityPanel] = useState<"history" | "agent" | null>(null);
+  const [creatorTopic, setCreatorTopic] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true",
   );
@@ -24,7 +25,8 @@ export function App() {
     }
     return (
       workspaces.find((workspace) => workspace.workspace_id === selectedWorkspaceId) ??
-      workspaces[0] ?? null
+      workspaces[0] ??
+      null
     );
   }, [selectedWorkspaceId, workspaces]);
 
@@ -41,22 +43,17 @@ export function App() {
     return normalizeWorkspaceForTree(activeWorkspace);
   }, [activeWorkspace]);
 
-  const activeWorkspaceId = activeSummary?.workspace_id ?? null;
-
   function selectWorkspace(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);
     setSelectedNodeId(null);
-    setUtilityPanel(null);
+    setPanel(null);
   }
 
+  // Selecting a node is what opens the inspector; the selection outlives the
+  // panel, so the card stays marked after the panel is dismissed.
   function selectNode(nodeId: TreeNodeId) {
     setSelectedNodeId(nodeId);
-    setUtilityPanel(null);
-  }
-
-  function openUtility(panel: "history" | "agent" | null) {
-    setSelectedNodeId(null);
-    setUtilityPanel(panel);
+    setPanel("inspector");
   }
 
   // Persisting outside the updater keeps it pure under StrictMode's double
@@ -70,26 +67,31 @@ export function App() {
     }
   }, [sidebarCollapsed]);
 
-  function toggleSidebar() {
-    setSidebarCollapsed((collapsed) => !collapsed);
-  }
+  const openCreator = useCallback((topic = "") => {
+    setCreatorTopic(topic);
+    setCreatorOpen(true);
+  }, []);
 
-  const handleCreated = useCallback(async (workspaceId: string, run: PipelineRun) => {
-    await refresh();
-    setSelectedWorkspaceId(workspaceId);
-    setCreatorOpen(false);
-    setBuildingRun(run.status === "queued" || run.status === "running" ? run : null);
-  }, [refresh]);
+  const handleCreated = useCallback(
+    async (workspaceId: string, run: PipelineRun) => {
+      await refresh();
+      setSelectedWorkspaceId(workspaceId);
+      setCreatorOpen(false);
+      setCreatorTopic("");
+      setBuildingRun(run.status === "queued" || run.status === "running" ? run : null);
+    },
+    [refresh],
+  );
 
   const handleDeleted = useCallback(async () => {
     setSelectedWorkspaceId(null);
     setSelectedNodeId(null);
-    setUtilityPanel(null);
+    setPanel(null);
     await refresh();
   }, [refresh]);
 
   const handlePipelineFinished = useCallback((runId: string) => {
-    setBuildingRun((current) => current?.run_id === runId ? null : current);
+    setBuildingRun((current) => (current?.run_id === runId ? null : current));
   }, []);
 
   return (
@@ -98,29 +100,28 @@ export function App() {
       error={error}
       live={live}
       workspaces={workspaces}
-      activeWorkspaceId={activeWorkspaceId}
+      activeSummary={activeSummary}
       tree={tree}
       activeWorkspace={activeWorkspace}
       workspaceLoading={workspaceLoading}
       workspaceError={workspaceError}
-      onRefresh={() => void refresh()}
       selectedNodeId={selectedNodeId}
-      onSelectWorkspace={selectWorkspace}
-      onSelectNode={selectNode}
-      onCloseInspector={() => setSelectedNodeId(null)}
+      panel={panel}
       creatorOpen={creatorOpen}
-      utilityPanel={utilityPanel}
+      creatorTopic={creatorTopic}
       sidebarCollapsed={sidebarCollapsed}
       buildingRun={buildingRun}
-      onOpenCreator={() => setCreatorOpen(true)}
+      onSelectWorkspace={selectWorkspace}
+      onSelectNode={selectNode}
+      onOpenPanel={setPanel}
+      onClosePanel={() => setPanel(null)}
+      onOpenCreator={openCreator}
       onCloseCreator={() => setCreatorOpen(false)}
       onCreated={handleCreated}
-      onOpenUtility={openUtility}
-      onCloseUtility={() => setUtilityPanel(null)}
       onWorkspaceChanged={refresh}
       onWorkspaceDeleted={handleDeleted}
-      onToggleSidebar={toggleSidebar}
-      onResumeBuild={() => setCreatorOpen(true)}
+      onToggleSidebar={() => setSidebarCollapsed((collapsed) => !collapsed)}
+      onRefresh={() => void refresh()}
       onPipelineStarted={setBuildingRun}
       onPipelineFinished={handlePipelineFinished}
     />

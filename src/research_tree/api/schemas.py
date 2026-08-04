@@ -99,6 +99,19 @@ class WorkspaceReviewsResponse(BaseModel):
     reviews: list[dict[str, Any]]
 
 
+class PaperContentResponse(BaseModel):
+    workspace_id: str
+    paper_id: str
+    status: str
+    source_type: str | None = None
+    source_url: str | None = None
+    page_count: int | None = None
+    figure_count: int | None = None
+    truncated: bool = False
+    retrieved_at: str | None = None
+    full_text: str
+
+
 class WorkspaceReviewResponse(BaseModel):
     workspace_id: str
     review_id: str

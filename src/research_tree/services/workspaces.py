@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from research_tree.services.errors import (
+    InvalidResourceIdError,
     ReviewConflictError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
@@ -57,6 +58,45 @@ class WorkspaceQueryService:
         return {
             "workspace_id": safe_workspace_id,
             "reviews": self.repository.list_workspace_reviews(safe_workspace_id),
+        }
+
+    def get_paper_content(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
+        """Return the text extracted from a paper's open-access PDF.
+
+        Enrichment already downloads and extracts every open-access PDF it can
+        reach, so the reader serves that artifact rather than fetching again.
+        The extract is kept out of the workspace document because it dwarfs the
+        editorial content; it is fetched per paper, on demand.
+        """
+
+        safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
+        # A paper id is whatever Semantic Scholar, the DOI, or the title gave us,
+        # so it can carry slashes and spaces that no resource-id pattern allows.
+        # The stored filename is a hash of it, which is what keeps the path safe.
+        safe_paper_id = paper_id.strip()
+        if not safe_paper_id or len(safe_paper_id) > 512:
+            raise InvalidResourceIdError("paper_id must be between 1 and 512 characters.")
+        self.get_current_workspace(safe_workspace_id)
+        try:
+            content = self.repository.get_paper_content(safe_workspace_id, safe_paper_id)
+        except FileNotFoundError as error:
+            raise WorkspaceNotFoundError(
+                f"no stored content for paper: {safe_paper_id}"
+            ) from error
+        except ValueError as error:
+            raise WorkspaceServiceError(str(error)) from error
+        full_text = content.get("full_text")
+        return {
+            "workspace_id": safe_workspace_id,
+            "paper_id": safe_paper_id,
+            "status": str(content.get("status") or "unavailable"),
+            "source_type": content.get("source_type"),
+            "source_url": content.get("source_url"),
+            "page_count": content.get("page_count"),
+            "figure_count": content.get("figure_count"),
+            "truncated": bool(content.get("truncated")),
+            "retrieved_at": content.get("retrieved_at"),
+            "full_text": full_text if isinstance(full_text, str) else "",
         }
 
     def get_version(self, workspace_id: str, version_hash: str) -> dict[str, Any]:

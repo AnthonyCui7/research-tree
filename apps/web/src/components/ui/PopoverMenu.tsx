@@ -1,0 +1,111 @@
+import { useEffect, type ReactNode } from "react";
+import { cx } from "../../lib/cx";
+import { DROPDOWN_EXIT_MS, useDismissAnimation } from "../../lib/animation";
+
+export type MenuAnchor = {
+  /** Viewport coordinates of the edge the menu is pinned to. */
+  x: number;
+  y: number;
+  align: "left" | "right";
+};
+
+/** Reads the anchor for a menu from the control that opened it. */
+export function anchorFromEvent(element: HTMLElement, align: MenuAnchor["align"]): MenuAnchor {
+  const rect = element.getBoundingClientRect();
+  return {
+    x: align === "right" ? window.innerWidth - rect.right : rect.left,
+    y: rect.bottom + 6,
+    align,
+  };
+}
+
+type PopoverMenuProps = {
+  anchor: MenuAnchor;
+  onClose: () => void;
+  label: string;
+  width?: number;
+  children: ReactNode;
+};
+
+/**
+ * A menu pinned to the viewport rather than to its container, so it survives the
+ * scrolling, clipped panels it is opened from. The full-screen layer beneath it
+ * is what closes it on an outside click.
+ */
+export function PopoverMenu({ anchor, onClose, label, width = 216, children }: PopoverMenuProps) {
+  const { closing, dismiss } = useDismissAnimation(onClose, DROPDOWN_EXIT_MS);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        dismiss();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [dismiss]);
+
+  return (
+    <div className="fixed inset-0 z-menu" onMouseDown={dismiss} role="presentation">
+      <div
+        className={cx(
+          "absolute overflow-hidden rounded-[11px] border border-border bg-surface shadow-popover",
+          // The menu grows out of the edge it is pinned to.
+          anchor.align === "right" ? "origin-top-right" : "origin-top-left",
+          closing ? "animate-dropdown-exit" : "animate-dropdown-enter",
+        )}
+        style={{
+          top: Math.min(anchor.y, window.innerHeight - 24),
+          [anchor.align]: anchor.x,
+          width,
+        }}
+        role="menu"
+        aria-label={label}
+        onMouseDown={(event) => event.stopPropagation()}
+        // Choosing an item dismisses the menu, so items carry their action
+        // alone. Capturing means the exit starts before the action runs, and
+        // scoping it to menu items leaves headers and footers inert.
+        onClickCapture={(event) => {
+          if ((event.target as HTMLElement).closest('[role="menuitem"]')) {
+            dismiss();
+          }
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+type MenuItemProps = {
+  children: ReactNode;
+  onClick: () => void;
+  tone?: "default" | "danger";
+  icon?: ReactNode;
+  disabled?: boolean;
+};
+
+export function MenuItem({ children, onClick, tone = "default", icon, disabled }: MenuItemProps) {
+  return (
+    <button
+      className={cx(
+        "flex w-full items-center gap-[9px] border-0 bg-transparent px-[9px] py-[7px] text-left text-[12.5px] transition-[background-color] duration-150 disabled:cursor-not-allowed disabled:text-text-muted",
+        tone === "danger"
+          ? "text-error enabled:hover:bg-error-surface"
+          : "text-text-primary enabled:hover:bg-surface-subtle",
+      )}
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {icon ? <span className="flex-none text-text-muted">{icon}</span> : null}
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+    </button>
+  );
+}
+
+export function MenuSection({ children }: { children: ReactNode }) {
+  return <div className="border-b border-hairline-soft p-1.5 last:border-b-0">{children}</div>;
+}

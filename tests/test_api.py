@@ -76,6 +76,48 @@ def test_paper_content_is_stored_outside_versioned_workspace_json() -> None:
     assert "full_text" not in str(repository.get_current_workspace("workspace-1"))
 
 
+def test_paper_content_endpoint_serves_the_stored_extract() -> None:
+    client, repository = _client_with_repository()
+    _seed_current(repository)
+    repository.save_paper_content(
+        "workspace-1",
+        "doi:10.1/example",
+        {
+            "status": "available",
+            "source_type": "open_access_pdf",
+            "source_url": "https://arxiv.org/pdf/2201.11903",
+            "page_count": 43,
+            "figure_count": 2,
+            "truncated": False,
+            "full_text": "complete paper text",
+        },
+    )
+
+    response = client.get(
+        "/workspaces/workspace-1/paper-content",
+        params={"paper_id": "doi:10.1/example"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["full_text"] == "complete paper text"
+    assert payload["source_url"] == "https://arxiv.org/pdf/2201.11903"
+    assert payload["page_count"] == 43
+    assert payload["truncated"] is False
+
+
+def test_paper_content_endpoint_answers_404_for_a_paper_with_no_extract() -> None:
+    client, repository = _client_with_repository()
+    _seed_current(repository)
+
+    response = client.get(
+        "/workspaces/workspace-1/paper-content",
+        params={"paper_id": "doi:10.1/missing"},
+    )
+
+    assert response.status_code == 404
+
+
 def test_workspace_current_versions_events_and_reviews() -> None:
     client, repository = _client_with_repository()
     base_hash = _seed_current(repository)
