@@ -48,6 +48,7 @@ class CandidatePaperMetadata:
     root_set_member: bool = False
     snowballed: bool = False
     flagged_off_topic: bool = False
+    frontier_pick: bool = False
     age_years: float | None = None
     age_adjusted_citation_score: float | None = None
     citations_per_year: float | None = None
@@ -90,6 +91,7 @@ class CandidatePaperMetadata:
             ),
             snowballed=bool(payload.get("snowballed", False)),
             flagged_off_topic=bool(payload.get("flagged_off_topic", False)),
+            frontier_pick=bool(payload.get("frontier_pick", False)),
             age_years=_optional_float(payload.get("age_years")),
             age_adjusted_citation_score=_optional_float(
                 payload.get("age_adjusted_citation_score")
@@ -132,6 +134,7 @@ class CandidatePaperMetadata:
             "root_set_member": self.root_set_member,
             "snowballed": self.snowballed,
             "flagged_off_topic": self.flagged_off_topic,
+            "frontier_pick": self.frontier_pick,
             "age_years": self.age_years,
             "age_adjusted_citation_score": self.age_adjusted_citation_score,
             "citations_per_year": self.citations_per_year,

@@ -36,6 +36,7 @@ from research_tree.workspace.construction import (
     materialize_workspace_candidate_references,
     normalize_workspace_payload,
 )
+from research_tree.retrieval.full_text import PaperContentResult
 from research_tree.workspace.enrichment import hydrate_workspace_papers
 from research_tree.workspace.publishing import publish_workspace_version
 from research_tree.workspace.prompts import (
@@ -47,6 +48,7 @@ from research_tree.workspace.serialization import load_candidate_artifact
 from research_tree.workspace.similar_papers import (
     ScoredSimilarPaperCandidate,
     build_similar_papers,
+    precompute_similar_paper_rankings,
 )
 from research_tree.workspace.validation import validate_workspace
 
@@ -256,6 +258,25 @@ class WorkspaceBackendTest(unittest.TestCase):
             self.assertNotIn("flagged_off_topic", paper)
         self.assertIn("flagged_off_topic: true", prompt)
 
+    def test_workspace_prompt_marks_only_frontier_picks(self) -> None:
+        """frontier_pick reaches the model when true and costs nothing when false."""
+
+        artifact = _candidate_artifact()
+        artifact["non_survey_papers"][0]["frontier_pick"] = True  # type: ignore[index]
+
+        prompt = build_workspace_prompt(artifact)
+        payload = json.loads(
+            prompt.split("<candidate_artifact_json>\n", 1)[1].split(
+                "\n</candidate_artifact_json>",
+                1,
+            )[0]
+        )
+
+        self.assertTrue(payload["non_survey_papers"][0]["frontier_pick"])
+        for paper in payload["non_survey_papers"][1:]:
+            self.assertNotIn("frontier_pick", paper)
+        self.assertIn("frontier_pick: true", prompt)
+
     def test_workspace_prompt_requires_topic_first_descriptions(self) -> None:
         prompt = build_workspace_prompt(_candidate_artifact())
 
@@ -407,6 +428,125 @@ class WorkspaceBackendTest(unittest.TestCase):
         self.assertEqual(card["tldr_source"], "generated_s2_style")
         self.assertEqual(card["tldr_model"], "gpt-5.6-luna")
         self.assertFalse(any("Generated TLDR failed" in warning for warning in warnings))
+
+    def test_hydration_uses_prefetched_content_without_downloading(self) -> None:
+        class FakeSemanticScholar:
+            def get_paper_details(
+                self,
+                paper_ids: list[str],
+                warnings: list[str],
+            ) -> dict[str, dict[str, object]]:
+                return {}
+
+        class FakeRepository:
+            def save_paper_content(
+                self,
+                workspace_id: str,
+                paper_id: str,
+                content: dict[str, object],
+            ) -> str:
+                return f"{workspace_id}:{paper_id}:content"
+
+        downloaded: list[str] = []
+
+        def fake_retrieve(*, paper_id: str, title: str, source_url, timeout_seconds=30.0):
+            downloaded.append(paper_id)
+            return PaperContentResult(
+                content={"status": "unavailable", "paper_id": paper_id}
+            )
+
+        prefetched = {
+            "p1": PaperContentResult(
+                content={
+                    "status": "available",
+                    "source_type": "open_access_pdf",
+                    "source_url": "https://arxiv.org/pdf/1234.5678",
+                    "page_count": 3,
+                    "figure_count": 0,
+                    "sha256": "abc",
+                    "truncated": False,
+                    "full_text": "Prefetched text.",
+                }
+            )
+        }
+        with patch(
+            "research_tree.workspace.enrichment.retrieve_open_access_paper_content",
+            fake_retrieve,
+        ):
+            workspace, _warnings = hydrate_workspace_papers(
+                workspace=_workspace(),
+                repository=FakeRepository(),  # type: ignore[arg-type]
+                semantic_scholar=FakeSemanticScholar(),  # type: ignore[arg-type]
+                prefetched_content=prefetched,
+            )
+
+        self.assertNotIn("p1", downloaded)
+        self.assertIn("p2", downloaded)
+        self.assertEqual(
+            workspace["paper_cards"]["p1"]["paper_content"]["status"], "available"
+        )
+
+    def test_precomputed_rankings_skip_models_and_exclude_workspace_papers(self) -> None:
+        paper_database = [
+            CandidatePaperMetadata(paper_id="p1", title="Core Method", abstract="A"),
+            CandidatePaperMetadata(paper_id="p2", title="Benchmark", abstract="B"),
+            CandidatePaperMetadata(paper_id="p3", title="Follow Up", abstract="C", citation_count=40),
+            CandidatePaperMetadata(paper_id="p4", title="Related Method", abstract="D", citation_count=60),
+        ]
+        by_id = {paper.paper_id: paper for paper in paper_database}
+        ranking = [
+            ScoredSimilarPaperCandidate(paper=by_id["p2"], similarity_score=0.9),
+            ScoredSimilarPaperCandidate(paper=by_id["p4"], similarity_score=0.8),
+            ScoredSimilarPaperCandidate(paper=by_id["p3"], similarity_score=0.7),
+        ]
+
+        # No retriever or reranker is supplied: covered cards must not load models.
+        enriched, _debug = build_similar_papers(
+            workspace=_workspace(),
+            paper_database=paper_database,
+            k=2,
+            citation_score_floor=0,
+            precomputed_rankings={"p1": ranking, "p2": ranking},
+        )
+
+        for paper_id in ("p1", "p2"):
+            similar_ids = [
+                paper["paper_id"]
+                for paper in enriched["paper_cards"][paper_id]["similar_papers"]
+            ]
+            self.assertEqual(similar_ids, ["p4", "p3"])
+
+    def test_precompute_rankings_excludes_the_query_paper_itself(self) -> None:
+        papers = [
+            CandidatePaperMetadata(paper_id="p1", title="Core Method", abstract="A", citation_count=50),
+            CandidatePaperMetadata(paper_id="p3", title="Follow Up", abstract="C", citation_count=40),
+            CandidatePaperMetadata(paper_id="p4", title="Related Method", abstract="D", citation_count=60),
+        ]
+
+        class FakeRetriever:
+            def rank(self, query, papers, top_n):
+                return [
+                    ScoredSimilarPaperCandidate(paper=paper, similarity_score=1.0)
+                    for paper in papers[:top_n]
+                ]
+
+        class FakeReranker:
+            def rerank(self, query, candidates):
+                return list(reversed(candidates))
+
+        rankings = precompute_similar_paper_rankings(
+            query_papers=papers,
+            paper_database=papers,
+            citation_score_floor=0,
+            retriever=FakeRetriever(),
+            reranker=FakeReranker(),
+        )
+
+        self.assertEqual(set(rankings), {"p1", "p3", "p4"})
+        self.assertEqual(
+            [candidate.paper.paper_id for candidate in rankings["p1"]],
+            ["p4", "p3"],
+        )
 
     def test_rejects_invalid_paper_ids(self) -> None:
         workspace = _workspace()

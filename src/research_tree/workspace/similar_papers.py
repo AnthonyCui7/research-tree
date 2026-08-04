@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from research_tree.artifacts import write_json_file
 from research_tree.retrieval.similarity import cosine_similarity, min_max_normalize
@@ -75,26 +75,43 @@ class LocalBiEncoderSimilarPaperRetriever:
         papers: list[CandidatePaperMetadata],
         top_n: int,
     ) -> list[ScoredSimilarPaperCandidate]:
-        if not papers or top_n <= 0:
+        return self.rank_many([query], papers, top_n)[0] if papers and top_n > 0 else []
+
+    def rank_many(
+        self,
+        queries: list[str],
+        papers: list[CandidatePaperMetadata],
+        top_n: int,
+    ) -> list[list[ScoredSimilarPaperCandidate]]:
+        """Rank many queries against one corpus, encoding each paper only once."""
+
+        if not queries:
             return []
-        texts = [query, *[paper.document_text() for paper in papers]]
+        if not papers or top_n <= 0:
+            return [[] for _ in queries]
+        texts = [*queries, *[paper.document_text() for paper in papers]]
         embeddings = self.model.encode(texts, batch_size=self.batch_size)
-        query_embedding = _float_vector(embeddings[0])
-        paper_embeddings = [_float_vector(embedding) for embedding in embeddings[1:]]
-        raw_scores = [
-            cosine_similarity(query_embedding, paper_embedding)
-            for paper_embedding in paper_embeddings
-        ]
-        normalized_scores = min_max_normalize(raw_scores)
-        scored = [
-            ScoredSimilarPaperCandidate(paper=paper, similarity_score=score)
-            for paper, score in zip(papers, normalized_scores, strict=True)
-        ]
-        return sorted(
-            scored,
-            key=lambda candidate: candidate.similarity_score,
-            reverse=True,
-        )[:top_n]
+        query_embeddings = [_float_vector(embedding) for embedding in embeddings[: len(queries)]]
+        paper_embeddings = [_float_vector(embedding) for embedding in embeddings[len(queries) :]]
+        results: list[list[ScoredSimilarPaperCandidate]] = []
+        for query_embedding in query_embeddings:
+            raw_scores = [
+                cosine_similarity(query_embedding, paper_embedding)
+                for paper_embedding in paper_embeddings
+            ]
+            normalized_scores = min_max_normalize(raw_scores)
+            scored = [
+                ScoredSimilarPaperCandidate(paper=paper, similarity_score=score)
+                for paper, score in zip(papers, normalized_scores, strict=True)
+            ]
+            results.append(
+                sorted(
+                    scored,
+                    key=lambda candidate: candidate.similarity_score,
+                    reverse=True,
+                )[:top_n]
+            )
+        return results
 
 
 class LocalCrossEncoderSimilarPaperReranker:
@@ -145,6 +162,66 @@ class LocalCrossEncoderSimilarPaperReranker:
         )
 
 
+def precompute_similar_paper_rankings(
+    *,
+    query_papers: list[CandidatePaperMetadata],
+    paper_database: list[CandidatePaperMetadata],
+    bi_encoder_top_n: int = DEFAULT_SIMILAR_BI_ENCODER_TOP_N,
+    citation_age_exponent: float = DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+    citation_score_floor: float = DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+    min_citation_count: int = DEFAULT_SIMILAR_MIN_CITATION_COUNT,
+    retriever: SimilarPaperRetriever | None = None,
+    reranker: SimilarPaperReranker | None = None,
+    bi_encoder_model: str = "all-MiniLM-L6-v2",
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2",
+) -> dict[str, list[ScoredSimilarPaperCandidate]]:
+    """Rank the paper database against every candidate before the workspace exists.
+
+    The construction model only selects workspace papers from the candidate
+    hand-off, so these rankings can be computed while its call is in flight;
+    `build_similar_papers` then just filters out whichever papers joined the
+    workspace. Each ranking keeps the full reranked bi-encoder top-N so that
+    filtering cannot run out of papers.
+    """
+
+    if not query_papers:
+        return {}
+    as_of = datetime.now(UTC).date()
+    corpus = [
+        paper
+        for paper in paper_database
+        if paper.document_text().strip()
+        and (paper.citation_count or 0) > min_citation_count
+        and _age_adjusted_citation_score(
+            paper, as_of=as_of, citation_age_exponent=citation_age_exponent
+        )
+        >= citation_score_floor
+    ]
+    if not corpus:
+        return {}
+    active_retriever = retriever or LocalBiEncoderSimilarPaperRetriever(
+        model_name=bi_encoder_model
+    )
+    active_reranker = reranker or LocalCrossEncoderSimilarPaperReranker(
+        model_name=cross_encoder_model
+    )
+    queries = [_paper_query(paper.title, paper.abstract) for paper in query_papers]
+    top_n = min(len(corpus), bi_encoder_top_n)
+    rank_many = getattr(active_retriever, "rank_many", None)
+    ranked_lists = (
+        rank_many(queries, corpus, top_n)
+        if callable(rank_many)
+        else [active_retriever.rank(query, corpus, top_n) for query in queries]
+    )
+    rankings: dict[str, list[ScoredSimilarPaperCandidate]] = {}
+    for paper, query, ranked in zip(query_papers, queries, ranked_lists, strict=True):
+        without_self = [
+            candidate for candidate in ranked if candidate.paper.paper_id != paper.paper_id
+        ]
+        rankings[paper.paper_id] = active_reranker.rerank(query, without_self)
+    return rankings
+
+
 def build_similar_papers(
     *,
     workspace: dict[str, Any],
@@ -160,6 +237,7 @@ def build_similar_papers(
     max_workers: int = DEFAULT_SIMILAR_PAPER_WORKERS,
     bi_encoder_model: str = "all-MiniLM-L6-v2",
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2",
+    precomputed_rankings: Mapping[str, list[ScoredSimilarPaperCandidate]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if k <= 0:
         raise ValueError("k must be positive.")
@@ -181,11 +259,25 @@ def build_similar_papers(
     workspace_paper_ids = {str(paper_id) for paper_id in paper_cards}
     as_of = datetime.now(UTC).date()
 
-    active_retriever = retriever or LocalBiEncoderSimilarPaperRetriever(
-        model_name=bi_encoder_model
+    targets = [
+        (str(paper_id), card)
+        for paper_id, card in paper_cards.items()
+        if isinstance(card, dict)
+        and (paper_ids is None or str(paper_id) in paper_ids)
+    ]
+    rankings = dict(precomputed_rankings or {})
+    # Rankings computed during the construction call usually cover every card;
+    # only load the local models when some card still needs a live ranking.
+    needs_models = any(paper_id not in rankings for paper_id, _card in targets)
+    active_retriever = retriever or (
+        LocalBiEncoderSimilarPaperRetriever(model_name=bi_encoder_model)
+        if needs_models
+        else None
     )
-    active_reranker = reranker or LocalCrossEncoderSimilarPaperReranker(
-        model_name=cross_encoder_model
+    active_reranker = reranker or (
+        LocalCrossEncoderSimilarPaperReranker(model_name=cross_encoder_model)
+        if needs_models
+        else None
     )
 
     background_by_id = {paper.paper_id: paper for paper in paper_database}
@@ -219,12 +311,6 @@ def build_similar_papers(
         for paper in unfiltered_candidates
         if citation_scores[paper.paper_id] >= citation_score_floor
     ]
-    targets = [
-        (str(paper_id), card)
-        for paper_id, card in paper_cards.items()
-        if isinstance(card, dict)
-        and (paper_ids is None or str(paper_id) in paper_ids)
-    ]
     worker_count = min(max_workers, len(targets) or 1)
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         results = executor.map(
@@ -240,6 +326,8 @@ def build_similar_papers(
                 current_paper_in_database=target[0] in background_by_id,
                 k=k,
                 bi_encoder_top_n=bi_encoder_top_n,
+                precomputed=rankings.get(target[0]),
+                workspace_paper_ids=workspace_paper_ids,
             ),
             targets,
         )
@@ -305,20 +393,24 @@ def write_similar_paper_artifacts(
     return {"workspace": workspace_path, "debug": debug_path}
 
 
-def _paper_card_query(card: dict[str, Any]) -> str:
-    title = str(card.get("title") or card.get("paper_id") or "")
-    abstract = str(card.get("abstract") or "")
+def _paper_query(title: str, abstract: str) -> str:
     if abstract:
         return f"{title}\n\n{abstract}"
     return title
+
+
+def _paper_card_query(card: dict[str, Any]) -> str:
+    title = str(card.get("title") or card.get("paper_id") or "")
+    abstract = str(card.get("abstract") or "")
+    return _paper_query(title, abstract)
 
 
 def _build_similar_papers_for_card(
     *,
     paper_id: str,
     card: dict[str, Any],
-    retriever: SimilarPaperRetriever,
-    reranker: SimilarPaperReranker,
+    retriever: SimilarPaperRetriever | None,
+    reranker: SimilarPaperReranker | None,
     candidates: list[CandidatePaperMetadata],
     citation_scores: dict[str, float],
     unfiltered_candidate_count: int,
@@ -326,17 +418,35 @@ def _build_similar_papers_for_card(
     current_paper_in_database: bool,
     k: int,
     bi_encoder_top_n: int,
+    precomputed: list[ScoredSimilarPaperCandidate] | None = None,
+    workspace_paper_ids: set[str] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     query = _paper_card_query(card)
-    top_n = min(len(candidates), bi_encoder_top_n)
-    bi_encoder_candidates = retriever.rank(query, candidates, top_n)
-    reranked_candidates = reranker.rerank(query, bi_encoder_candidates)
+    if precomputed is not None:
+        # The ranking predates the workspace, so drop papers that ended up in it.
+        excluded = workspace_paper_ids or set()
+        reranked_candidates = [
+            candidate
+            for candidate in precomputed
+            if candidate.paper.paper_id not in excluded
+        ]
+        bi_encoder_candidates = precomputed
+    else:
+        if retriever is None or reranker is None:
+            raise RuntimeError(
+                f"No precomputed ranking and no models available for {paper_id}."
+            )
+        top_n = min(len(candidates), bi_encoder_top_n)
+        bi_encoder_candidates = retriever.rank(query, candidates, top_n)
+        reranked_candidates = reranker.rerank(query, bi_encoder_candidates)
     selected = reranked_candidates[:k]
     similar_papers = [
         _similar_paper_output(
             candidate,
             rank=rank,
-            age_adjusted_citation_score=citation_scores[candidate.paper.paper_id],
+            age_adjusted_citation_score=citation_scores.get(
+                candidate.paper.paper_id, 0.0
+            ),
         )
         for rank, candidate in enumerate(selected, start=1)
     ]

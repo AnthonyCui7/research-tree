@@ -4,7 +4,7 @@ import json
 from typing import Any, Mapping
 
 
-WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v9"
+WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v10"
 PROMPT_ABSTRACT_MAX_CHARS = 240
 
 
@@ -89,6 +89,8 @@ def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
     )
     if paper.get("flagged_off_topic"):
         payload["flagged_off_topic"] = True
+    if paper.get("frontier_pick"):
+        payload["frontier_pick"] = True
     return payload
 
 
@@ -107,6 +109,8 @@ Identify the field's conceptual backbone. A visible paper earns a non-interchang
 Use citation count, publication date, and age-adjusted citation score as historical signals for establishment, momentum, and representative work; they do not replace conceptual judgment.
 
 A paper marked `flagged_off_topic: true` entered through citation snowballing, and the retrieval system judged that the field cites the paper as general infrastructure — an optimizer, a dataset, a backbone architecture — rather than as work on the topic itself. That judgment is heuristic and can be wrong: a flagged paper may in fact be a founding paper of the topic. Decide for yourself whether each flagged paper belongs; exclude the ones that are genuinely general infrastructure, keep the ones the topic cannot be understood without.
+
+A paper marked `frontier_pick: true` is recent work: citation authority lags the field by a few years, so these papers were selected by citation velocity and screened for topical relevance instead. Their `authority_rank` understates their importance — weigh them as current members of the field, and use them to keep the workspace's coverage from ending years before the present.
 
 Use surveys as orientation documents. Choose a small non-overlapping set for the root and genuinely distinct branches. The root may have one survey anchor. A branch or atomic leaf may have one different survey anchor only when it provides branch-specific framing absent from the ancestor's survey. Surveys never appear in paper paths.
 

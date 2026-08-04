@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+from concurrent.futures import Future
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Thread
@@ -24,14 +25,19 @@ from research_tree.workspace.publishing import publish_workspace_version
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 from research_tree.workspace.enrichment import (
     hydrate_workspace_papers,
+    prefetch_paper_content,
 )
-from research_tree.workspace.schemas import paper_database_from_artifact
+from research_tree.workspace.schemas import (
+    candidate_papers_from_artifact,
+    paper_database_from_artifact,
+)
 from research_tree.workspace.serialization import load_json_artifact
 from research_tree.workspace.similar_papers import (
     DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
     DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
     DEFAULT_SIMILAR_PAPERS_K,
     build_similar_papers,
+    precompute_similar_paper_rankings,
 )
 from research_tree.workspace.tldr import OpenAIResponsesTldrGenerator, TldrGenerator
 
@@ -213,6 +219,7 @@ class WorkspacePipelineService:
         self.repository.save_pipeline_run(run)
         artifacts = self._execution_artifacts(run, source_run)
         warnings: list[str] = []
+        prefetch: _ConstructPrefetch | None = None
         try:
             if "candidates" in run["requested_stages"]:
                 self._stage(run, "candidates", "running", inputs={"topic": run["topic"]})
@@ -239,6 +246,12 @@ class WorkspacePipelineService:
                     "construct",
                     "running",
                     inputs={"candidate_json": str(candidate_json), "model": run["model"]},
+                )
+                prefetch = _ConstructPrefetch.start(
+                    candidate_json_path=Path(candidate_json),
+                    paper_database_json_path=artifacts.get("paper_database_json"),
+                    prefetch_content="hydrate" in run["requested_stages"],
+                    precompute_rankings="related" in run["requested_stages"],
                 )
                 result = construct_workspace_from_candidates(
                     candidate_json_path=candidate_json,
@@ -268,6 +281,7 @@ class WorkspacePipelineService:
                     repository=self.repository,
                     semantic_scholar=semantic_scholar,
                     tldr_generator=self._tldr_generator(),
+                    prefetched_content=prefetch.paper_content() if prefetch else None,
                 )
                 warnings.extend(hydration_warnings)
                 hydrated_path = run_dir / "workspace_with_paper_content.json"
@@ -327,6 +341,7 @@ class WorkspacePipelineService:
                         k=DEFAULT_SIMILAR_PAPERS_K,
                         citation_age_exponent=DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
                         citation_score_floor=DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+                        precomputed_rankings=prefetch.similar_rankings() if prefetch else None,
                     )
                 except (ImportError, RuntimeError, OSError) as error:
                     # Similar papers need local embedding models from the optional
@@ -529,6 +544,96 @@ class WorkspacePipelineService:
             return None
 
 
+class _ConstructPrefetch:
+    """Hydrate downloads and related-paper rankings, run during the construct call.
+
+    Both stages' expensive work depends only on the candidate hand-off — the
+    construction model can only select workspace papers from it — so it runs in
+    the background while the multi-minute construction LLM call is in flight.
+    Accessors block until their job finishes and return None on any failure;
+    the stages then simply do the work themselves.
+    """
+
+    def __init__(
+        self,
+        content_future: Future | None,
+        rankings_future: Future | None,
+    ) -> None:
+        self._content_future = content_future
+        self._rankings_future = rankings_future
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        candidate_json_path: Path,
+        paper_database_json_path: str | None,
+        prefetch_content: bool,
+        precompute_rankings: bool,
+    ) -> "_ConstructPrefetch | None":
+        if not (prefetch_content or precompute_rankings):
+            return None
+        try:
+            query_papers = list(
+                candidate_papers_from_artifact(
+                    load_json_artifact(candidate_json_path)
+                ).values()
+            )
+        except (OSError, ValueError) as error:
+            logger.warning("construct prefetch skipped: %s", error)
+            return None
+        if not query_papers:
+            return None
+        # Daemon threads, not a ThreadPoolExecutor: executor workers are
+        # non-daemon and joined at interpreter exit, so an in-flight prefetch
+        # kept "restarted" backends alive as zombies — each with its own
+        # in-memory rate limiter, together overrunning the S2 key's budget
+        # (measured Aug 2026: three such processes, sustained 429s).
+        content_future = (
+            _run_in_daemon_thread(
+                lambda: prefetch_paper_content(query_papers),
+                "construct-prefetch-content",
+            )
+            if prefetch_content
+            else None
+        )
+        rankings_future = None
+        if precompute_rankings and paper_database_json_path:
+            database_path = Path(paper_database_json_path)
+
+            def compute() -> dict[str, Any]:
+                paper_database = paper_database_from_artifact(
+                    load_json_artifact(database_path)
+                )
+                return precompute_similar_paper_rankings(
+                    query_papers=query_papers,
+                    paper_database=paper_database,
+                    citation_age_exponent=DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+                    citation_score_floor=DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+                )
+
+            rankings_future = _run_in_daemon_thread(compute, "construct-prefetch-rankings")
+        return cls(content_future, rankings_future)
+
+    def paper_content(self) -> dict[str, Any] | None:
+        return self._resolve(self._content_future, "paper content prefetch")
+
+    def similar_rankings(self) -> dict[str, Any] | None:
+        return self._resolve(self._rankings_future, "similar-paper precompute")
+
+    @staticmethod
+    def _resolve(future: Future | None, label: str) -> dict[str, Any] | None:
+        if future is None:
+            return None
+        try:
+            return future.result()
+        except Exception as error:
+            # The consuming stage redoes the work itself, so a prefetch failure
+            # only costs the time it would have saved.
+            logger.warning("construct %s failed: %s", label, error)
+            return None
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -537,3 +642,16 @@ def _dispatch_local_thread(callback: Callable[[], None], name: str) -> None:
     """Local runner boundary; deployments can inject a durable queue dispatcher."""
 
     Thread(target=callback, name=name, daemon=True).start()
+
+
+def _run_in_daemon_thread(callback: Callable[[], Any], name: str) -> Future:
+    future: Future = Future()
+
+    def run() -> None:
+        try:
+            future.set_result(callback())
+        except BaseException as error:  # noqa: BLE001
+            future.set_exception(error)
+
+    Thread(target=run, name=name, daemon=True).start()
+    return future

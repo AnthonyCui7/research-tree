@@ -1,16 +1,30 @@
 """Gather and rank the candidate papers a workspace is built from.
 
-The stage answers one question: of everything published on a topic, which ~55
-papers should the construction model be allowed to choose from?
+The stage answers one question: of everything published on a topic, which
+~55-95 papers (50 authorities + up to 20 flagged riders + 5 surveys + up to
+20 frontier picks) should the construction model be allowed to choose from?
 
     plan queries   one model call names the field's search vocabulary
     build pool     one boolean bulk query, plus a recency page
     root set       the slice of the pool worth fetching references for
     graph          one batch request returns every root-set bibliography
-    rank           hub-normalized HITS over the in-pool citation graph
     snowball       pull in papers the pool cites but keyword search missed
-    re-rank        HITS again over the base set (pool + snowballed papers)
-    select         top authorities, plus surveys by hub score
+    judge          one model call adjudicates flagged snowballs + the frontier slice
+    rank           hub-normalized HITS, then age-cohort normalization
+    select         top authorities, surveys by hub score, judged frontier picks
+
+Citation authority lags the field by two to four years — a recent paper cannot
+be cited by hubs that predate it, so the newest work never earns authority no
+matter how central it is (measured Aug 2026: mean in-pool votes received by
+publication year fell from 1.8 for 2021 papers to 0.0 for 2024+). Two
+mechanisms close that gap, one per band. Papers with votes but young cohorts
+are ranked by authority / (age+1)^0.75 — age-cohort normalization (see
+`_ranked_papers`). Papers too new to have votes at all get the frontier picks:
+ranked by age-adjusted citation velocity, screened by the judge because
+velocity alone surfaces celebrity papers from adjacent fields. Reweighting
+formulas cannot replace the frontier picks — any edge weight times zero edges
+is still zero (verified offline: on sampling, every time-aware HITS variant
+left the top 50 unchanged).
 
 Terminology follows Kleinberg's HITS: the *root set* is the ranked slice whose
 bibliographies seed the graph; the *base set* is the expanded node set the
@@ -24,7 +38,9 @@ step above is a batch or a paged bulk query; a cold run is under a dozen request
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import os
+from collections import defaultdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -42,6 +58,7 @@ from research_tree.retrieval.merge import dedupe_papers, stable_paper_key
 from research_tree.retrieval.models import Paper
 from research_tree.retrieval.query_plan import (
     SearchQueryPlan,
+    judge_flagged_papers,
     matches_topic,
     plan_search_queries,
     query_plan_from_overrides,
@@ -57,7 +74,7 @@ from research_tree.retrieval.semantic_scholar import (
 
 DEFAULT_TOPIC = "prompting"
 SELECTION_MODE = "s2_bulk_hits_authority_workspace_candidate_preparation"
-CANDIDATE_POOL_ORDER = "hits_authority_desc"
+CANDIDATE_POOL_ORDER = "hits_authority_age_normalized_desc"
 LLM_CANDIDATE_SCHEMA_VERSION = "llm_candidate_papers.v2"
 PAPER_DATABASE_SCHEMA_VERSION = "s2_bulk_deduped_paper_database.v2"
 
@@ -73,9 +90,12 @@ class PipelineConfig:
     root_set_size: int = 250
     snowball_min_in_degree: int = 3
     snowball_cap: int = 100
+    frontier_years: int = 6  # cap on the measured graph-blind band, not a window
+    frontier_slots: int = 20
     hits_max_iterations: int = DEFAULT_HITS_MAX_ITERATIONS
     hits_tolerance: float = DEFAULT_HITS_TOLERANCE
     citation_age_exponent: float = 1.25
+    authority_age_exponent: float = 0.75
     request_delay_seconds: float = SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS
     request_timeout_seconds: float = 20.0
     max_academic_retries: int = 2
@@ -127,23 +147,12 @@ def run_workspace_candidate_preparation_pipeline(
     write_json_file(output_dir / "s2_bulk_pool.json", [paper.to_json() for paper in pool])
 
     if not pool:
-        warnings.append(
-            "No Semantic Scholar candidates were retrieved; "
-            "wrote empty workspace candidate artifacts."
-        )
-        return _write_artifacts(
-            output_base_dir=output_base_dir,
-            output_dir=output_dir,
-            config=config,
-            query_plan=query_plan,
-            as_of=as_of,
-            warnings=warnings,
-            non_survey_papers=[],
-            survey_papers=[],
-            database_papers=[],
-            ranking=CitationGraphRanking({}, {}, {}),
-            root_set_ids=set(),
-            snowballed_ids=set(),
+        # The searches succeeded but matched nothing — a candidate set cannot
+        # exist, and empty artifacts would let construct build an empty
+        # workspace over a good one. Fail with the reason instead.
+        raise RuntimeError(
+            "Semantic Scholar returned no papers for "
+            f"'{query_plan.boolean_query()}'; cannot build a candidate set."
         )
 
     _score_age_adjusted_citations(pool, as_of=as_of, exponent=config.citation_age_exponent)
@@ -155,33 +164,15 @@ def run_workspace_candidate_preparation_pipeline(
     _log(config, f"Fetched reference lists for {len(references)} of {len(root_set_ids)} root-set papers")
 
     if not references:
-        warnings.append(
-            "Reference fetching returned nothing, so candidates fall back to the "
-            "age-adjusted citation order. Ranking quality is reduced for this run."
+        # Request failures already raise inside the client, so an empty result
+        # means S2 answered 200 for every root-set paper and hydrated none of
+        # the bibliographies. There is no graph to rank; a silently different
+        # ranking would be worse than an explainable failure.
+        raise RuntimeError(
+            "Semantic Scholar returned no reference lists for any of the "
+            f"{len(root_set_ids)} root-set papers; cannot rank the citation "
+            "graph. Rerun when Semantic Scholar recovers."
         )
-        ranked = _age_adjusted_order(pool)
-        return _write_artifacts(
-            output_base_dir=output_base_dir,
-            output_dir=output_dir,
-            config=config,
-            query_plan=query_plan,
-            as_of=as_of,
-            warnings=warnings,
-            non_survey_papers=[p for p in ranked if not p.is_survey][: config.k],
-            survey_papers=[p for p in ranked if p.is_survey][: config.survey_baseline_count],
-            database_papers=ranked,
-            ranking=CitationGraphRanking({}, {}, {}),
-            root_set_ids=set(root_set_ids),
-            snowballed_ids=set(),
-        )
-
-    _write_stage_status(output_dir, "citation_graph_ranking")
-    ranking = rank_authorities(
-        references,
-        known_ids=set(papers_by_id),
-        max_iterations=config.hits_max_iterations,
-        tolerance=config.hits_tolerance,
-    )
 
     _write_stage_status(output_dir, "citation_snowball")
     snowballed = snowball_pool(
@@ -203,12 +194,13 @@ def run_workspace_candidate_preparation_pipeline(
         papers_by_id = {
             paper.semantic_scholar_id: paper for paper in pool if paper.semantic_scholar_id
         }
-        ranking = rank_authorities(
-            references,
-            known_ids=set(papers_by_id),
-            max_iterations=config.hits_max_iterations,
-            tolerance=config.hits_tolerance,
-        )
+    _write_stage_status(output_dir, "citation_graph_ranking")
+    ranking = rank_authorities(
+        references,
+        known_ids=set(papers_by_id),
+        max_iterations=config.hits_max_iterations,
+        tolerance=config.hits_tolerance,
+    )
     _log(
         config,
         f"HITS over {len(papers_by_id)} nodes converged={ranking.converged} "
@@ -220,20 +212,60 @@ def run_workspace_candidate_preparation_pipeline(
     )
 
     _write_stage_status(output_dir, "candidate_selection")
-    ranked_papers = _ranked_papers(pool, ranking)
+    ranked_papers = _ranked_papers(
+        pool, ranking, as_of=as_of, age_exponent=config.authority_age_exponent
+    )
+    frontier_cutoff_year = graph_blind_cutoff(
+        pool, ranking, as_of=as_of, max_years=config.frontier_years
+    )
+    frontier = (
+        frontier_candidates(pool, as_of=as_of, cutoff_year=frontier_cutoff_year)
+        if config.frontier_slots > 0
+        else []
+    )
+    # The authority-ranked core anchors the judge: on an ambiguous topic name,
+    # "does this belong with these papers" is stable where "is this about the
+    # topic" flips between runs (measured on "Prompting" vs. promptable
+    # segmentation).
+    context_titles = [
+        paper.title
+        for paper in ranked_papers
+        if not paper.is_survey and not paper.flagged_off_topic
+    ][:10]
+    frontier_belongs = adjudicate_flags(
+        topic=config.topic,
+        phrases=query_plan.phrases,
+        pool=pool,
+        warnings=warnings,
+        frontier=frontier,
+        context_titles=context_titles,
+    )
     non_survey, surveys = select_candidates(
         ranked_papers,
         ranking=ranking,
         k=config.k,
         survey_count=config.survey_baseline_count,
     )
+    unflagged_non_survey = sum(1 for paper in non_survey if not paper.flagged_off_topic)
+    unflagged_surveys = sum(1 for paper in surveys if not paper.flagged_off_topic)
+    frontier_picks = select_frontier_picks(
+        frontier,
+        belongs=frontier_belongs,
+        already_selected={
+            str(paper.semantic_scholar_id)
+            for paper in non_survey
+            if paper.semantic_scholar_id
+        },
+        limit=config.frontier_slots,
+    )
+    if frontier_picks:
+        _log(config, f"Frontier picks (judged recent work): {len(frontier_picks)}")
+    non_survey = [*non_survey, *frontier_picks]
     _fill_missing_details(
         semantic_scholar=semantic_scholar,
         papers=[*non_survey, *surveys],
         warnings=warnings,
     )
-    unflagged_non_survey = sum(1 for paper in non_survey if not paper.flagged_off_topic)
-    unflagged_surveys = sum(1 for paper in surveys if not paper.flagged_off_topic)
     if unflagged_non_survey < config.k:
         warnings.append(
             "Fewer non-survey papers than requested after citation-graph ranking: "
@@ -258,6 +290,7 @@ def run_workspace_candidate_preparation_pipeline(
         ranking=ranking,
         root_set_ids=set(root_set_ids),
         snowballed_ids=snowballed_ids,
+        frontier_cutoff_year=frontier_cutoff_year,
     )
     _log(
         config,
@@ -385,6 +418,161 @@ def snowball_pool(
     return papers
 
 
+# Sized at ~6x frontier_slots: velocity ranks adjacent-field celebrity papers
+# first, and the judge keeps roughly one slice paper in seven (measured Aug
+# 2026 on "Prompting": 8 of 60 kept), so a slice near the slot count starves
+# the picks.
+FRONTIER_JUDGE_SLICE = 120
+# A year is graph-blind when its pool papers average under half an in-pool
+# citation each: the ranking cannot order what nothing votes for. Years with
+# under 10 pool papers carry no evidence either way and count as blind.
+FRONTIER_BLIND_VOTE_THRESHOLD = 0.5
+FRONTIER_BLIND_MIN_YEAR_POOL = 10
+
+
+def _paper_year(paper: Paper) -> int:
+    if paper.year:
+        return paper.year
+    return paper.publication_date.year if paper.publication_date else 0
+
+
+def graph_blind_cutoff(
+    pool: list[Paper],
+    ranking: CitationGraphRanking,
+    *,
+    as_of: date,
+    max_years: int,
+) -> int:
+    """First year of the band the citation graph cannot rank, measured.
+
+    Citations only point backward, so the newest years earn no in-pool votes
+    no matter how central their papers are — but how many years that band
+    covers depends on the field's citation latency, not on a constant.
+    Measured Aug 2026: prompting went blind at 2024, RAG at 2025, sampling at
+    2023. Walking back from the present while the mean in-pool vote count
+    stays under the threshold finds the band per run; `max_years` caps the
+    walk so a degraded graph cannot declare the whole pool blind.
+    """
+
+    votes: dict[int, int] = defaultdict(int)
+    counts: dict[int, int] = defaultdict(int)
+    for paper in pool:
+        year = _paper_year(paper)
+        if year:
+            counts[year] += 1
+            votes[year] += ranking.in_degree.get(str(paper.semantic_scholar_id), 0)
+    cutoff = as_of.year + 1
+    for year in range(as_of.year, as_of.year - max(max_years, 1), -1):
+        sighted = (
+            counts[year] >= FRONTIER_BLIND_MIN_YEAR_POOL
+            and votes[year] / counts[year] >= FRONTIER_BLIND_VOTE_THRESHOLD
+        )
+        if sighted:
+            break
+        cutoff = year
+    return cutoff
+
+
+def frontier_candidates(
+    pool: list[Paper],
+    *,
+    as_of: date,
+    cutoff_year: int,
+    limit: int = FRONTIER_JUDGE_SLICE,
+) -> list[Paper]:
+    """The graph-blind slice of the pool, ranked by age-adjusted velocity.
+
+    These are the papers citation authority structurally cannot rank: hubs
+    that predate them can never cite them. Velocity alone is contaminated —
+    on "Prompting" the unscreened slice was ~60% adjacent-field celebrity
+    papers (Segment Anything, ControlNet, LLaVA) — so every frontier
+    candidate goes through the judge before it can take a slot. Structural
+    replacements for the judge were measured and rejected: hub score (does
+    the paper cite this pool's canon) excludes celebrity papers but ranks
+    18-citation papers over Search-o1 and admits general LLM infrastructure,
+    and a velocity-hub rank product readmits SAM 2 — topical belonging is a
+    semantic judgment the graph cannot make.
+    """
+
+    recent = [
+        paper
+        for paper in pool
+        if not paper.is_survey
+        and not paper.flagged_off_topic
+        and _paper_year(paper) >= cutoff_year
+    ]
+    return _age_adjusted_order(recent)[:limit]
+
+
+def adjudicate_flags(
+    *,
+    topic: str,
+    phrases: list[str],
+    pool: list[Paper],
+    warnings: list[str],
+    frontier: list[Paper] | None = None,
+    context_titles: list[str] | None = None,
+) -> set[str]:
+    """Let a model editor judge topical belonging in one batched call.
+
+    Two kinds of paper need the call. Token-flagged snowballs: the token match
+    cannot tell a founding paper that predates the topic's vocabulary (DPR,
+    GPT-2) from an optimizer everyone cites (Adam); papers the judge says
+    belong lose their flag and count toward the selection targets. Frontier
+    candidates: recent papers entering by citation velocity, where the judge
+    separates the field's own frontier from adjacent-field celebrity papers.
+
+    Returns the frontier paper ids the judge kept. Without a key, or if the
+    call fails, token flags stand and no frontier paper is kept — an
+    unscreened velocity slice is worse than none.
+    """
+
+    flagged = [paper for paper in pool if paper.flagged_off_topic]
+    frontier = frontier or []
+    if not flagged and not frontier:
+        return set()
+    if not os.environ.get("OPENAI_API_KEY"):
+        return set()
+    belongs = judge_flagged_papers(
+        topic, phrases, [*flagged, *frontier], context_titles=context_titles
+    )
+    if belongs is None:
+        warnings.append(
+            "Flag adjudication was unavailable; token-match flags stand and no "
+            "frontier picks were added for this run."
+        )
+        return set()
+    for paper in flagged:
+        if str(paper.semantic_scholar_id) in belongs:
+            paper.flagged_off_topic = False
+    return {
+        str(paper.semantic_scholar_id)
+        for paper in frontier
+        if str(paper.semantic_scholar_id) in belongs
+    }
+
+
+def select_frontier_picks(
+    frontier: list[Paper],
+    *,
+    belongs: set[str],
+    already_selected: set[str],
+    limit: int,
+) -> list[Paper]:
+    """Judged frontier papers that earn one of the reserved recent slots."""
+
+    picks: list[Paper] = []
+    for paper in frontier:
+        if len(picks) >= limit:
+            break
+        paper_id = str(paper.semantic_scholar_id)
+        if paper_id in belongs and paper_id not in already_selected:
+            paper.frontier_pick = True
+            paper.found_by.add("frontier:age_adjusted_recent")
+            picks.append(paper)
+    return picks
+
+
 def select_candidates(
     ranked_papers: list[Paper],
     *,
@@ -400,9 +588,11 @@ def select_candidates(
     Papers flagged off-topic keep their ranked position but never consume one of
     the requested slots: the list holds `k` unflagged papers plus the flagged
     papers that rank among them, and the construction model decides their fate.
-    A mistakenly flagged founding paper is by definition a top authority, so the
-    passthrough is capped — on an ambiguous topic nearly every snowballed paper
-    fails the phrase match, and an uncapped list would dwarf the real candidates.
+    The passthrough is capped: measured uncapped on prompting / RAG / sampling,
+    58–75 flagged papers rode along (a 108–125 paper hand-off), while every
+    wrongly flagged core paper (DPR, FiD, BM25, GPT-2, nucleus sampling, ...)
+    sat within the first ~12 flagged positions. Twenty covers them with margin;
+    the deeper tail was infrastructure on every topic tested.
     """
 
     non_survey = _take_keeping_flagged(
@@ -421,7 +611,7 @@ def select_candidates(
     return non_survey, surveys
 
 
-MAX_FLAGGED_PASSTHROUGH = 15
+MAX_FLAGGED_PASSTHROUGH = 20
 
 
 def _take_keeping_flagged(papers: list[Paper], *, count: int) -> list[Paper]:
@@ -444,11 +634,39 @@ def _take_keeping_flagged(papers: list[Paper], *, count: int) -> list[Paper]:
 # --- Internals ------------------------------------------------------------
 
 
-def _ranked_papers(pool: list[Paper], ranking: CitationGraphRanking) -> list[Paper]:
+def _ranked_papers(
+    pool: list[Paper],
+    ranking: CitationGraphRanking,
+    *,
+    as_of: date,
+    age_exponent: float,
+) -> list[Paper]:
+    """Order the pool by age-normalized authority.
+
+    Raw HITS authority compounds with age twice over — an old paper has had
+    longer to collect citations, and its citers are themselves old high-hub
+    papers — so the raw ordering ends years before the present. Dividing by
+    (age + 1)^exponent is age-cohort normalization, the eigenvector analog of
+    the citations/age^1.25 velocity score. Measured Aug 2026 offline on saved
+    prompting / RAG / sampling runs: 0.75 lifts the field's own 2021-24 work
+    (Self-Consistency 13→8, ReAct 33→28, Self-RAG 14→7, GraphRAG 31→15) with
+    no adjacent-field celebrity paper entering and every founding paper keeping
+    its slot; 1.25 was too strong (BM25 and DrQA fell out of RAG's top 50).
+    Papers the graph gave no votes stay at zero — only frontier picks can
+    surface the newest, still-uncited band.
+    """
+
+    def normalized_authority(paper: Paper) -> float:
+        authority = ranking.authority.get(str(paper.semantic_scholar_id), 0.0)
+        age_years = _candidate_age_years(paper, as_of)
+        if age_years is None:
+            return 0.0  # same convention as the age-adjusted citation score
+        return authority / ((age_years + 1.0) ** age_exponent)
+
     return sorted(
         pool,
         key=lambda paper: (
-            -ranking.authority.get(str(paper.semantic_scholar_id), 0.0),
+            -normalized_authority(paper),
             -ranking.in_degree.get(str(paper.semantic_scholar_id), 0),
             -paper.age_adjusted_citation_score,
             paper.title.casefold(),
@@ -560,6 +778,7 @@ def _write_artifacts(
     ranking: CitationGraphRanking,
     root_set_ids: set[str],
     snowballed_ids: set[str],
+    frontier_cutoff_year: int,
 ) -> dict[str, object]:
     authority_rank_by_key = {
         stable_paper_key(paper): rank
@@ -593,9 +812,13 @@ def _write_artifacts(
                 "reading order, comparison tables, and discarded candidates."
             ),
             "candidate_order_note": (
-                "non_survey_papers are ordered by citation-graph authority; "
+                "non_survey_papers are ordered by citation-graph authority, "
+                "age-normalized so recent cohorts compete fairly; "
                 "survey_papers are ordered by hub score. Papers with "
-                "flagged_off_topic=true do not count toward the targets."
+                "flagged_off_topic=true do not count toward the targets. "
+                "Papers with frontier_pick=true are recent work selected by "
+                "citation velocity and judged on-topic, appended after the "
+                "authority-ranked block."
             ),
         },
         "non_survey_papers": [
@@ -625,6 +848,10 @@ def _write_artifacts(
             for paper in [*non_survey_papers, *survey_papers]
             if paper.flagged_off_topic
         ),
+        "frontier_pick_count": sum(
+            1 for paper in non_survey_papers if paper.frontier_pick
+        ),
+        "frontier_cutoff_year": frontier_cutoff_year,
         "llm_curation_complete": False,
         "as_of": as_of.isoformat(),
         "retrieval_complete": not warnings,
@@ -697,6 +924,7 @@ def _candidate_paper_output(
         "root_set_member": paper_id in root_set_ids,
         "snowballed": paper_id in snowballed_ids,
         "flagged_off_topic": paper.flagged_off_topic,
+        "frontier_pick": paper.frontier_pick,
         "age_years": _rounded(_candidate_age_years(paper, as_of)),
         "age_adjusted_citation_score": _rounded(paper.age_adjusted_citation_score),
         "citations_per_year": _rounded(paper.citations_per_year),
@@ -746,6 +974,16 @@ def _next_run_output_dir(output_base_dir: Path) -> Path:
     return output_base_dir / f"run{max(run_numbers, default=0) + 1}"
 
 
+def _config_dump(config: PipelineConfig) -> dict[str, object]:
+    # Every config field lands in run_metadata.json automatically; a
+    # hand-listed dict silently dropped fields as they were added.
+    dump = asdict(config)
+    for recorded_elsewhere in ("repo_root", "topic", "verbose"):
+        dump.pop(recorded_elsewhere, None)
+    dump["query_overrides"] = list(config.query_overrides)
+    return dump
+
+
 def _write_run_metadata(
     output_dir: Path,
     config: PipelineConfig,
@@ -765,22 +1003,7 @@ def _write_run_metadata(
             "search_query": query_plan.boolean_query(),
             "search_plan_source": query_plan.source,
             "field_of_study": query_plan.field_of_study,
-            "config": {
-                "k": config.k,
-                "survey_baseline_count": config.survey_baseline_count,
-                "pool_target": config.pool_target,
-                "recency_years": config.recency_years,
-                "root_set_size": config.root_set_size,
-                "snowball_min_in_degree": config.snowball_min_in_degree,
-                "snowball_cap": config.snowball_cap,
-                "hits_max_iterations": config.hits_max_iterations,
-                "hits_tolerance": config.hits_tolerance,
-                "citation_age_exponent": config.citation_age_exponent,
-                "request_delay_seconds": config.request_delay_seconds,
-                "request_timeout_seconds": config.request_timeout_seconds,
-                "max_academic_retries": config.max_academic_retries,
-                "refresh_cache": config.refresh_cache,
-            },
+            "config": _config_dump(config),
         },
     )
 

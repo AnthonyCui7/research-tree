@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
+import os
 import json
 import socket
 import time
@@ -17,27 +19,55 @@ class JsonRequestError(RuntimeError):
 
 
 class RateLimiter:
-    """Spaces request starts across every client that shares this instance.
+    """Spaces request starts across everything that shares this limiter.
 
-    Semantic Scholar counts one request per second cumulatively across all of its
-    endpoints, so the budget belongs to the API rather than to any one client.
-    Sharing a single limiter is what keeps two clients in the same process from
-    together exceeding a limit each of them respects alone.
+    Semantic Scholar counts one request per second cumulatively across all of
+    its endpoints, so the budget belongs to the API key rather than to any one
+    client. With a `lock_file`, the last-request timestamp lives in that file
+    under an exclusive flock, so the spacing holds across *processes* too —
+    a backend, a CLI, and a not-yet-exited old backend all share one lane.
+    (Measured Aug 2026: three backend processes with independent in-memory
+    limiters tripled the request rate under one key and kept it in Semantic
+    Scholar's penalty box.) Without a `lock_file` it is in-memory only.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, lock_file: Path | None = None) -> None:
         self._last_request_at = 0.0
         self._lock = Lock()
+        self._lock_file = lock_file
 
     def acquire(self, delay_seconds: float) -> None:
         with self._lock:
             if delay_seconds <= 0:
                 self._last_request_at = time.monotonic()
                 return
+            if self._lock_file is not None:
+                self._acquire_across_processes(delay_seconds)
+                return
             elapsed = time.monotonic() - self._last_request_at
             if elapsed < delay_seconds:
                 time.sleep(delay_seconds - elapsed)
             self._last_request_at = time.monotonic()
+
+    def _acquire_across_processes(self, delay_seconds: float) -> None:
+        # Sleeping while holding the flock makes waiting processes queue
+        # behind this one, which is exactly the serialization we want.
+        self._lock_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._lock_file, "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            handle.seek(0)
+            raw = handle.read().strip()
+            try:
+                last_request_at = float(raw) if raw else 0.0
+            except ValueError:
+                last_request_at = 0.0
+            remaining = delay_seconds - (time.time() - last_request_at)
+            if remaining > 0:
+                time.sleep(remaining)
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"{time.time():.3f}")
+            handle.flush()
 
 
 class CachedJsonClient:
@@ -67,7 +97,7 @@ class CachedJsonClient:
             return json.loads(cache_path.read_text(encoding="utf-8"))
 
         payload = self._request_with_retries("GET", full_url, None)
-        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _write_atomic(cache_path, json.dumps(payload, indent=2))
         return payload
 
     def post_json(self, url: str, body: dict[str, Any]) -> Any:
@@ -76,7 +106,7 @@ class CachedJsonClient:
             return json.loads(cache_path.read_text(encoding="utf-8"))
 
         payload = self._request_with_retries("POST", url, body)
-        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _write_atomic(cache_path, json.dumps(payload, indent=2))
         return payload
 
     def _request_with_retries(
@@ -97,7 +127,7 @@ class CachedJsonClient:
         # A shared 1 req/s limiter already paces normal traffic, so a 429 here is
         # a transient burst rather than sustained overuse. `Retry-After` still
         # wins whenever the server sends one.
-        backoffs = [5, 15, 45, 90, 90][: self.max_retries]
+        backoffs = [5, 10, 45, 90, 90][: self.max_retries]
         last_error: Exception | None = None
         for attempt in range(len(backoffs) + 1):
             self._wait_for_delay()
@@ -155,6 +185,14 @@ class CachedJsonClient:
         )
         digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{digest}.json"
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    # A process can die mid-write (daemon threads exit with the interpreter);
+    # a torn cache file would fail json.loads on every later read.
+    temporary = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(path)
 
 
 def _url_with_params(url: str, params: dict[str, Any]) -> str:

@@ -1,16 +1,57 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Iterable, Mapping
 
-from research_tree.retrieval.full_text import retrieve_open_access_paper_content
+from research_tree.retrieval.full_text import (
+    PaperContentResult,
+    retrieve_open_access_paper_content,
+)
 from research_tree.retrieval.semantic_scholar import (
     SemanticScholarClient,
     paper_from_semantic_scholar,
     semantic_scholar_metadata,
 )
 from research_tree.workspace.repository import WorkspaceRepository
+from research_tree.workspace.schemas import CandidatePaperMetadata
 from research_tree.workspace.tldr import TldrGenerator, apply_generated_tldr
+
+
+def prefetch_paper_content(
+    papers: Iterable[CandidatePaperMetadata],
+    *,
+    max_workers: int = 4,
+) -> dict[str, PaperContentResult]:
+    """Download candidate full text ahead of hydration.
+
+    The workspace's papers are a subset of the candidate hand-off, so every
+    download can happen while the construction call is in flight. Only
+    successful retrievals are kept: hydrate retries anything missing itself, so
+    a transient download failure here costs nothing. These are publisher and
+    arXiv downloads, never Semantic Scholar API requests, so the shared 1 req/s
+    limiter does not apply.
+    """
+
+    def fetch(paper: CandidatePaperMetadata) -> tuple[str, PaperContentResult]:
+        metadata = paper.semantic_scholar_metadata or {}
+        source_url = _open_access_pdf_url(metadata, {"arxiv_id": paper.arxiv_id})
+        return paper.paper_id, retrieve_open_access_paper_content(
+            paper_id=paper.paper_id,
+            title=paper.title or paper.paper_id,
+            source_url=source_url,
+        )
+
+    papers = list(papers)
+    if not papers:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(papers))) as executor:
+        results = executor.map(fetch, papers)
+    return {
+        paper_id: result
+        for paper_id, result in results
+        if str(result.content.get("status") or "").startswith("available")
+    }
 
 
 def hydrate_workspace_papers(
@@ -19,6 +60,7 @@ def hydrate_workspace_papers(
     repository: WorkspaceRepository,
     semantic_scholar: SemanticScholarClient,
     tldr_generator: TldrGenerator | None = None,
+    prefetched_content: Mapping[str, PaperContentResult] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Fetch rich metadata and lawful full text for the selected visible papers."""
 
@@ -55,12 +97,14 @@ def hydrate_workspace_papers(
                 apply_generated_tldr(raw_card, generator=tldr_generator)
             except RuntimeError as error:
                 warnings.append(f"Generated TLDR failed for {paper_id}: {error}")
-        source_url = _open_access_pdf_url(details, raw_card)
-        content_result = retrieve_open_access_paper_content(
-            paper_id=str(paper_id),
-            title=str(raw_card.get("title") or paper_id),
-            source_url=source_url,
-        )
+        content_result = (prefetched_content or {}).get(str(paper_id))
+        if content_result is None:
+            source_url = _open_access_pdf_url(details, raw_card)
+            content_result = retrieve_open_access_paper_content(
+                paper_id=str(paper_id),
+                title=str(raw_card.get("title") or paper_id),
+                source_url=source_url,
+            )
         content_key = repository.save_paper_content(
             workspace_id, str(paper_id), content_result.content
         )

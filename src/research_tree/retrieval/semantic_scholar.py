@@ -15,12 +15,17 @@ from research_tree.retrieval.text import (
 
 
 # Semantic Scholar allows one request per second, counted cumulatively across
-# every endpoint; an API key buys reliability, not throughput. A slight margin
-# above one second absorbs clock jitter without wasting the budget.
-SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.2
+# every endpoint; an API key buys reliability, not throughput. The margin above
+# one second absorbs clock jitter and keeps us clear of server-side load
+# shedding, which 429s compliant clients when S2 is stressed.
+SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.5
 
-# Every Semantic Scholar client in this process shares one request budget.
-SEMANTIC_SCHOLAR_RATE_LIMITER = RateLimiter()
+# Every Semantic Scholar client shares one request budget — across threads,
+# clients, and processes (backend, CLIs, anything else using this key from
+# this machine). The file holds the last-request timestamp under an flock.
+SEMANTIC_SCHOLAR_RATE_LIMITER = RateLimiter(
+    lock_file=Path.home() / ".research_tree" / "s2_rate_limiter.lock"
+)
 
 # Documented endpoint ceilings.
 SEMANTIC_SCHOLAR_BATCH_ID_LIMIT = 500
@@ -29,6 +34,10 @@ SEMANTIC_SCHOLAR_BULK_PAGE_SIZE = 1000
 # The batch endpoint caps a response at 10 MB. Reference lists run to hundreds of
 # ids per paper, so reference fetches use a smaller chunk than the id limit.
 SEMANTIC_SCHOLAR_REFERENCE_CHUNK_SIZE = 250
+# Retries for papers S2 failed to hydrate go out in smaller batches: hydration
+# failures scale with batch size (measured Aug 2026 — one 250-paper chunk lost
+# most of its reference lists while a single-paper batch succeeded live).
+SEMANTIC_SCHOLAR_REFERENCE_RETRY_CHUNK_SIZE = 50
 
 
 SEMANTIC_SCHOLAR_PAPER_FIELDS = [
@@ -121,11 +130,13 @@ class SemanticScholarClient:
                     params,
                 )
             except JsonRequestError as error:
-                _append_warning(
-                    warnings,
-                    f"Semantic Scholar bulk search failed for query '{query}': {error}",
-                )
-                break
+                # The client already retried with backoff, so this is a real
+                # outage or sustained throttling. A truncated pool silently
+                # reshapes everything downstream; fail the run instead.
+                raise JsonRequestError(
+                    f"Semantic Scholar bulk search failed after retries for "
+                    f"query '{query}': {error}"
+                ) from error
 
             items = (payload.get("data") or [])[: max_papers - len(papers)]
             for item in items:
@@ -153,6 +164,29 @@ class SemanticScholarClient:
         references: dict[str, list[str]] = {}
         for chunk in _chunked(ids, max(chunk_size, 1)):
             references.update(self._references_for_chunk(chunk, warnings))
+        # Under load the batch endpoint returns 200 with the `references`
+        # field absent (or empty despite a nonzero referenceCount) for a
+        # subset of papers — measured Aug 2026, up to 179 of 250 in one
+        # chunk, which silently halved a run's citation graph. Hydration
+        # failures scale with batch size (a single-paper batch succeeded live
+        # while 250-paper batches failed), so the retry over the missing ids
+        # uses smaller chunks; being a different request body, it also can
+        # never be satisfied by a cached partial response.
+        missing = [paper_id for paper_id in ids if paper_id not in references]
+        if missing:
+            retry_chunk = max(min(chunk_size, SEMANTIC_SCHOLAR_REFERENCE_RETRY_CHUNK_SIZE), 1)
+            for chunk in _chunked(missing, retry_chunk):
+                references.update(self._references_for_chunk(chunk, warnings))
+            still_missing = [
+                paper_id for paper_id in missing if paper_id not in references
+            ]
+            if still_missing:
+                _append_warning(
+                    warnings,
+                    "Semantic Scholar returned no reference lists for "
+                    f"{len(still_missing)} of {len(ids)} papers even after a "
+                    "retry; the citation graph is missing their bibliographies.",
+                )
         return references
 
     def _references_for_chunk(
@@ -162,7 +196,7 @@ class SemanticScholarClient:
     ) -> dict[str, list[str]]:
         try:
             payload = self.client.post_json(
-                f"{self.base_url}/paper/batch?fields=references.paperId",
+                f"{self.base_url}/paper/batch?fields=references.paperId,referenceCount",
                 {"ids": ids},
             )
         except JsonRequestError as error:
@@ -175,15 +209,26 @@ class SemanticScholarClient:
                     **self._references_for_chunk(ids[:midpoint], warnings),
                     **self._references_for_chunk(ids[midpoint:], warnings),
                 }
-            _append_warning(
-                warnings,
-                f"Semantic Scholar reference fetch failed for {ids[0]}: {error}",
-            )
-            return {}
+            # A single-paper request cannot be oversized, so this is a real
+            # failure that survived the client's retries; kill the run.
+            raise JsonRequestError(
+                f"Semantic Scholar reference fetch failed after retries "
+                f"for {ids[0]}: {error}"
+            ) from error
 
         references: dict[str, list[str]] = {}
         for item in payload if isinstance(payload, list) else []:
             if not isinstance(item, dict) or not item.get("paperId"):
+                continue
+            # The `references` field being absent — or empty while S2's own
+            # referenceCount says the bibliography exists — means S2 did not
+            # hydrate it, not that the paper cites nothing. Recording those as
+            # empty poisons the citation graph, so leave the papers out and
+            # let the caller retry them.
+            raw_references = item.get("references")
+            if raw_references is None:
+                continue
+            if raw_references == [] and (item.get("referenceCount") or 0) > 0:
                 continue
             references[str(item["paperId"])] = [
                 str(reference["paperId"])
@@ -248,11 +293,10 @@ class SemanticScholarClient:
                     {"ids": chunk},
                 )
             except JsonRequestError as error:
-                _append_warning(
-                    warnings,
-                    f"Semantic Scholar paper metadata enrichment failed: {error}",
-                )
-                continue
+                raise JsonRequestError(
+                    f"Semantic Scholar paper metadata fetch failed after "
+                    f"retries: {error}"
+                ) from error
             details.update({
                 str(item["paperId"]): item
                 for item in payload if isinstance(item, dict) and item.get("paperId")
