@@ -23,8 +23,11 @@ from research_tree.retrieval.pipeline_args import validate_pipeline_rerun_reques
 from research_tree.workspace.context import build_workspace_chat_context, workspace_version_hash
 
 if LANGGRAPH_AVAILABLE:
-    from research_tree.agents.workspace.llm import DeterministicWorkspaceAgentLlmClient
-    from research_tree.agents.workspace.models import AgentIntent, AgentNextAction
+    from research_tree.agents.workspace.llm import (
+        AgentTurn,
+        DeterministicWorkspaceAgentLlmClient,
+        ToolCall,
+    )
     from research_tree.agents.workspace.graph import build_workspace_agent_graph
     from research_tree.agents.workspace.nodes import WorkspaceAgentNodes
     from research_tree.agents.workspace.state import WorkspaceAgentState
@@ -92,81 +95,116 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         self.assertEqual(result["action_history"], [{"a": 1}, {"a": 2}])
         self.assertEqual(result["validation_results"], [{"v": 1}, {"v": 2}])
 
-    def test_classify_intent_routes_chat_modification_and_retrieval(self) -> None:
-        for intent, expected in [
-            (_intent("chat"), False),
-            (_intent("modify_workspace", modifies=True), True),
-            (_intent("retrieve_more_papers", more=True), False),
+    def test_terminal_tool_calls_route_to_their_action_node(self) -> None:
+        # Editing and critique both need the heavy workspace context, so they
+        # route through the node that builds it; a rerun goes straight on.
+        for tool_name, arguments, expected_node in [
+            ("propose_workspace_edit", {"instruction": "rename branch"}, "build_workspace_context"),
+            ("propose_pipeline_rerun", {"stage": "candidates", "reason": "thin"}, "prepare_retrieval_rerun"),
+            ("critique_workspace", {}, "build_workspace_context"),
         ]:
             nodes = WorkspaceAgentNodes(
                 llm_client=DeterministicWorkspaceAgentLlmClient(
-                    structured_outputs=[intent]
+                    tool_turns=[_tool_turn(tool_name, arguments)]
                 )
             )
-            command = nodes.classify_intent(
-                {
-                    "user_message": "test",
-                    "workspace_summary": {},
-                }
+
+            command = nodes.agent_loop(
+                {"user_message": "test", "chat_context": {}, "workspace": _workspace()}
             )
 
-            self.assertEqual(command.goto, "build_workspace_context")
-            self.assertEqual(
-                command.update["intent"]["requires_workspace_modification"],
-                expected,
-            )
+            self.assertEqual(command.goto, expected_node)
 
-    def test_plan_next_action_routes_to_structured_action(self) -> None:
-        action = AgentNextAction(
-            action_type="construct_workspace_modification",
-            reason="edit requested",
-            modification_instruction="rename branch",
-        )
+    def test_read_tool_calls_route_to_execution_and_back(self) -> None:
         nodes = WorkspaceAgentNodes(
             llm_client=DeterministicWorkspaceAgentLlmClient(
-                structured_outputs=[action]
+                tool_turns=[_tool_turn("search_workspace", {"query": "method"})]
             )
         )
 
-        command = nodes.plan_next_action(
+        command = nodes.agent_loop(
+            {"user_message": "what is here?", "chat_context": {}, "workspace": _workspace()}
+        )
+
+        self.assertEqual(command.goto, "execute_tools")
+        # The call is kept in the transcript so the result can be paired to it.
+        self.assertEqual(command.update["transcript_items"][-1]["name"], "search_workspace")
+
+        executed = nodes.execute_tools(
             {
-                "user_message": "rename branch",
-                "intent": _intent("modify_workspace", modifies=True).model_dump(),
-                "chat_context": {},
-                "action_history": [],
+                "workspace": _workspace(),
+                "workspace_id": "workspace-1",
+                "transcript_items": command.update["transcript_items"],
             }
         )
 
-        self.assertEqual(command.goto, "construct_workspace_modification")
-        self.assertEqual(command.update["next_action"]["action_type"], action.action_type)
+        self.assertEqual(executed.goto, "agent_loop")
+        output = executed.update["transcript_items"][-1]
+        self.assertEqual(output["type"], "function_call_output")
+        self.assertEqual(output["call_id"], "call_1")
+        self.assertIn("Core Method", output["output"])
 
-    def test_similar_paper_requests_do_not_route_to_retrieval_guardrail(self) -> None:
+    def test_answering_without_tools_finalizes(self) -> None:
         nodes = WorkspaceAgentNodes(
             llm_client=DeterministicWorkspaceAgentLlmClient(
-                structured_outputs=[
-                    AgentNextAction(
-                        action_type="prepare_retrieval_rerun",
-                        reason="model chose retrieval",
-                        retrieval_request={"topic": "prompting"},
-                    )
-                ]
+                tool_turns=[_text_turn("The workspace covers two branches.")]
             )
         )
 
-        command = nodes.plan_next_action(
+        command = nodes.agent_loop(
+            {"user_message": "summarize", "chat_context": {}, "workspace": _workspace()}
+        )
+
+        self.assertEqual(command.goto, "finalize_response")
+        self.assertEqual(command.update["final_response"], "The workspace covers two branches.")
+
+    def test_the_last_round_answers_instead_of_calling_another_tool(self) -> None:
+        """Running out of budget must still produce an answer.
+
+        The model is offered no tools on the final round, so whatever it has
+        gathered gets written up rather than thrown away as an error.
+        """
+
+        client = DeterministicWorkspaceAgentLlmClient(
+            tool_turns=[_tool_turn("search_workspace", {"query": "anything"})]
+        )
+        nodes = WorkspaceAgentNodes(llm_client=client)
+
+        command = nodes.agent_loop(
             {
-                "user_message": "Refresh similar papers for Chain of Thought.",
-                "intent": _intent("modify_workspace", modifies=True).model_dump(),
-                "chat_context": {},
-                "action_history": [],
+                "user_message": "keep searching",
+                "workspace_summary": {},
+                "workspace": _workspace(),
+                "tool_rounds": 7,
+                "max_tool_rounds": 8,
             }
         )
 
-        self.assertEqual(command.goto, "construct_workspace_modification")
-        self.assertEqual(
-            command.update["action_history"][0]["action_type"],
-            "construct_workspace_modification",
+        self.assertEqual(command.goto, "finalize_response")
+        self.assertEqual(command.update["status"], "completed")
+        self.assertTrue(command.update["final_response"])
+        self.assertIn("tool-call limit", command.update["warnings"][0])
+
+    def test_semantic_scholar_budget_is_spent_not_exceeded(self) -> None:
+        from research_tree.agents.workspace.tools import (
+            MAX_SEMANTIC_SCHOLAR_CALLS_PER_RUN,
+            ToolContext,
+            run_tool,
         )
+
+        context = ToolContext(
+            workspace=_workspace(),
+            workspace_id="workspace-1",
+            repository=None,
+            repo_root=Path(tempfile.mkdtemp()),
+            semantic_scholar_calls=MAX_SEMANTIC_SCHOLAR_CALLS_PER_RUN,
+        )
+
+        result = run_tool("search_semantic_scholar", context, {"query": "prompting"})
+
+        # No client is ever constructed, so an exhausted budget cannot hit S2.
+        self.assertIn("budget", result)
+        self.assertEqual(context.semantic_scholar_calls, MAX_SEMANTIC_SCHOLAR_CALLS_PER_RUN)
 
     def test_chat_path_ends_without_modifying_workspace(self) -> None:
         graph = build_workspace_agent_graph(llm_client=_chat_llm("Workspace answer."))
@@ -204,24 +242,14 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
             },
             {"configurable": {"thread_id": "modify-calls"}},
         )
-        chunks = list(stream)
+        list(stream)
 
         self.assertEqual(calls[0]["construction_mode"], "agent_modify_workspace")
-        self.assertTrue(any("__interrupt__" in chunk for chunk in chunks))
 
     def test_remove_visible_paper_uses_deterministic_patch(self) -> None:
         calls: list[dict[str, object]] = []
         graph = build_workspace_agent_graph(
-            llm_client=DeterministicWorkspaceAgentLlmClient(
-                structured_outputs=[
-                    _intent("modify_workspace", modifies=True),
-                    AgentNextAction(
-                        action_type="construct_workspace_modification",
-                        reason="remove paper",
-                        modification_instruction="Remove evaluation benchmark paper.",
-                    ),
-                ]
-            ),
+            llm_client=_modify_llm("Remove evaluation benchmark paper."),
             workspace_constructor=lambda **kwargs: calls.append(kwargs) or _workspace(),
         )
 
@@ -312,30 +340,22 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         self.assertIn("scoring", rejected["rejection_reason"])
 
     def test_graph_rerun_guardrail_preserves_and_rejects_forbidden_fields(self) -> None:
-        class ForbiddenRerunLlm:
-            def complete_structured(self, *, prompt, response_model, model_name=None):
-                if response_model is AgentIntent:
-                    return _intent("retrieve_more_papers", more=True)
-                if response_model is AgentNextAction:
-                    return AgentNextAction(
-                        action_type="prepare_retrieval_rerun",
-                        reason="forbidden rerun",
-                        retrieval_request={
-                            "topic": "retrieval augmented generation",
-                            "max_candidates": 10,
-                            "alpha": 1.25,
-                            "scoring_algorithm": "replace scoring formula",
-                            "reason": "test rejection",
-                        },
-                    )
-                raise AssertionError(response_model)
-
-            def complete_text(self, *, prompt, model_name=None):
-                return "unused"
-
         calls: list[object] = []
         graph = build_workspace_agent_graph(
-            llm_client=ForbiddenRerunLlm(),
+            llm_client=DeterministicWorkspaceAgentLlmClient(
+                tool_turns=[
+                    _tool_turn(
+                        "propose_pipeline_rerun",
+                        {
+                            "stage": "candidates",
+                            "reason": "test rejection",
+                            "topic": "retrieval augmented generation",
+                            # Not a parameter the agent may set.
+                            "scoring_algorithm": "replace scoring formula",
+                        },
+                    )
+                ]
+            ),
             retrieval_runner=lambda config: calls.append(config) or _candidate_artifact(),
         )
 
@@ -403,299 +423,6 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         )
 
         self.assertEqual(calls, ["agent_modify_workspace", "workspace_repair"])
-
-    def test_human_review_interrupt_emits_json_serializable_payload(self) -> None:
-        graph = build_workspace_agent_graph(
-            llm_client=_modify_llm(),
-            workspace_constructor=lambda **_kwargs: _workspace(branch_label="Renamed Branch"),
-        )
-
-        chunks = list(
-            graph.stream(
-                {
-                    "workspace": _workspace(),
-                    "candidate_artifact": _candidate_artifact(),
-                    "user_message": "Rename the branch.",
-                },
-                {"configurable": {"thread_id": "review-payload"}},
-            )
-        )
-        interrupt_chunk = next(chunk for chunk in chunks if "__interrupt__" in chunk)
-        payload = interrupt_chunk["__interrupt__"][0].value
-
-        json.dumps(payload)
-        self.assertEqual(payload["type"], "workspace_patch_review")
-        self.assertEqual(payload["choices"], ["approve", "edit", "reject"])
-
-    def test_pending_review_is_persisted_before_interrupt(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            repository = LocalJsonWorkspaceRepository(Path(directory))
-            base_hash = _seed_repository_current(repository)
-            graph = build_workspace_agent_graph(
-                llm_client=_modify_llm(),
-                workspace_constructor=lambda **_kwargs: _workspace(branch_label="Renamed Branch"),
-                workspace_repository=repository,
-            )
-
-            chunks = list(
-                graph.stream(
-                    {
-                        "workspace": _workspace(),
-                        "candidate_artifact": _candidate_artifact(),
-                        "user_message": "Rename the branch.",
-                    },
-                    {"configurable": {"thread_id": "pending-review"}},
-                )
-            )
-            interrupt_chunk = next(chunk for chunk in chunks if "__interrupt__" in chunk)
-            payload = interrupt_chunk["__interrupt__"][0].value
-            review = repository.get_pending_review(
-                "rag__2026-07-05__test",
-                payload["review_id"],
-            )
-            run_events = repository.list_agent_run_events("rag__2026-07-05__test")
-
-        self.assertEqual(review["status"], "pending")
-        self.assertEqual(review["base_workspace_version_hash"], base_hash)
-        self.assertEqual(review["interrupt_payload"]["review_id"], payload["review_id"])
-        self.assertEqual(
-            review["proposed_workspace"]["tree"]["nodes"][0]["label"],
-            "Renamed Branch",
-        )
-        self.assertEqual(run_events[0]["status"], "pending_review")
-
-    def test_resume_approval_applies_patch_and_rejection_does_not(self) -> None:
-        approve_graph = build_workspace_agent_graph(
-            llm_client=_modify_llm(),
-            workspace_constructor=lambda **_kwargs: _workspace(branch_label="Renamed Branch"),
-        )
-        approve_config = {"configurable": {"thread_id": "approve"}}
-        list(
-            approve_graph.stream(
-                {
-                    "workspace": _workspace(),
-                    "candidate_artifact": _candidate_artifact(),
-                    "user_message": "Rename the branch.",
-                },
-                approve_config,
-            )
-        )
-        approved = approve_graph.invoke(Command(resume={"choice": "approve"}), approve_config)
-
-        reject_graph = build_workspace_agent_graph(
-            llm_client=_modify_llm(),
-            workspace_constructor=lambda **_kwargs: _workspace(branch_label="Rejected Branch"),
-        )
-        reject_config = {"configurable": {"thread_id": "reject"}}
-        list(
-            reject_graph.stream(
-                {
-                    "workspace": _workspace(),
-                    "candidate_artifact": _candidate_artifact(),
-                    "user_message": "Rename the branch.",
-                },
-                reject_config,
-            )
-        )
-        rejected = reject_graph.invoke(Command(resume={"choice": "reject"}), reject_config)
-
-        self.assertEqual(approved["updated_workspace"]["tree"]["nodes"][0]["label"], "Renamed Branch")
-        self.assertEqual(rejected["status"], "rejected")
-        self.assertNotIn("updated_workspace", rejected)
-
-    def test_resume_approval_persists_version_event_and_current_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            repository = LocalJsonWorkspaceRepository(Path(directory))
-            _seed_repository_current(repository)
-            graph = build_workspace_agent_graph(
-                llm_client=_modify_llm(),
-                workspace_constructor=lambda **_kwargs: _workspace(branch_label="Renamed Branch"),
-                workspace_repository=repository,
-            )
-            config = {"configurable": {"thread_id": "approve-persist"}}
-            list(
-                graph.stream(
-                    {
-                        "workspace": _workspace(),
-                        "candidate_artifact": _candidate_artifact(),
-                        "user_message": "Rename the branch.",
-                    },
-                    config,
-                )
-            )
-            approved = graph.invoke(Command(resume={"choice": "approve"}), config)
-            current = repository.get_current_workspace("rag__2026-07-05__test")
-            events = repository.list_workspace_events("rag__2026-07-05__test")
-            run_events = repository.list_agent_run_events("rag__2026-07-05__test")
-            versions = repository.list_workspace_versions("rag__2026-07-05__test")
-            reviews = repository.list_workspace_reviews("rag__2026-07-05__test")
-
-        self.assertEqual(approved["status"], "completed")
-        self.assertEqual(current["tree"]["nodes"][0]["label"], "Renamed Branch")
-        self.assertIn(
-            approved["persisted_version_hash"],
-            [version["version_hash"] for version in versions],
-        )
-        self.assertEqual(events[0]["event_type"], "workspace_patch_approved_applied")
-        self.assertEqual(events[0]["after_hash"], approved["persisted_version_hash"])
-        self.assertEqual([event["status"] for event in run_events], ["pending_review", "approved_applied"])
-        self.assertEqual(reviews[0]["status"], "approved_applied")
-        self.assertEqual(
-            reviews[0]["applied_workspace_version_hash"],
-            approved["persisted_version_hash"],
-        )
-
-    def test_resume_rejection_persists_event_without_current_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            repository = LocalJsonWorkspaceRepository(Path(directory))
-            _seed_repository_current(repository)
-            graph = build_workspace_agent_graph(
-                llm_client=_modify_llm(),
-                workspace_constructor=lambda **_kwargs: _workspace(branch_label="Rejected Branch"),
-                workspace_repository=repository,
-            )
-            config = {"configurable": {"thread_id": "reject-persist"}}
-            list(
-                graph.stream(
-                    {
-                        "workspace": _workspace(),
-                        "candidate_artifact": _candidate_artifact(),
-                        "user_message": "Rename the branch.",
-                    },
-                    config,
-                )
-            )
-            rejected = graph.invoke(Command(resume={"choice": "reject"}), config)
-            events = repository.list_workspace_events("rag__2026-07-05__test")
-            run_events = repository.list_agent_run_events("rag__2026-07-05__test")
-            current = repository.get_current_workspace("rag__2026-07-05__test")
-            reviews = repository.list_workspace_reviews("rag__2026-07-05__test")
-
-        self.assertEqual(rejected["status"], "rejected")
-        self.assertEqual(current["tree"]["nodes"][0]["label"], "Main Branch")
-        self.assertEqual(events[0]["event_type"], "workspace_patch_rejected")
-        self.assertIsNone(events[0]["after_hash"])
-        self.assertEqual([event["status"] for event in run_events], ["pending_review", "rejected"])
-        self.assertEqual(reviews[0]["status"], "rejected")
-
-    def test_resume_approval_rejects_stale_pending_review(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            repository = LocalJsonWorkspaceRepository(Path(directory))
-            base_hash = _seed_repository_current(repository)
-            graph = build_workspace_agent_graph(
-                llm_client=_modify_llm(),
-                workspace_constructor=lambda **_kwargs: _workspace(branch_label="Agent Proposal"),
-                workspace_repository=repository,
-            )
-            config = {"configurable": {"thread_id": "stale-approval"}}
-            chunks = list(
-                graph.stream(
-                    {
-                        "workspace": _workspace(),
-                        "candidate_artifact": _candidate_artifact(),
-                        "user_message": "Rename the branch.",
-                    },
-                    config,
-                )
-            )
-            interrupt_chunk = next(chunk for chunk in chunks if "__interrupt__" in chunk)
-            review_id = interrupt_chunk["__interrupt__"][0].value["review_id"]
-            repository.save_workspace_version(
-                "rag__2026-07-05__test",
-                _workspace(branch_label="User Changed Branch"),
-                actor="user",
-                parent_version_hash=base_hash,
-                reason="manual edit before approval",
-            )
-
-            approved = graph.invoke(Command(resume={"choice": "approve"}), config)
-            current = repository.get_current_workspace("rag__2026-07-05__test")
-            review = repository.get_review("rag__2026-07-05__test", review_id)
-            events = repository.list_workspace_events("rag__2026-07-05__test")
-
-        self.assertEqual(approved["status"], "failed")
-        self.assertNotIn("updated_workspace", approved)
-        self.assertEqual(current["tree"]["nodes"][0]["label"], "User Changed Branch")
-        self.assertEqual(review["status"], "failed_stale_base")
-        self.assertEqual(review["base_workspace_version_hash"], base_hash)
-        self.assertEqual(events[0]["event_type"], "workspace_patch_stale_approval_rejected")
-
-    def test_edited_review_payload_gets_revalidated(self) -> None:
-        graph = build_workspace_agent_graph(
-            llm_client=_modify_llm(),
-            workspace_constructor=lambda **_kwargs: _workspace(branch_label="First Proposal"),
-        )
-        config = {"configurable": {"thread_id": "edited"}}
-        list(
-            graph.stream(
-                {
-                    "workspace": _workspace(),
-                    "candidate_artifact": _candidate_artifact(),
-                    "user_message": "Rename the branch.",
-                },
-                config,
-            )
-        )
-        chunks = list(
-            graph.stream(
-                Command(
-                    resume={
-                        "choice": "edit",
-                        "proposed_workspace": _workspace(branch_label="Edited Branch"),
-                    }
-                ),
-                config,
-            )
-        )
-        state = graph.get_state(config).values
-
-        self.assertEqual(state["proposed_workspace"]["tree"]["nodes"][0]["label"], "Edited Branch")
-        self.assertTrue(any("__interrupt__" in chunk for chunk in chunks))
-
-    def test_edited_review_payload_persists_edit_event_before_revalidation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            repository = LocalJsonWorkspaceRepository(Path(directory))
-            _seed_repository_current(repository)
-            graph = build_workspace_agent_graph(
-                llm_client=_modify_llm(),
-                workspace_constructor=lambda **_kwargs: _workspace(branch_label="First Proposal"),
-                workspace_repository=repository,
-            )
-            config = {"configurable": {"thread_id": "edited-persist"}}
-            list(
-                graph.stream(
-                    {
-                        "workspace": _workspace(),
-                        "candidate_artifact": _candidate_artifact(),
-                        "user_message": "Rename the branch.",
-                    },
-                    config,
-                )
-            )
-            first_review_id = graph.get_state(config).values["review_id"]
-            list(
-                graph.stream(
-                    Command(
-                        resume={
-                            "choice": "edit",
-                            "proposed_workspace": _workspace(branch_label="Edited Branch"),
-                        }
-                    ),
-                    config,
-                )
-            )
-            events = repository.list_workspace_events("rag__2026-07-05__test")
-            run_events = repository.list_agent_run_events("rag__2026-07-05__test")
-            reviews = {
-                review["review_id"]: review
-                for review in repository.list_workspace_reviews("rag__2026-07-05__test")
-            }
-            state = graph.get_state(config).values
-
-        self.assertEqual(events[0]["event_type"], "workspace_patch_edited")
-        self.assertEqual([event["status"] for event in run_events], ["pending_review", "edited", "pending_review"])
-        self.assertEqual(reviews[first_review_id]["status"], "edited")
-        self.assertEqual(reviews[state["review_id"]]["status"], "pending")
 
     def test_existing_construct_workspace_cli_behavior_still_works(self) -> None:
         from research_tree.cli.construct_workspace import main as construct_main
@@ -773,43 +500,61 @@ class WorkspaceAgentPureHelperTest(unittest.TestCase):
         )
 
 
-def _chat_llm(answer: str = "answer") -> DeterministicWorkspaceAgentLlmClient:
-    return DeterministicWorkspaceAgentLlmClient(
-        structured_outputs=[
-            _intent("chat"),
-            AgentNextAction(action_type="answer_chat", reason="chat"),
+def _tool_turn(name: str, arguments: dict[str, object], call_id: str = "call_1") -> AgentTurn:
+    """A model turn that calls one tool, shaped like a real Responses turn."""
+
+    return AgentTurn(
+        output_items=[
+            {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": json.dumps(arguments),
+            }
         ],
-        text_outputs=[answer],
+        tool_calls=[ToolCall(call_id=call_id, name=name, arguments=arguments)],
+        output_text=None,
     )
 
 
-def _modify_llm() -> DeterministicWorkspaceAgentLlmClient:
+def _text_turn(text: str) -> AgentTurn:
+    """A model turn that answers instead of calling a tool."""
+
+    return AgentTurn(
+        output_items=[
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }
+        ],
+        tool_calls=[],
+        output_text=text,
+    )
+
+
+def _chat_llm(answer: str = "answer") -> DeterministicWorkspaceAgentLlmClient:
+    return DeterministicWorkspaceAgentLlmClient(tool_turns=[_text_turn(answer)])
+
+
+def _modify_llm(instruction: str = "Rename the branch.") -> DeterministicWorkspaceAgentLlmClient:
     return DeterministicWorkspaceAgentLlmClient(
-        structured_outputs=[
-            _intent("modify_workspace", modifies=True),
-            AgentNextAction(
-                action_type="construct_workspace_modification",
-                reason="edit",
-                modification_instruction="Rename the branch.",
-            ),
-        ]
+        tool_turns=[_tool_turn("propose_workspace_edit", {"instruction": instruction})]
     )
 
 
 def _retrieval_llm() -> DeterministicWorkspaceAgentLlmClient:
     return DeterministicWorkspaceAgentLlmClient(
-        structured_outputs=[
-            _intent("retrieve_more_papers", more=True),
-            AgentNextAction(
-                action_type="prepare_retrieval_rerun",
-                reason="retrieve",
-                retrieval_request={
+        tool_turns=[
+            _tool_turn(
+                "propose_pipeline_rerun",
+                {
+                    "stage": "candidates",
+                    "reason": "Need more candidates.",
                     "topic": "retrieval augmented generation",
                     "max_candidates": 60,
-                    "alpha": 2.0,
-                    "reason": "Need more candidates.",
                 },
-            ),
+            )
         ]
     )
 
@@ -821,21 +566,6 @@ def _seed_repository_current(repository) -> str:
         actor="system",
         parent_version_hash=None,
         reason="seed fixture",
-    )
-
-
-def _intent(
-    intent_type: str,
-    *,
-    modifies: bool = False,
-    more: bool = False,
-) -> AgentIntent:
-    return AgentIntent(
-        intent_type=intent_type,
-        confidence=0.9,
-        requires_workspace_modification=modifies,
-        requires_more_papers=more,
-        reason="test",
     )
 
 

@@ -53,15 +53,15 @@ class TopicReviewResponse(BaseModel):
     topic_review_token: str | None = None
 
 
+# Pipeline construction is model-locked (see WorkspacePipelineService), so
+# neither request takes a model. Only the agent does.
 class CreateWorkspaceRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=240)
     topic_review_token: str = Field(min_length=1, max_length=128)
-    model: str = DEFAULT_MODEL
 
 
 class PipelineRerunApiRequest(BaseModel):
     start_stage: str
-    model: str = DEFAULT_MODEL
     expected_version_hash: str | None = None
 
 
@@ -108,7 +108,11 @@ class WorkspaceReviewResponse(BaseModel):
 class AgentRunRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     conversation_history: list[dict[str, str]] = Field(default_factory=list, max_length=24)
-    thread_id: str | None = None
+    # Thread ids are persisted into event payloads, so they are constrained the
+    # same way workspace ids are.
+    thread_id: str | None = Field(
+        default=None, max_length=180, pattern=r"^[A-Za-z0-9_.:-]+$"
+    )
     allow_pipeline_rerun: bool = False
     require_approval: bool = True
     model: str = Field(default=DEFAULT_MODEL, min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:-]+$")
@@ -145,11 +149,23 @@ class ReviewActionResponse(BaseModel):
     status: str
     idempotent: bool = False
     workspace_version_hash: str | None = None
+    # Set only when approving a workspace patch; a rejected or rerun review
+    # publishes no version.
     persisted_version_hash: str | None = None
     persisted_event_ids: list[str] = Field(default_factory=list)
+    # Set only when approving a pipeline_rerun review.
+    pipeline_run: dict[str, Any] | None = None
 
 
 class ReviewEditResponse(BaseModel):
+    """Answers 200 even when the edit fails validation.
+
+    A rejected edit is a result the caller has to render — which papers moved
+    where, and which rules the edit broke — not a transport error. `status` is
+    `"failed_validation"` in that case and `validation_summary` carries the
+    reasons; a new review is only created when the edit validates.
+    """
+
     workspace_id: str
     review_id: str
     new_review_id: str | None = None

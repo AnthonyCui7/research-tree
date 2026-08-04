@@ -1,0 +1,504 @@
+"""Tools the workspace agent may call.
+
+Two kinds:
+
+*Read tools* answer a question and hand the result straight back to the model.
+They are pure lookups — nothing here mutates a workspace.
+
+*Terminal tools* end the loop and route the graph to the node that does the
+work: proposing an edit, rerunning retrieval, or critiquing. They exist so the
+model chooses an action by name instead of a planner call guessing one, and so
+every write still lands in the deterministic
+propose -> validate -> pending review -> human approval path.
+
+Papers the agent discovers are recorded from Semantic Scholar's own payloads
+into `session_discovered_papers`. A proposal may cite those ids, and the
+metadata attached to them comes from the API rather than the model, so an
+invented paper cannot reach a workspace.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from research_tree.paths import semantic_scholar_cache_dir
+from research_tree.retrieval.semantic_scholar import SemanticScholarClient, s2_api_key
+from research_tree.workspace.repository import WorkspaceRepository
+
+
+# One agent turn may not spend more than this many Semantic Scholar requests.
+# S2 allows ~1 req/s across all endpoints, cumulative, so an unbounded loop
+# would starve pipeline builds running in the same process.
+MAX_SEMANTIC_SCHOLAR_CALLS_PER_RUN = 8
+MAX_SEARCH_RESULTS = 20
+# Tool results are replayed on every later turn, so a large one is paid for
+# repeatedly.
+MAX_TOOL_RESULT_CHARACTERS = 20_000
+WEB_SEARCH_ENV_FLAG = "RESEARCH_TREE_AGENT_WEB_SEARCH"
+
+
+@dataclass
+class ToolContext:
+    """Everything a tool handler is allowed to touch."""
+
+    workspace: Mapping[str, Any]
+    workspace_id: str
+    repository: WorkspaceRepository | None
+    repo_root: Path
+    chat_context: Mapping[str, Any] = field(default_factory=dict)
+    discovered_papers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    semantic_scholar_calls: int = 0
+    _semantic_scholar: SemanticScholarClient | None = None
+
+    def semantic_scholar(self) -> SemanticScholarClient:
+        if self._semantic_scholar is None:
+            # Shares the pipeline's cache directory, so a paper already fetched
+            # during a build costs no request here.
+            self._semantic_scholar = SemanticScholarClient(
+                cache_dir=semantic_scholar_cache_dir(),
+                api_key=s2_api_key(),
+            )
+        return self._semantic_scholar
+
+    def spend_semantic_scholar_call(self) -> bool:
+        if self.semantic_scholar_calls >= MAX_SEMANTIC_SCHOLAR_CALLS_PER_RUN:
+            return False
+        self.semantic_scholar_calls += 1
+        return True
+
+    def record_discovered_papers(self, payloads: list[Mapping[str, Any]]) -> None:
+        for payload in payloads:
+            paper_id = str(payload.get("paperId") or "")
+            if paper_id:
+                self.discovered_papers[paper_id] = dict(payload)
+
+
+@dataclass(frozen=True)
+class AgentTool:
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    handler: Callable[[ToolContext, dict[str, Any]], Any] | None = None
+    terminal: bool = False
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+        }
+
+
+def _object(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+# --- read tools -------------------------------------------------------------
+
+
+def _get_branch(context: ToolContext, arguments: dict[str, Any]) -> Any:
+    branch_id = str(arguments.get("branch_id") or "")
+    nodes = _tree_nodes(context.workspace)
+    branch = next(
+        (node for node in nodes if str(node.get("node_id")) == branch_id), None
+    )
+    if branch is None:
+        return {
+            "error": f"no branch with id {branch_id!r}",
+            "available_branch_ids": [str(node.get("node_id")) for node in nodes],
+        }
+    paths = [
+        path
+        for path in context.workspace.get("paper_paths") or []
+        if isinstance(path, Mapping) and str(path.get("branch_id")) == branch_id
+    ]
+    return {
+        "branch": branch,
+        "paper_paths": paths,
+        "paper_ids": [
+            str(step.get("paper_id"))
+            for path in paths
+            for step in path.get("paper_steps") or []
+            if isinstance(step, Mapping) and step.get("paper_id")
+        ],
+    }
+
+
+def _get_paper(context: ToolContext, arguments: dict[str, Any]) -> Any:
+    paper_id = str(arguments.get("paper_id") or "")
+    cards = context.workspace.get("paper_cards")
+    card = cards.get(paper_id) if isinstance(cards, Mapping) else None
+    if not isinstance(card, Mapping):
+        return {"error": f"no paper card with id {paper_id!r}"}
+    result: dict[str, Any] = {"paper_card": dict(card)}
+    if arguments.get("include_full_text") and context.repository is not None:
+        result["full_text"] = _paper_full_text(context, paper_id)
+    return result
+
+
+def _search_workspace(context: ToolContext, arguments: dict[str, Any]) -> Any:
+    query_tokens = _tokens(str(arguments.get("query") or ""))
+    if not query_tokens:
+        return {"error": "query is empty"}
+    matches: list[dict[str, Any]] = []
+    cards = context.workspace.get("paper_cards")
+    for paper_id, card in (cards if isinstance(cards, Mapping) else {}).items():
+        if not isinstance(card, Mapping):
+            continue
+        haystack = _tokens(f"{card.get('title') or ''} {card.get('tldr') or ''}")
+        overlap = len(query_tokens & haystack)
+        if overlap:
+            matches.append(
+                {
+                    "kind": "paper",
+                    "id": str(paper_id),
+                    "title": card.get("title"),
+                    "score": overlap,
+                }
+            )
+    for node in _tree_nodes(context.workspace):
+        haystack = _tokens(f"{node.get('label') or ''} {node.get('description') or ''}")
+        overlap = len(query_tokens & haystack)
+        if overlap:
+            matches.append(
+                {
+                    "kind": "branch",
+                    "id": str(node.get("node_id")),
+                    "title": node.get("label"),
+                    "score": overlap,
+                }
+            )
+    matches.sort(key=lambda item: (-int(item["score"]), str(item["id"])))
+    return {"matches": matches[:MAX_SEARCH_RESULTS]}
+
+
+def _get_paper_full_text(context: ToolContext, arguments: dict[str, Any]) -> Any:
+    paper_id = str(arguments.get("paper_id") or "")
+    if context.repository is None:
+        return {"error": "no workspace repository is available"}
+    return {"paper_id": paper_id, "full_text": _paper_full_text(context, paper_id)}
+
+
+def _search_semantic_scholar(context: ToolContext, arguments: dict[str, Any]) -> Any:
+    query = str(arguments.get("query") or "").strip()
+    if not query:
+        return {"error": "query is empty"}
+    if not context.spend_semantic_scholar_call():
+        return _budget_exhausted()
+    limit = _bounded_limit(arguments.get("limit"))
+    filters: dict[str, str] = {}
+    year_from = arguments.get("year_from")
+    if isinstance(year_from, int):
+        filters["publicationDateOrYear"] = f"{year_from}:"
+    papers = context.semantic_scholar().bulk_search(
+        query, max_papers=limit, filters=filters or None
+    )
+    # Record the provider's own payload, never anything the model wrote.
+    payloads = [paper.semantic_scholar_metadata for paper in papers]
+    context.record_discovered_papers(payloads)
+    return {
+        "results": [
+            {
+                "paper_id": payload.get("paperId"),
+                "title": payload.get("title"),
+                "year": payload.get("year"),
+                "venue": payload.get("venue"),
+                "citation_count": payload.get("citationCount"),
+                "abstract": _clip(payload.get("abstract"), 600),
+            }
+            for payload in payloads
+        ],
+        "note": (
+            "Cite these paper_id values in propose_workspace_edit.add_paper_ids "
+            "to add any of them to the workspace."
+        ),
+    }
+
+
+def _get_semantic_scholar_paper(context: ToolContext, arguments: dict[str, Any]) -> Any:
+    paper_id = str(arguments.get("paper_id") or "").strip()
+    if not paper_id:
+        return {"error": "paper_id is empty"}
+    if not context.spend_semantic_scholar_call():
+        return _budget_exhausted()
+    details = context.semantic_scholar().get_paper_details([paper_id], None)
+    if not details:
+        return {"error": f"Semantic Scholar has no record for {paper_id!r}"}
+    context.record_discovered_papers(list(details.values()))
+    return {"paper": next(iter(details.values()))}
+
+
+def _list_workspace_history(context: ToolContext, _arguments: dict[str, Any]) -> Any:
+    if context.repository is None:
+        return {"error": "no workspace repository is available"}
+    versions = context.repository.list_workspace_versions(context.workspace_id)
+    reviews = context.repository.list_workspace_reviews(context.workspace_id)
+    return {
+        "versions": [
+            {
+                "workspace_version_hash": version.get("workspace_version_hash"),
+                "reason": version.get("reason"),
+                "actor_type": version.get("actor_type"),
+                "created_at": version.get("created_at"),
+            }
+            for version in versions[:20]
+        ],
+        "reviews": [
+            {
+                "review_id": review.get("review_id"),
+                "status": review.get("status"),
+                "user_message": review.get("user_message"),
+            }
+            for review in reviews[:20]
+        ],
+    }
+
+
+READ_TOOLS: tuple[AgentTool, ...] = (
+    AgentTool(
+        name="get_branch",
+        description=(
+            "Read one branch of the workspace tree with its reading paths and "
+            "the paper ids on them."
+        ),
+        parameters=_object({"branch_id": {"type": "string"}}, ["branch_id"]),
+        handler=_get_branch,
+    ),
+    AgentTool(
+        name="get_paper",
+        description="Read one workspace paper card, optionally with its extracted full text.",
+        parameters=_object(
+            {
+                "paper_id": {"type": "string"},
+                "include_full_text": {"type": "boolean"},
+            },
+            ["paper_id"],
+        ),
+        handler=_get_paper,
+    ),
+    AgentTool(
+        name="search_workspace",
+        description="Find papers and branches in this workspace by keyword.",
+        parameters=_object({"query": {"type": "string"}}, ["query"]),
+        handler=_search_workspace,
+    ),
+    AgentTool(
+        name="get_paper_full_text",
+        description=(
+            "Read the extracted open-access full text of a workspace paper, "
+            "when one was downloaded."
+        ),
+        parameters=_object({"paper_id": {"type": "string"}}, ["paper_id"]),
+        handler=_get_paper_full_text,
+    ),
+    AgentTool(
+        name="search_semantic_scholar",
+        description=(
+            "Search Semantic Scholar for papers outside this workspace. Use it "
+            "to find work the workspace is missing. Requests are rate limited, "
+            "so search deliberately rather than repeatedly."
+        ),
+        parameters=_object(
+            {
+                "query": {"type": "string"},
+                "year_from": {"type": "integer"},
+                "limit": {"type": "integer"},
+            },
+            ["query"],
+        ),
+        handler=_search_semantic_scholar,
+    ),
+    AgentTool(
+        name="get_semantic_scholar_paper",
+        description=(
+            "Fetch one paper's authoritative metadata from Semantic Scholar by "
+            "its paper id, DOI, or arXiv id. Resolve a paper found through web "
+            "search this way before proposing it."
+        ),
+        parameters=_object({"paper_id": {"type": "string"}}, ["paper_id"]),
+        handler=_get_semantic_scholar_paper,
+    ),
+    AgentTool(
+        name="list_workspace_history",
+        description="List recent workspace versions and reviews.",
+        parameters=_object({}, []),
+        handler=_list_workspace_history,
+    ),
+)
+
+
+# --- terminal tools ---------------------------------------------------------
+
+TERMINAL_TOOLS: tuple[AgentTool, ...] = (
+    AgentTool(
+        name="propose_workspace_edit",
+        description=(
+            "Propose a structural change to the workspace: rename or split a "
+            "branch, move or remove papers, reorder a reading path, add papers "
+            "you found, or refresh similar-paper recommendations. The change is "
+            "validated and shown to the user for approval; it is never applied "
+            "directly. Describe the edit in one instruction."
+        ),
+        parameters=_object(
+            {
+                "instruction": {
+                    "type": "string",
+                    "description": "What to change, specifically.",
+                },
+                "edit_kind": {
+                    "type": "string",
+                    "enum": ["structural", "refresh_similar_papers"],
+                },
+                "target_branch_id": {"type": "string"},
+                "target_paper_ids": {"type": "array", "items": {"type": "string"}},
+                "add_paper_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Semantic Scholar ids returned by a search tool in this "
+                        "conversation. Ids from anywhere else are rejected."
+                    ),
+                },
+            },
+            ["instruction"],
+        ),
+        terminal=True,
+    ),
+    AgentTool(
+        name="propose_pipeline_rerun",
+        description=(
+            "Rerun part of the workspace build pipeline: 'candidates' to gather "
+            "papers again from Semantic Scholar, 'construct' to rebuild the tree "
+            "from existing candidates, 'hydrate' to refill paper metadata and "
+            "full text, or 'related' to recompute similar papers. This is "
+            "expensive and needs the user's approval."
+        ),
+        parameters=_object(
+            {
+                "stage": {
+                    "type": "string",
+                    "enum": ["candidates", "construct", "hydrate", "related"],
+                },
+                "reason": {"type": "string"},
+                "topic": {"type": "string"},
+                "max_candidates": {"type": "integer"},
+            },
+            ["stage", "reason"],
+        ),
+        terminal=True,
+    ),
+    AgentTool(
+        name="critique_workspace",
+        description=(
+            "Audit the workspace for weak branches, misplaced papers, missing "
+            "lines of work, and reading paths that are out of prerequisite order."
+        ),
+        parameters=_object({"focus": {"type": "string"}}, []),
+        terminal=True,
+    ),
+)
+
+ALL_TOOLS: dict[str, AgentTool] = {
+    tool.name: tool for tool in (*READ_TOOLS, *TERMINAL_TOOLS)
+}
+
+
+def tool_schemas(*, include_web_search: bool) -> list[dict[str, Any]]:
+    schemas = [tool.schema() for tool in ALL_TOOLS.values()]
+    if include_web_search:
+        # Executed by OpenAI, not by us: no key, no HTTP client, no SSRF surface.
+        schemas.append({"type": "web_search"})
+    return schemas
+
+
+def web_search_enabled() -> bool:
+    return os.environ.get(WEB_SEARCH_ENV_FLAG, "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+    }
+
+
+def run_tool(name: str, context: ToolContext, arguments: dict[str, Any]) -> str:
+    """Run one read tool and return its JSON result, bounded in size."""
+
+    tool = ALL_TOOLS.get(name)
+    if tool is None or tool.handler is None:
+        return _as_json({"error": f"unknown tool {name!r}"})
+    try:
+        result = tool.handler(context, arguments)
+    except Exception as error:  # Surfaced to the model, which can adapt.
+        result = {"error": f"{name} failed: {error}"}
+    return _as_json(result)
+
+
+def _as_json(result: Any) -> str:
+    text = json.dumps(result, ensure_ascii=True, default=str)
+    if len(text) <= MAX_TOOL_RESULT_CHARACTERS:
+        return text
+    return json.dumps(
+        {
+            "truncated": True,
+            "note": "Result was too large; ask for something narrower.",
+            "partial": text[:MAX_TOOL_RESULT_CHARACTERS],
+        }
+    )
+
+
+def _budget_exhausted() -> dict[str, Any]:
+    return {
+        "error": (
+            "Semantic Scholar request budget for this turn is spent. Answer "
+            "with what you already have."
+        )
+    }
+
+
+def _bounded_limit(value: Any) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return 10
+    return max(1, min(limit, MAX_SEARCH_RESULTS))
+
+
+def _tree_nodes(workspace: Mapping[str, Any]) -> list[dict[str, Any]]:
+    tree = workspace.get("tree")
+    nodes = tree.get("nodes") if isinstance(tree, Mapping) else None
+    return [node for node in nodes or [] if isinstance(node, Mapping)]
+
+
+def _paper_full_text(context: ToolContext, paper_id: str) -> str:
+    if context.repository is None:
+        return ""
+    try:
+        content = context.repository.get_paper_content(context.workspace_id, paper_id)
+    except FileNotFoundError:
+        return ""
+    return _clip(content.get("full_text") or content.get("text"), 40_000) or ""
+
+
+def _clip(value: Any, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value if len(value) <= limit else value[:limit] + "…"
+
+
+def _tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in "".join(
+            char.lower() if char.isalnum() else " " for char in value
+        ).split()
+        if len(token) > 2
+    }

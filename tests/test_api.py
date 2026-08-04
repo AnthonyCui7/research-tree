@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from research_tree.api.dependencies import (
 from research_tree.api.routes import agent, health, reviews, workspaces
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.agents.workspace.llm import DeterministicWorkspaceAgentLlmClient
-from research_tree.agents.workspace.models import AgentIntent, AgentNextAction
+from research_tree.agents.workspace.llm import AgentTurn, ToolCall
 from research_tree.services.agent import WorkspaceAgentService
 from research_tree.services.errors import InvalidPayloadError
 from research_tree.services.pipeline import WorkspacePipelineService
@@ -45,7 +46,13 @@ def test_topic_review_approval_is_single_use() -> None:
         "guidance": "",
         "existing_workspace_id": None,
     }
-    with patch("research_tree.services.topics._review_with_model", return_value=reviewed):
+    with (
+        # review() only reaches the model — and only mints a token — when a key
+        # is set. Without this the test passes locally off a loaded .env and
+        # fails in CI, which runs keyless.
+        patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
+        patch("research_tree.services.topics._review_with_model", return_value=reviewed),
+    ):
         result = service.review("prompting")
 
     token = result["topic_review_token"]
@@ -302,18 +309,32 @@ def test_agent_request_passes_bounded_conversation_history() -> None:
     ]
 
 
-def test_remove_paper_request_bypasses_agent_graph_and_persists_review() -> None:
+def test_remove_paper_request_persists_a_review_without_calling_the_model() -> None:
+    """Paper removal is deterministic, but it still goes through the graph.
+
+    It used to short-circuit before intent classification on any message
+    containing "remove", which turned questions like "why would I remove the
+    DPR paper?" into deletion proposals. The construction node still recognizes
+    the removal and skips the constructor, so no model writes the patch.
+    """
+
     repository = LocalJsonWorkspaceRepository(_temp_dir())
     _seed_current(repository)
 
-    def fail_graph_factory(_repository: Any) -> Any:
-        raise AssertionError("simple paper removal should not run the agent graph")
+    def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
+        return build_workspace_agent_graph(
+            llm_client=DeterministicWorkspaceAgentLlmClient(
+                tool_turns=[_edit_tool_turn("Remove Core Method paper.")]
+            ),
+            workspace_constructor=_unexpected_constructor,
+            workspace_repository=active_repository,
+        )
 
     app = create_app()
     app.dependency_overrides[get_repository] = lambda: repository
     app.dependency_overrides[get_workspace_agent_service] = lambda: WorkspaceAgentService(
         repository,
-        graph_factory=fail_graph_factory,
+        graph_factory=graph_factory,
     )
     client = TestClient(app)
 
@@ -332,13 +353,14 @@ def test_remove_paper_request_bypasses_agent_graph_and_persists_review() -> None
     ]
     review = repository.get_pending_review("workspace-1", payload["review_id"])
     assert "p1" not in review["proposed_workspace"]["paper_cards"]
-    assert review["structured_patch_operations"] == [
-        {"op": "remove", "entity_type": "paper_placement", "paper_id": "p1"}
-    ]
     [placement] = review["proposed_workspace"]["removed_paper_placements"]
     assert placement["paper_id"] == "p1"
     assert placement["paper_card"]["title"] == "Core Method"
     assert placement["branch_placements"][0]["branch_id"] == "branch-main"
+
+
+def _unexpected_constructor(**_kwargs: Any) -> dict[str, Any]:
+    raise AssertionError("deterministic paper removal must not call the constructor")
 
 
 def test_noop_workspace_modification_does_not_persist_review() -> None:
@@ -348,20 +370,7 @@ def test_noop_workspace_modification_does_not_persist_review() -> None:
     def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
             llm_client=DeterministicWorkspaceAgentLlmClient(
-                structured_outputs=[
-                    AgentIntent(
-                        intent_type="modify_workspace",
-                        confidence=0.9,
-                        requires_workspace_modification=True,
-                        requires_more_papers=False,
-                        reason="test no-op",
-                    ),
-                    AgentNextAction(
-                        action_type="construct_workspace_modification",
-                        reason="test no-op",
-                        modification_instruction="No matching paper exists.",
-                    ),
-                ]
+                tool_turns=[_edit_tool_turn("No matching paper exists.")]
             ),
             workspace_constructor=lambda **kwargs: kwargs["base_workspace"],
             workspace_repository=active_repository,
@@ -554,6 +563,11 @@ def test_guardrail_rejection_returns_failed_guardrail_and_skips_retrieval_runner
 
     def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
+            llm_client=DeterministicWorkspaceAgentLlmClient(
+                tool_turns=[
+                    _rerun_tool_turn("Find more papers for this topic."),
+                ]
+            ),
             workspace_repository=active_repository,
             retrieval_runner=lambda config: retrieval_calls.append(config) or {},
         )
@@ -583,20 +597,7 @@ def test_invalid_workspace_proposal_returns_failed_validation_status() -> None:
     def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
             llm_client=DeterministicWorkspaceAgentLlmClient(
-                structured_outputs=[
-                    AgentIntent(
-                        intent_type="modify_workspace",
-                        confidence=0.9,
-                        requires_workspace_modification=True,
-                        requires_more_papers=False,
-                        reason="test invalid proposal",
-                    ),
-                    AgentNextAction(
-                        action_type="construct_workspace_modification",
-                        reason="test invalid proposal",
-                        modification_instruction="Return invalid workspace.",
-                    ),
-                ]
+                tool_turns=[_edit_tool_turn("Return invalid workspace.")]
             ),
             workspace_constructor=lambda **_kwargs: {"schema_version": "bad"},
             workspace_repository=active_repository,
@@ -650,22 +651,11 @@ def test_failed_pipeline_does_not_publish_a_partial_workspace() -> None:
         dispatch=lambda callback, _name: callback(),
     )
 
-    with (
-        patch(
-            "research_tree.services.pipeline.TopicReviewService.review",
-            return_value={
-                "normalized_topic": "Failure-Safe RAG",
-                "is_research_topic": True,
-                "guidance": "",
-                "existing_workspace": None,
-            },
-        ),
-        patch(
-            "research_tree.services.pipeline.run_workspace_candidate_preparation_pipeline",
-            side_effect=RuntimeError("Semantic Scholar is unavailable"),
-        ),
+    with patch(
+        "research_tree.services.pipeline.run_workspace_candidate_preparation_pipeline",
+        side_effect=RuntimeError("Semantic Scholar is unavailable"),
     ):
-        run = service.start_new_workspace(topic="Failure-Safe RAG")
+        run = _start_approved(service, repository, "Failure-Safe RAG")
 
     saved_run = repository.get_pipeline_run(run["run_id"])
     assert saved_run["status"] == "failed"
@@ -683,25 +673,11 @@ def test_workspace_pipeline_always_uses_luna_for_construction() -> None:
         dispatch=lambda callback, _name: callback(),
     )
 
-    with (
-        patch(
-            "research_tree.services.pipeline.TopicReviewService.review",
-            return_value={
-                "normalized_topic": "Model-Locked RAG",
-                "is_research_topic": True,
-                "guidance": "",
-                "existing_workspace": None,
-            },
-        ),
-        patch(
-            "research_tree.services.pipeline.run_workspace_candidate_preparation_pipeline",
-            side_effect=RuntimeError("stop after run reservation"),
-        ),
+    with patch(
+        "research_tree.services.pipeline.run_workspace_candidate_preparation_pipeline",
+        side_effect=RuntimeError("stop after run reservation"),
     ):
-        run = service.start_new_workspace(
-            topic="Model-Locked RAG",
-            model="gpt-5.6-terra",
-        )
+        run = _start_approved(service, repository, "Model-Locked RAG")
 
     saved_run = repository.get_pipeline_run(run["run_id"])
     assert saved_run["model"] == "gpt-5.6-luna"
@@ -710,8 +686,10 @@ def test_workspace_pipeline_always_uses_luna_for_construction() -> None:
 def test_failed_partial_rerun_keeps_source_artifacts_unchanged() -> None:
     repository = LocalJsonWorkspaceRepository(_temp_dir())
     current_hash = _seed_current(repository)
+    # Artifact paths are confined to the data root, so the fixture lives there.
     repo_root = _temp_dir()
-    source_dir = repo_root / "source-run"
+    data_dir = _temp_dir()
+    source_dir = data_dir / "source-run"
     source_dir.mkdir()
     candidate_json = source_dir / "llm_candidate_papers.json"
     candidate_json.write_text("{}", encoding="utf-8")
@@ -732,9 +710,12 @@ def test_failed_partial_rerun_keeps_source_artifacts_unchanged() -> None:
         dispatch=lambda callback, _name: callback(),
     )
 
-    with patch(
-        "research_tree.services.pipeline.construct_workspace_from_candidates",
-        side_effect=RuntimeError("invalid model response"),
+    with (
+        patch.dict(os.environ, {"RESEARCH_TREE_DATA_DIR": str(data_dir)}),
+        patch(
+            "research_tree.services.pipeline.construct_workspace_from_candidates",
+            side_effect=RuntimeError("invalid model response"),
+        ),
     ):
         run = service.rerun(
             "workspace-1",
@@ -823,10 +804,79 @@ def _client_with_repository() -> tuple[TestClient, LocalJsonWorkspaceRepository]
     return TestClient(app), repository
 
 
+def _edit_tool_turn(instruction: str) -> AgentTurn:
+    """One model turn that asks for a workspace edit."""
+
+    arguments = {"instruction": instruction}
+    return AgentTurn(
+        output_items=[
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "propose_workspace_edit",
+                "arguments": json.dumps(arguments),
+            }
+        ],
+        tool_calls=[
+            ToolCall(
+                call_id="call_1", name="propose_workspace_edit", arguments=arguments
+            )
+        ],
+        output_text=None,
+    )
+
+
+def _rerun_tool_turn(reason: str) -> AgentTurn:
+    """One model turn that asks to rerun the candidates stage."""
+
+    arguments = {"stage": "candidates", "reason": reason}
+    return AgentTurn(
+        output_items=[
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "propose_pipeline_rerun",
+                "arguments": json.dumps(arguments),
+            }
+        ],
+        tool_calls=[
+            ToolCall(
+                call_id="call_1", name="propose_pipeline_rerun", arguments=arguments
+            )
+        ],
+        output_text=None,
+    )
+
+
 def _temp_dir() -> Path:
     import tempfile
 
     return Path(tempfile.mkdtemp())
+
+
+def _start_approved(
+    service: WorkspacePipelineService,
+    repository: LocalJsonWorkspaceRepository,
+    topic: str,
+) -> dict[str, Any]:
+    """Start a build through the real topic-approval gate, model stubbed out."""
+
+    reviewed = {
+        "normalized_topic": topic,
+        "is_research_topic": True,
+        "guidance": "",
+        "existing_workspace_id": None,
+    }
+    with (
+        # review() only reaches the model (and issues a token) when a key is set.
+        patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
+        patch("research_tree.services.topics._review_with_model", return_value=reviewed),
+    ):
+        review = TopicReviewService(repository).review(topic)
+    return service.start_approved_new_workspace(
+        topic=topic,
+        topic_review_token=str(review["topic_review_token"]),
+    )
 
 
 def _seed_current(repository: LocalJsonWorkspaceRepository) -> str:

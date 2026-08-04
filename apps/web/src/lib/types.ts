@@ -2,7 +2,6 @@ export type WorkspaceDocument = {
   schema_version: string;
   workspace_id: string;
   current_workspace_version_hash?: string;
-  workspace_versions?: WorkspaceVersion[];
   topic: string;
   title: string;
   scope: Record<string, unknown>;
@@ -207,15 +206,11 @@ export type TreeViewModel = {
 export type TreeNodeViewModel = RootTreeNode | BranchTreeNode | PaperTreeNode;
 
 export type PaperDetails = {
-  paperId: string;
   title: string;
   authors: string[];
   year: number | null;
   publicationDate: string | null;
   venue: string;
-  primaryLink: string | null;
-  doi: string | null;
-  arxivId: string | null;
   arxivLink: string | null;
   semanticScholarLink: string | null;
   citationCount: number | null;

@@ -151,7 +151,8 @@ def judge_flagged_papers(
     The token match cannot tell a founding paper that predates the topic's
     vocabulary from an optimizer everyone cites; an editor with field knowledge
     can, from the title and abstract alone. One batched call judges every
-    paper. `context_titles` — the topic's authority-ranked core — anchors an
+    paper that has a Semantic Scholar id to be matched back by.
+    `context_titles` — the topic's authority-ranked core — anchors an
     ambiguous topic name: without it, verdicts on adjacent-field papers that
     share the topic's vocabulary (promptable segmentation under "Prompting")
     flip between runs. Returns None when no verdict could be obtained, so
@@ -163,14 +164,20 @@ def judge_flagged_papers(
     key = api_key or os.environ.get("OPENAI_API_KEY")
     if not key:
         return None
+    # Callers match verdicts back by Semantic Scholar id, so a paper without
+    # one is unmatchable however the judge rules: it would only spend prompt
+    # budget and add a verdict that can never be applied.
     listing = [
         {
-            "id": str(paper.semantic_scholar_id or index),
+            "id": str(paper.semantic_scholar_id),
             "title": paper.title,
             "abstract": (paper.abstract or "")[:FLAG_JUDGE_ABSTRACT_MAX_CHARS],
         }
-        for index, paper in enumerate(papers)
+        for paper in papers
+        if paper.semantic_scholar_id
     ]
+    if not listing:
+        return set()
     try:
         raw_response = call_responses_api(
             _flag_judge_request_body(

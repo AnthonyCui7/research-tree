@@ -35,7 +35,8 @@ export function useWorkspaceCollection(): WorkspaceCollectionState & {
     } catch (error) {
       if (requestId !== latestRequestRef.current) return;
       // A failed refresh must not discard workspaces already on screen; the
-      // canvas stays usable and the error is reported alongside it.
+      // canvas stays usable and AppShell reports the error in a dismissible
+      // strip over it.
       setState((current) => ({
         ...current,
         status: current.workspaces.length ? "ready" : "error",

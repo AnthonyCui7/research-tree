@@ -13,11 +13,11 @@ from research_tree.services.errors import (
 )
 from research_tree.services.validation import (
     as_mapping,
-    operation_target_ids,
     validate_resource_id,
 )
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.diff import derive_operations_and_diff_summary
+from research_tree.workspace.operations import operation_target_ids
 from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.validators import (
     run_workspace_validator,
@@ -26,8 +26,16 @@ from research_tree.workspace.validators import (
 
 
 class WorkspaceReviewService:
-    def __init__(self, repository: WorkspaceRepository) -> None:
+    def __init__(
+        self,
+        repository: WorkspaceRepository,
+        *,
+        pipeline_service: Any | None = None,
+    ) -> None:
         self.repository = repository
+        # Approving a pipeline_rerun review starts a run. Injected so review
+        # logic stays testable without a pipeline.
+        self.pipeline_service = pipeline_service
 
     def get_review(self, workspace_id: str, review_id: str) -> dict[str, Any]:
         safe_workspace_id, safe_review_id = self._safe_ids(workspace_id, review_id)
@@ -49,6 +57,15 @@ class WorkspaceReviewService:
     ) -> dict[str, Any]:
         safe_workspace_id, safe_review_id = self._safe_ids(workspace_id, review_id)
         self._load_current(safe_workspace_id)
+        review = self._load_review(safe_workspace_id, safe_review_id)
+        if str(review.get("review_type") or "workspace_patch") == "pipeline_rerun":
+            return self._approve_pipeline_rerun(
+                safe_workspace_id,
+                safe_review_id,
+                review=review,
+                reason=reason,
+                approval_decision=approval_decision,
+            )
         try:
             result = self.repository.approve_review_once(
                 safe_workspace_id,
@@ -230,6 +247,80 @@ class WorkspaceReviewService:
             "persisted_event_ids": persisted_event_ids,
         }
 
+    def _approve_pipeline_rerun(
+        self,
+        workspace_id: str,
+        review_id: str,
+        *,
+        review: dict[str, Any],
+        reason: str | None,
+        approval_decision: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        status = str(review.get("status") or "")
+        if status == "approved_applied":
+            return self._rerun_action_result(workspace_id, review_id, idempotent=True)
+        if status != "pending":
+            raise ReviewConflictError(f"cannot approve review with status {status!r}")
+        if self.pipeline_service is None:
+            raise WorkspaceServiceError("no pipeline service is configured.")
+
+        rerun = review.get("pipeline_rerun")
+        stage = str((rerun or {}).get("stage") or "candidates")
+        run = self.pipeline_service.rerun(workspace_id, start_stage=stage)
+        event_id = self.repository.append_workspace_event(
+            workspace_id,
+            actor="user",
+            actor_type="user",
+            actor_id="local_user",
+            event_type="pipeline_rerun_approved",
+            target_ids={},
+            before_hash=review.get("base_workspace_version_hash"),
+            after_hash=None,
+            payload={
+                "review_id": review_id,
+                "stage": stage,
+                "run_id": run.get("run_id"),
+                "reason": reason or "user approved a pipeline rerun",
+                "approval_decision": approval_decision or {},
+            },
+        )
+        self.repository.mark_review_approved(
+            workspace_id,
+            review_id,
+            applied_workspace_version_hash="",
+            event_id=event_id,
+            actor_type="user",
+            actor_id="local_user",
+        )
+        return self._rerun_action_result(
+            workspace_id,
+            review_id,
+            idempotent=False,
+            event_ids=[event_id],
+            pipeline_run=run,
+        )
+
+    def _rerun_action_result(
+        self,
+        workspace_id: str,
+        review_id: str,
+        *,
+        idempotent: bool,
+        event_ids: list[str] | None = None,
+        pipeline_run: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        current = self._load_current(workspace_id)
+        return {
+            "workspace_id": workspace_id,
+            "review_id": review_id,
+            "status": "approved_applied",
+            "idempotent": idempotent,
+            "workspace_version_hash": workspace_version_hash(current),
+            "persisted_version_hash": None,
+            "persisted_event_ids": event_ids or [],
+            "pipeline_run": pipeline_run,
+        }
+
     def _safe_ids(self, workspace_id: str, review_id: str) -> tuple[str, str]:
         return (
             validate_resource_id(workspace_id, field_name="workspace_id"),
@@ -329,11 +420,8 @@ def _append_pending_review_run_event(
     *,
     agent_run_id: str,
     new_review_id: str,
-) -> str | None:
-    append_agent_run_event = getattr(repository, "append_agent_run_event", None)
-    if append_agent_run_event is None:
-        return None
-    return append_agent_run_event(
+) -> str:
+    return repository.append_agent_run_event(
         workspace_id,
         agent_run_id=agent_run_id,
         status="pending_review",

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from research_tree.retrieval.env import load_dotenv_file
+from research_tree.paths import semantic_scholar_cache_dir
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
     SemanticScholarClient,
@@ -36,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     target_count = args.k * args.bulk_multiplier
     warnings: list[str] = []
     client = SemanticScholarClient(
-        cache_dir=REPO_ROOT / "experiments" / "cache" / "semantic_scholar",
+        cache_dir=semantic_scholar_cache_dir(),
         api_key=os.environ.get("S2_API_KEY") or os.environ.get("SEMANTIC_SCHOLAR_API_KEY"),
         request_delay_seconds=args.request_delay_seconds,
         refresh_cache=args.refresh_cache,

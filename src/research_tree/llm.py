@@ -21,6 +21,14 @@ logger = logging.getLogger("uvicorn.error")
 DEFAULT_MODEL = "gpt-5.6-luna"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
+# Rate limits and gateway errors are routine on a shared key; only these are
+# worth a second attempt, since a 4xx will fail identically however long we
+# wait. The tiers cover a tokens-per-minute limit, which is what a large
+# construction call actually trips: the observed advice is "try again in ~10s",
+# and the last tier outlasts that even when several calls are queued behind it.
+RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+RETRY_BACKOFF_SECONDS = (2.0, 8.0, 20.0)
+
 
 class LlmRequestError(RuntimeError):
     pass
@@ -45,16 +53,28 @@ def call_responses_api(
     """
 
     started_at = time.monotonic()
-    try:
-        raw_response = _post(body, api_key=api_key, timeout_seconds=timeout_seconds)
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise LlmRequestError(f"OpenAI {label} call failed: {detail}") from error
-    except urllib.error.URLError as error:
-        raise LlmRequestError(f"OpenAI {label} call failed: {error}") from error
-    except (TimeoutError, socket.timeout) as error:
-        message = f"OpenAI {label} call timed out after {timeout_seconds:g}s."
-        raise LlmRequestError(f"{message}{timeout_hint}") from error
+    for attempt in range(len(RETRY_BACKOFF_SECONDS) + 1):
+        try:
+            raw_response = _post(body, api_key=api_key, timeout_seconds=timeout_seconds)
+            break
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            if error.code in RETRYABLE_HTTP_STATUS and attempt < len(RETRY_BACKOFF_SECONDS):
+                delay = _retry_after_seconds(error) or RETRY_BACKOFF_SECONDS[attempt]
+                logger.warning(
+                    "OpenAI %s call got HTTP %s; retrying in %.0fs",
+                    label,
+                    error.code,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            raise LlmRequestError(f"OpenAI {label} call failed: {detail}") from error
+        except urllib.error.URLError as error:
+            raise LlmRequestError(f"OpenAI {label} call failed: {error}") from error
+        except (TimeoutError, socket.timeout) as error:
+            message = f"OpenAI {label} call timed out after {timeout_seconds:g}s."
+            raise LlmRequestError(f"{message}{timeout_hint}") from error
 
     log_llm_usage(
         label=label,
@@ -63,6 +83,14 @@ def call_responses_api(
         elapsed_seconds=time.monotonic() - started_at,
     )
     return raw_response
+
+
+def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
+    raw_value = error.headers.get("Retry-After") if error.headers else None
+    try:
+        return max(float(str(raw_value)), 0.0)
+    except (TypeError, ValueError):
+        return None
 
 
 def log_llm_usage(

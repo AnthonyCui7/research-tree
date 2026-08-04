@@ -118,6 +118,22 @@ class FakeSemanticScholar:
         }
 
 
+class _FakeHttpResponse:
+    """Just enough of an `http.client.HTTPResponse` for `urlopen` to be faked."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeHttpResponse":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+
 class CandidatePreparationTest(unittest.TestCase):
     def test_ranking_query_and_workspace_use_input_topic(self) -> None:
         self.assertEqual(ranking_query("  retrieval   augmented generation "), "retrieval augmented generation")
@@ -338,6 +354,111 @@ class CandidatePreparationTest(unittest.TestCase):
 
         self.assertEqual(select_root_set(pool, size=10), ["known"])
 
+    def test_root_set_reserves_slots_for_surveys_the_blend_missed(self) -> None:
+        """Surveys need fetched bibliographies or their hub score is fake.
+
+        Only root-set papers have their references fetched, so only they can
+        have a nonzero hub score — and the survey block is ranked by hub score.
+        Measured on the live prompting run: 770 of 787 surveys scored exactly
+        0.0 and the block silently fell back to raw citation count.
+        """
+
+        surveys = [
+            _paper(f"Survey {index}", paper_id=f"survey-{index}",
+                   citations=500 - index, days_old=900, is_survey=True)
+            for index in range(4)
+        ]
+        others = [
+            _paper(f"Paper {index}", paper_id=f"paper-{index}",
+                   citations=100_000 - index, days_old=900)
+            for index in range(20)
+        ]
+
+        selected = select_root_set([*others, *surveys], size=10, survey_reserve=3)
+
+        self.assertEqual(len(selected), 10)
+        # The blend alone would have taken ten non-survey papers: every survey
+        # is out-cited by every other paper in the pool.
+        self.assertEqual(
+            select_root_set([*others, *surveys], size=10, survey_reserve=0),
+            [f"paper-{index}" for index in range(10)],
+        )
+        self.assertEqual(selected[-3:], ["survey-0", "survey-1", "survey-2"])
+        self.assertEqual(selected[:7], [f"paper-{index}" for index in range(7)])
+
+    def test_root_set_reserve_only_admits_surveys_about_the_topic(self) -> None:
+        """A broad boolean-OR pool is full of other fields' surveys.
+
+        Ungated, the reserve fills with whatever is most cited anywhere —
+        measured on the saved Prompting run, that meant ColorBrewer and remote
+        sensing for precision agriculture. An off-topic survey is also a
+        near-inert hub, since edges leaving the pool are dropped.
+        """
+
+        on_topic = _paper(
+            "A Survey on Chain of Thought Prompting",
+            paper_id="survey-on-topic",
+            citations=400,
+            days_old=900,
+            is_survey=True,
+        )
+        off_topic = _paper(
+            "Remote Sensing in Precision Agriculture: A Review",
+            paper_id="survey-off-topic",
+            citations=90_000,
+            days_old=900,
+            is_survey=True,
+        )
+        others = [
+            _paper(f"Paper {index}", paper_id=f"paper-{index}",
+                   citations=100_000 - index, days_old=900)
+            for index in range(20)
+        ]
+        pool = [*others, off_topic, on_topic]
+
+        selected = select_root_set(
+            pool, size=10, survey_reserve=2, topic_phrases=["chain of thought prompting"]
+        )
+
+        self.assertIn("survey-on-topic", selected)
+        self.assertNotIn("survey-off-topic", selected)
+        # The slot the off-topic survey did not get returns to the blend.
+        self.assertEqual(len(selected), 10)
+
+    def test_root_set_reserve_falls_back_to_the_blend_when_surveys_run_out(self) -> None:
+        pool = [
+            _paper(f"Paper {index}", paper_id=f"paper-{index}",
+                   citations=100 - index, days_old=900)
+            for index in range(10)
+        ] + [_paper("Only Survey", paper_id="survey", citations=1, days_old=900, is_survey=True)]
+
+        selected = select_root_set(pool, size=6, survey_reserve=3)
+
+        self.assertEqual(len(selected), 6)
+        self.assertIn("survey", selected)
+        # Two unused survey slots go back to the blend rather than shrinking
+        # the root set.
+        self.assertEqual(len(set(selected)), 6)
+
+    def test_root_set_orderings_break_ties_explicitly(self) -> None:
+        """Equal citation counts must not resolve by S2 search-result order."""
+
+        first = _paper("Zebra Paper", paper_id="zebra", citations=100, days_old=400)
+        second = _paper("Alpha Paper", paper_id="alpha", citations=100, days_old=400)
+
+        forward = select_root_set([first, second], size=2, survey_reserve=0)
+        reversed_pool = select_root_set([second, first], size=2, survey_reserve=0)
+
+        self.assertEqual(forward, reversed_pool)
+        self.assertEqual(forward[0], "alpha")
+
+    def test_recency_window_survives_a_leap_day(self) -> None:
+        from research_tree.retrieval.candidate_preparation import _years_before
+
+        self.assertEqual(_years_before(date(2028, 2, 29), 3), date(2025, 2, 28))
+        self.assertEqual(_years_before(date(2028, 2, 29), 4), date(2024, 2, 29))
+        self.assertEqual(_years_before(date(2026, 8, 3), 3), date(2023, 8, 3))
+
     def test_next_run_output_dir_uses_sequential_run_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -367,6 +488,8 @@ class CandidatePreparationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = PipelineConfig(
                 repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache",
                 topic="retrieval augmented generation",
                 k=3,
                 survey_baseline_count=1,
@@ -475,6 +598,8 @@ class CandidatePreparationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = PipelineConfig(
                 repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache",
                 topic="retrieval augmented generation",
                 k=3,
                 survey_baseline_count=0,
@@ -489,7 +614,11 @@ class CandidatePreparationTest(unittest.TestCase):
                     "research_tree.retrieval.candidate_preparation._semantic_scholar_client",
                     return_value=fake,
                 ),
-                # The model judge agrees with the token flag for this run.
+                # The judge runs (a key is present) and agrees with the token
+                # flag. Patching the key explicitly keeps the test off the
+                # ambient environment: without one the run warns instead and
+                # never reaches the patched judge at all.
+                patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}),
                 patch(
                     "research_tree.retrieval.candidate_preparation.judge_flagged_papers",
                     return_value=set(),
@@ -537,6 +666,8 @@ class CandidatePreparationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = PipelineConfig(
                 repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache",
                 topic="retrieval augmented generation",
                 k=3,
                 survey_baseline_count=0,
@@ -584,6 +715,95 @@ class CandidatePreparationTest(unittest.TestCase):
             judge_flagged_papers("topic", ["topic"], []),
             set(),
         )
+
+    def test_flag_judge_skips_papers_it_could_never_match_a_verdict_to(self) -> None:
+        """Callers match verdicts back by S2 id, so a paper without one is dead weight.
+
+        The old index fallback gave such papers a positional id the caller's
+        `str(paper.semantic_scholar_id)` lookup ("None") could never match:
+        they spent prompt budget and could only mislead the judge.
+        """
+
+        with_id = _paper("Judged Paper", paper_id="real", citations=10, days_old=100)
+        without_id = Paper(title="Unmatchable Paper", citation_count=10)
+
+        with patch("research_tree.retrieval.query_plan.call_responses_api") as call:
+            call.return_value = {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": json.dumps(
+                                {"verdicts": [{"id": "real", "belongs": True}]}
+                            )},
+                        ],
+                    }
+                ]
+            }
+            belongs = judge_flagged_papers(
+                "prompting", ["prompting"], [with_id, without_id], api_key="test-key"
+            )
+
+        self.assertEqual(belongs, {"real"})
+        listing = json.loads(
+            call.call_args.args[0]["input"].rsplit("Papers:\n", 1)[1]
+        )
+        self.assertEqual([item["id"] for item in listing], ["real"])
+
+    def test_flag_judge_makes_no_call_when_nothing_can_be_matched(self) -> None:
+        with patch("research_tree.retrieval.query_plan.call_responses_api") as call:
+            belongs = judge_flagged_papers(
+                "prompting", ["prompting"], [Paper(title="No Id")], api_key="test-key"
+            )
+
+        self.assertEqual(belongs, set())
+        call.assert_not_called()
+
+    def test_json_client_retries_the_5xx_semantic_scholar_sheds_load_with(self) -> None:
+        """S2 answers 5xx in the same load-shedding windows the ladder exists for.
+
+        Failing the whole run on the first 503 throws away four retries that
+        would have succeeded. Other 4xx are bad requests and still raise at
+        once.
+        """
+
+        from email.message import Message
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        from research_tree.retrieval.cache import CachedJsonClient, JsonRequestError
+
+        def error(code: int) -> HTTPError:
+            # S2 never sends Retry-After, so the ladder's own backoff applies.
+            return HTTPError("https://api.semanticscholar.org/x", code, "boom",
+                             Message(), BytesIO(b"{}"))
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = CachedJsonClient(
+                cache_dir=Path(directory), request_delay_seconds=0.0, max_retries=2
+            )
+            attempts: list[int] = []
+
+            def flaky(*_args: object, **_kwargs: object) -> object:
+                attempts.append(1)
+                if len(attempts) < 3:
+                    raise error(503)
+                return _FakeHttpResponse(b'{"ok": true}')
+
+            with (
+                patch("urllib.request.urlopen", side_effect=flaky),
+                patch("time.sleep"),
+            ):
+                self.assertEqual(client.get_json("https://s2/x"), {"ok": True})
+            self.assertEqual(len(attempts), 3)
+
+            with (
+                patch("urllib.request.urlopen", side_effect=error(404)),
+                patch("time.sleep") as slept,
+            ):
+                with self.assertRaises(JsonRequestError):
+                    client.get_json("https://s2/y")
+            slept.assert_not_called()
 
     def test_graph_blind_cutoff_is_measured_not_assumed(self) -> None:
         """The frontier band is the years the graph cannot rank, per run.
@@ -644,6 +864,8 @@ class CandidatePreparationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = PipelineConfig(
                 repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache",
                 topic="prompting",
                 k=2,
                 survey_baseline_count=0,
@@ -684,7 +906,12 @@ class CandidatePreparationTest(unittest.TestCase):
         self.assertEqual([paper["paper_id"] for paper in papers[:2]], ["old-3", "old-2"])
 
     def test_frontier_picks_require_the_judge(self) -> None:
-        """Without a judge the velocity slice stays out: it is mostly celebrity papers."""
+        """Without a judge the velocity slice stays out — and the run says so.
+
+        Losing the judge silently loses the whole frontier mechanism *and*
+        every flag adjudication, which is a materially different artifact. With
+        no warning the run still reported retrieval_complete: true.
+        """
 
         pool = [
             _paper("Old Canon One", paper_id="old-1", citations=900, days_old=2400),
@@ -697,6 +924,8 @@ class CandidatePreparationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = PipelineConfig(
                 repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache",
                 topic="prompting",
                 k=2,
                 survey_baseline_count=0,
@@ -719,6 +948,10 @@ class CandidatePreparationTest(unittest.TestCase):
         self.assertFalse(
             any(paper["frontier_pick"] for paper in output["non_survey_papers"])
         )
+        self.assertTrue(
+            any("Flag adjudication was skipped" in w for w in output["warnings"])
+        )
+        self.assertFalse(output["retrieval_complete"])
 
     def test_frontier_pick_is_not_duplicated_when_already_selected(self) -> None:
         """A recent paper that earned a top-k slot by authority is not re-added."""
@@ -784,6 +1017,8 @@ class CandidatePreparationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = PipelineConfig(
                 repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache",
                 topic="prompting",
                 k=2,
                 survey_baseline_count=1,
@@ -804,11 +1039,173 @@ class CandidatePreparationTest(unittest.TestCase):
 
         self.assertIn("no reference lists", str(raised.exception))
 
+    def test_pipeline_fails_when_most_bibliographies_are_missing(self) -> None:
+        """Partial hydration loss warns; losing the majority must fail the run.
+
+        The client already retried the missing ids, and a live run shipped fine
+        with 48 of 250 bibliographies missing — that is documented degradation.
+        Past half, the hub basis is a minority of the root set and the ranking
+        is no longer the thing the artifact claims it is.
+        """
+
+        pool = [
+            _paper(f"Paper {index}", paper_id=f"paper-{index}",
+                   citations=100 - index, days_old=400)
+            for index in range(10)
+        ]
+        # Four of ten root-set papers hydrate; six are missing.
+        fake = FakeSemanticScholar(
+            pool, references={f"paper-{index}": ["classic"] for index in range(4)}
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = PipelineConfig(
+                repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache", topic="prompting", k=3,
+                survey_baseline_count=0, verbose=False,
+            )
+            with (
+                patch(
+                    "research_tree.retrieval.candidate_preparation.plan_search_queries",
+                    return_value=fallback_query_plan("prompting"),
+                ),
+                patch(
+                    "research_tree.retrieval.candidate_preparation._semantic_scholar_client",
+                    return_value=fake,
+                ),
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    run_workspace_candidate_preparation_pipeline(config)
+
+        self.assertIn("4 of 10", str(raised.exception))
+        self.assertIn("hub basis", str(raised.exception))
+
+    def test_pipeline_continues_when_a_minority_of_bibliographies_are_missing(self) -> None:
+        pool = [
+            _paper(f"Paper {index}", paper_id=f"paper-{index}",
+                   citations=100 - index, days_old=400)
+            for index in range(10)
+        ]
+        fake = FakeSemanticScholar(
+            pool, references={f"paper-{index}": ["paper-9"] for index in range(6)}
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = PipelineConfig(
+                repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache", topic="prompting", k=3,
+                survey_baseline_count=0, verbose=False,
+            )
+            with (
+                patch(
+                    "research_tree.retrieval.candidate_preparation.plan_search_queries",
+                    return_value=fallback_query_plan("prompting"),
+                ),
+                patch(
+                    "research_tree.retrieval.candidate_preparation._semantic_scholar_client",
+                    return_value=fake,
+                ),
+            ):
+                output = run_workspace_candidate_preparation_pipeline(config)
+
+        self.assertEqual(output["non_survey_papers"][0]["paper_id"], "paper-9")
+
+    def test_rank_authorities_warns_when_hits_stops_at_the_cap(self) -> None:
+        """A stopped-early power iteration is not the converged ordering."""
+
+        from research_tree.retrieval.candidate_preparation import rank_authorities
+
+        references = {
+            "survey": ["classic", "minor", "recent"],
+            "paper-1": ["classic", "minor"],
+            "recent": ["paper-1"],
+            "minor": ["classic"],
+        }
+        known = {"survey", "paper-1", "recent", "minor", "classic"}
+        warnings: list[str] = []
+
+        stopped = rank_authorities(
+            references, known_ids=known, max_iterations=1, warnings=warnings
+        )
+        self.assertFalse(stopped.converged)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("did not converge", warnings[0])
+
+        settled: list[str] = []
+        converged = rank_authorities(references, known_ids=known, warnings=settled)
+        self.assertTrue(converged.converged)
+        self.assertEqual(settled, [])
+
+    def test_pipeline_rescores_papers_whose_dedupe_raised_their_citations(self) -> None:
+        """Dedupe keeps the larger citation count, so the old scores are stale.
+
+        The post-snowball dedupe merges a snowballed record into the pool paper
+        it duplicates. `age_adjusted_citation_score` and `citations_per_year`
+        were computed from the pool paper's smaller count, and they drive
+        root-set ordering and frontier ranking, so the pool has to be
+        re-scored from the counts that survived.
+        """
+
+        pool = [
+            _paper("Retrieval Method One", paper_id="citing-1", citations=90, days_old=400),
+            _paper("Retrieval Method Two", paper_id="citing-2", citations=80, days_old=420),
+            _paper("Retrieval Method Three", paper_id="citing-3", citations=70, days_old=440),
+        ]
+        references = {
+            "citing-1": ["duplicate"],
+            "citing-2": ["duplicate"],
+            "citing-3": ["duplicate"],
+        }
+        # The snowballed record is the same paper as "Retrieval Method One"
+        # under a different id, and carries S2's much larger citation count.
+        fake = FakeSemanticScholar(
+            pool, references, snowball_title="Retrieval Method One"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = PipelineConfig(
+                repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache", topic="retrieval augmented generation",
+                k=3, survey_baseline_count=0, verbose=False,
+            )
+            with (
+                patch(
+                    "research_tree.retrieval.candidate_preparation.plan_search_queries",
+                    return_value=SearchQueryPlan(["retrieval augmented generation"]),
+                ),
+                patch(
+                    "research_tree.retrieval.candidate_preparation._semantic_scholar_client",
+                    return_value=fake,
+                ),
+            ):
+                output = run_workspace_candidate_preparation_pipeline(config)
+
+        merged = next(
+            paper
+            for paper in output["non_survey_papers"]
+            if paper["paper_id"] == "citing-1"
+        )
+        self.assertEqual(merged["citation_count"], 9000)
+        # Scored from 9000, not from the pool record's original 90. (The
+        # artifact rounds age_years to four places, hence the delta.)
+        age = max(merged["age_years"], 0.5)
+        self.assertAlmostEqual(
+            merged["age_adjusted_citation_score"],
+            9000 / age**config.citation_age_exponent,
+            delta=1.0,
+        )
+        self.assertAlmostEqual(merged["citations_per_year"], 9000 / age, delta=1.0)
+
     def test_pipeline_fails_when_search_matches_nothing(self) -> None:
         fake = FakeSemanticScholar([], references={})
 
         with tempfile.TemporaryDirectory() as directory:
-            config = PipelineConfig(repo_root=Path(directory), topic="prompting", verbose=False)
+            config = PipelineConfig(repo_root=Path(directory),
+                output_base_dir=Path(directory) / "runs",
+                cache_dir=Path(directory) / "cache", topic="prompting", verbose=False)
             with (
                 patch(
                     "research_tree.retrieval.candidate_preparation.plan_search_queries",

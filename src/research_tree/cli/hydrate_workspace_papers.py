@@ -10,6 +10,7 @@ from research_tree.retrieval.semantic_scholar import SemanticScholarClient
 from research_tree.workspace.enrichment import hydrate_workspace_papers
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 from research_tree.workspace.serialization import load_json_artifact
+from research_tree.paths import workspaces_dir
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(workspace, dict):
         raise ValueError("workspace JSON must be an object.")
     repository_dir = Path(
-        args.repository_dir or os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces")
+        args.repository_dir or workspaces_dir()
     )
     repository = LocalJsonWorkspaceRepository(repository_dir)
     semantic_scholar = SemanticScholarClient(

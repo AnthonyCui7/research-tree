@@ -6,11 +6,19 @@ from langgraph.types import Send
 
 
 def route_after_rerun_guardrail(state: Mapping[str, Any]) -> str:
+    """Decide whether a rerun runs now, needs approval, or is refused.
+
+    A rerun needing approval becomes a pending review the user acts on through
+    the reviews API. It used to pause the graph on an interrupt whose payload
+    carried no review_id, which the UI could not act on at all, so the run was
+    simply abandoned.
+    """
+
     guardrail = state.get("retrieval_guardrail_result")
     if not isinstance(guardrail, Mapping) or not guardrail.get("allowed"):
         return "answer_with_guardrail_rejection"
     if guardrail.get("expensive") or state.get("require_approval"):
-        return "maybe_review_expensive_rerun"
+        return "persist_rerun_review"
     return "rerun_candidate_pipeline"
 
 

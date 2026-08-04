@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from research_tree.api.dependencies import (
@@ -34,6 +34,13 @@ from research_tree.services.workspaces import WorkspaceQueryService
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
+ACTIVE_PIPELINE_RUN_STATUSES = {"queued", "running"}
+RUN_POLL_SECONDS = 0.5
+COLLECTION_POLL_SECONDS = 1.0
+# Proxies drop idle connections; a comment line keeps them open without
+# looking like an event to the client.
+HEARTBEAT_SECONDS = 15.0
+
 
 @router.post("/topic-review", response_model=TopicReviewResponse)
 def review_workspace_topic(
@@ -52,7 +59,6 @@ def create_workspace(
         "pipeline_run": service.start_approved_new_workspace(
             topic=request.topic,
             topic_review_token=request.topic_review_token,
-            model=request.model,
         )
     }
 
@@ -76,56 +82,84 @@ def cancel_pipeline_run(
 @router.get("/pipeline-runs/{run_id}/events")
 async def stream_pipeline_run_updates(
     run_id: str,
+    request: Request,
     service: WorkspacePipelineService = Depends(get_workspace_pipeline_service),
 ) -> StreamingResponse:
+    # Read once up front so an unknown run answers 404 through the normal error
+    # handler. Raising inside the generator would break a response that has
+    # already started streaming.
+    first_run = await asyncio.to_thread(service.get_run, run_id)
+
     async def event_stream():
         previous_signature: str | None = None
+        run = first_run
+        since_heartbeat = 0.0
         while True:
-            run = service.get_run(run_id)
+            if await request.is_disconnected():
+                return
             signature = json.dumps(run, sort_keys=True, default=str)
             if signature != previous_signature:
                 previous_signature = signature
+                since_heartbeat = 0.0
                 yield f"event: pipeline_run_updated\ndata: {signature}\n\n"
-            if run.get("status") not in {"queued", "running"}:
+            if run.get("status") not in ACTIVE_PIPELINE_RUN_STATUSES:
+                # Say the stream is over on purpose. EventSource treats a closed
+                # connection as a dropped one and reconnects forever otherwise.
+                yield "event: stream_complete\ndata: {}\n\n"
                 return
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(RUN_POLL_SECONDS)
+            since_heartbeat += RUN_POLL_SECONDS
+            if since_heartbeat >= HEARTBEAT_SECONDS:
+                since_heartbeat = 0.0
+                yield ": heartbeat\n\n"
+            # Repository reads hit the filesystem; keep them off the event loop.
+            run = await asyncio.to_thread(service.get_run, run_id)
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return _sse_response(event_stream())
 
 
 @router.get("/events/stream")
 async def stream_workspace_updates(
+    request: Request,
     service: WorkspaceQueryService = Depends(get_workspace_query_service),
 ) -> StreamingResponse:
     async def event_stream():
         previous_signature: str | None = None
+        since_heartbeat = 0.0
         while True:
-            workspaces = service.list_workspaces()["workspaces"]
-            signature = json.dumps(
-                [
-                    {
-                        "workspace_id": item.get("workspace_id"),
-                        "workspace_version_hash": item.get("workspace_version_hash"),
-                    }
-                    for item in workspaces
-                ],
-                sort_keys=True,
-            )
-            if signature != previous_signature:
-                previous_signature = signature
-                yield f"event: workspaces_updated\ndata: {signature}\n\n"
-            await asyncio.sleep(1)
+            if await request.is_disconnected():
+                return
+            workspaces = await asyncio.to_thread(_workspace_collection_signature, service)
+            if workspaces != previous_signature:
+                previous_signature = workspaces
+                since_heartbeat = 0.0
+                yield f"event: workspaces_updated\ndata: {workspaces}\n\n"
+            await asyncio.sleep(COLLECTION_POLL_SECONDS)
+            since_heartbeat += COLLECTION_POLL_SECONDS
+            if since_heartbeat >= HEARTBEAT_SECONDS:
+                since_heartbeat = 0.0
+                yield ": heartbeat\n\n"
 
+    return _sse_response(event_stream())
+
+
+def _workspace_collection_signature(service: WorkspaceQueryService) -> str:
+    workspaces = service.list_workspaces()["workspaces"]
+    return json.dumps(
+        [
+            {
+                "workspace_id": item.get("workspace_id"),
+                "workspace_version_hash": item.get("workspace_version_hash"),
+            }
+            for item in workspaces
+        ],
+        sort_keys=True,
+    )
+
+
+def _sse_response(event_stream) -> StreamingResponse:
     return StreamingResponse(
-        event_stream(),
+        event_stream,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -222,7 +256,6 @@ def rerun_workspace_pipeline(
         "pipeline_run": service.rerun(
             workspace_id,
             start_stage=request.start_stage,
-            model=request.model,
             expected_version_hash=request.expected_version_hash,
         )
     }

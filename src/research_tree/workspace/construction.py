@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from research_tree.artifacts import write_json_file, write_text_file
 from research_tree.llm import DEFAULT_MODEL, call_responses_api
@@ -203,7 +203,7 @@ def construct_workspace(
         prompt_text = _build_agent_workspace_prompt(
             construction_mode=construction_mode,
             user_message=str((run_metadata or {}).get("user_message") or agent_instruction or ""),
-            base_workspace=base_workspace,
+            base_workspace=workspace_for_editing_prompt(base_workspace),
             proposed_workspace=(run_metadata or {}).get("proposed_workspace"),
             candidate_artifact=active_candidate_artifact,
             agent_instruction=agent_instruction or "",
@@ -244,6 +244,8 @@ def construct_workspace(
 
     workspace = parse_workspace_output(raw_output)
     normalize_workspace_payload(workspace)
+    if base_workspace is not None:
+        restore_derived_paper_card_fields(workspace, base_workspace)
     if active_candidate_artifact is not None:
         materialize_workspace_candidate_references(workspace, active_candidate_artifact)
         fill_paper_card_source_metadata(workspace, active_candidate_artifact)
@@ -378,6 +380,53 @@ def construct_workspace_from_candidates(
         validation=validation,
         output_paths=output_paths,
     )
+
+
+# Per-card payloads the editing model must not spend context reading or tokens
+# reproducing: recommendations and provider metadata are derived data that
+# deterministic code owns, and they dwarf the editorial content. On a 25-paper
+# workspace they were 304k of 385k characters of paper_cards, which pushed a
+# rename request past the model's whole token-per-minute budget.
+DERIVED_PAPER_CARD_FIELDS = ("similar_papers", "semantic_scholar_metadata", "paper_content")
+
+
+def workspace_for_editing_prompt(workspace: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the workspace with derived per-card payloads dropped."""
+
+    projected = copy.deepcopy(dict(workspace))
+    paper_cards = projected.get("paper_cards")
+    if isinstance(paper_cards, dict):
+        for card in paper_cards.values():
+            if isinstance(card, dict):
+                for field in DERIVED_PAPER_CARD_FIELDS:
+                    card.pop(field, None)
+    # Rejected candidates are a record of what was considered, not material for
+    # the edit at hand.
+    projected.pop("discarded_candidates", None)
+    return projected
+
+
+def restore_derived_paper_card_fields(
+    workspace: dict[str, Any],
+    base_workspace: Mapping[str, Any],
+) -> None:
+    """Put the dropped payloads back, so an edit cannot silently delete them."""
+
+    base_cards = base_workspace.get("paper_cards")
+    paper_cards = workspace.get("paper_cards")
+    if not isinstance(base_cards, Mapping) or not isinstance(paper_cards, dict):
+        return
+    for paper_id, card in paper_cards.items():
+        base_card = base_cards.get(paper_id)
+        if not isinstance(card, dict) or not isinstance(base_card, Mapping):
+            continue
+        for field in DERIVED_PAPER_CARD_FIELDS:
+            if field not in card and field in base_card:
+                card[field] = copy.deepcopy(base_card[field])
+    if "discarded_candidates" not in workspace and "discarded_candidates" in base_workspace:
+        workspace["discarded_candidates"] = copy.deepcopy(
+            base_workspace["discarded_candidates"]
+        )
 
 
 def _build_agent_workspace_prompt(

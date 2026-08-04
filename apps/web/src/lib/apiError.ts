@@ -37,6 +37,19 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Shown when a mutation lost a race with another change to the same workspace.
+ * The caller refreshes alongside it, so the user is told what to look at rather
+ * than told to refresh by hand.
+ */
+export const VERSION_CONFLICT_MESSAGE =
+  "This workspace changed since you loaded it. It has been refreshed; review the latest version and try again.";
+
+/** True when a failed mutation was rejected as stale, not as broken. */
+export function isVersionConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.isVersionConflict;
+}
+
 /** Message for any thrown value, so callers never have to guess a shape. */
 export function messageFrom(error: unknown): string {
   if (error instanceof ApiError) return error.message;

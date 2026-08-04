@@ -79,12 +79,6 @@ class WorkspaceCritique(BaseModel):
     should_modify_workspace: bool = False
 
 
-class WorkspaceChatResponse(BaseModel):
-    answer: str
-    referenced_paper_ids: list[str] = Field(default_factory=list)
-    referenced_branch_ids: list[str] = Field(default_factory=list)
-
-
 class WorkspaceValidationSummary(BaseModel):
     valid: bool
     error_count: int

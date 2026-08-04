@@ -25,7 +25,13 @@ from dataclasses import dataclass, field
 
 
 DEFAULT_HITS_MAX_ITERATIONS = 60
-DEFAULT_HITS_TOLERANCE = 1e-6
+# Compared against *relative* authority movement (see `rank_citation_graph`).
+# Measured Aug 2026 by replaying nine saved graphs (407-910 nodes, prompting /
+# RAG / sampling): 1e-7 reproduces the iteration counts the old absolute 1e-6
+# criterion produced on every one of them (the live 910-node prompting run
+# converges at 19 either way), so the ladder is unchanged where it was already
+# calibrated and no longer tightens as the graph grows.
+DEFAULT_HITS_TOLERANCE = 1e-7
 
 
 @dataclass(frozen=True)
@@ -35,18 +41,6 @@ class CitationGraphRanking:
     in_degree: dict[str, int]
     iterations: int = 0
     converged: bool = False
-
-    def ranked_ids(self, paper_ids: list[str]) -> list[str]:
-        """Order `paper_ids` by authority, breaking ties by in-degree then id."""
-
-        return sorted(
-            paper_ids,
-            key=lambda paper_id: (
-                -self.authority.get(paper_id, 0.0),
-                -self.in_degree.get(paper_id, 0),
-                paper_id,
-            ),
-        )
 
 
 @dataclass
@@ -87,7 +81,16 @@ def rank_citation_graph(
     tolerance: float = DEFAULT_HITS_TOLERANCE,
     normalize_hub_by_out_degree: bool = True,
 ) -> CitationGraphRanking:
-    """Run HITS power iteration until the authority vector stops moving."""
+    """Run HITS power iteration until the authority vector stops moving.
+
+    Movement is measured *relative* to the authority vector: the L1 distance
+    between successive iterates divided by the vector's own L1 norm. Both
+    iterates are L2-normalized, so their entries are O(1/sqrt(n)) and an
+    absolute L1 threshold silently demands more precision as the graph grows —
+    a 5,000-node pool would have had to settle far further than a 500-node one
+    for the same `tolerance`. Dividing by the L1 norm makes the criterion
+    dimensionless: it asks for the same fractional precision on every graph.
+    """
 
     in_degree: dict[str, int] = defaultdict(int)
     for targets in graph.out_edges.values():
@@ -120,8 +123,11 @@ def rank_citation_graph(
         _normalize_in_place(next_hub)
 
         movement = sum(abs(next_authority[node] - authority[node]) for node in nodes)
+        # An edgeless graph normalizes to the all-zero vector, which is a fixed
+        # point: it has converged, there is just nothing to rank.
+        scale = sum(abs(value) for value in next_authority.values())
         authority, hub = next_authority, next_hub
-        if movement < tolerance:
+        if scale <= 0.0 or movement / scale < tolerance:
             converged = True
             break
 
@@ -172,10 +178,17 @@ def blended_root_set(
     Raw citations alone over-weight old work and the age-adjusted score alone
     over-weights whatever cluster is hot right now, so the two orderings are
     merged round-robin, skipping papers already taken, until `size` unique
-    papers are selected. Each ordering therefore contributes half the set no
-    matter how much the two overlap. (The measured overlap is 55–80%, so a
-    fixed-share split with backfill quietly collapses to a nearly pure
-    citation ranking.)
+    papers are selected.
+
+    The toggle flips on every consumption attempt, including the ones that hit
+    a paper the other ordering already contributed, so the two pointers always
+    advance to the same depth. The result is therefore the *union of
+    equal-depth prefixes* of the two orderings, cut off as soon as it holds
+    `size` unique papers: overlap does not cost either ordering its own picks,
+    it just pushes the shared depth further down both lists (disjoint
+    orderings stop at depth `size`/2, identical ones at depth `size`). That is
+    the point — the measured overlap is 55–80%, so a fixed-share split with
+    backfill quietly collapses to a nearly pure citation ranking.
     """
 
     selected: list[str] = []

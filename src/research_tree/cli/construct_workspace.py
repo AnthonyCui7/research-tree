@@ -8,6 +8,7 @@ from research_tree.llm import DEFAULT_MODEL
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SEMANTIC_SCHOLAR_MAX_RETRIES,
     SemanticScholarClient,
 )
 from research_tree.workspace.construction import (
@@ -23,11 +24,13 @@ from research_tree.workspace.construction import (
 )
 from research_tree.workspace.prompts import WORKSPACE_CONSTRUCTION_PROMPT_VERSION
 from research_tree.workspace.publishing import publish_workspace_version
+from research_tree.paths import data_root, semantic_scholar_cache_dir
+from research_tree.paths import workspaces_dir
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CANDIDATE_PREPARATION_DIR = (
-    REPO_ROOT / "experiments" / "output" / "workspace_candidate_preparation"
+    data_root() / "candidate_runs"
 )
 API_DEFAULT_REASONING_EFFORT = "api-default"
 API_DEFAULT_TEXT_VERBOSITY = "api-default"
@@ -41,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         "--candidate-json",
         help=(
             "Path to llm_candidate_papers.json. Defaults to the newest "
-            "experiments/output/workspace_candidate_preparation/runN artifact."
+            "candidate_runs/runN artifact under the data directory."
         ),
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -69,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Minimum delay between Semantic Scholar requests; 1.0 respects its keyed rate guidance.",
     )
     parser.add_argument("--s2-request-timeout-seconds", type=float, default=20.0)
-    parser.add_argument("--s2-max-retries", type=int, default=2)
+    parser.add_argument("--s2-max-retries", type=int, default=SEMANTIC_SCHOLAR_MAX_RETRIES)
     parser.add_argument(
         "--reasoning-effort",
         choices=[
@@ -171,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     semantic_scholar_client = None
     if not args.llm_output_json:
         semantic_scholar_client = SemanticScholarClient(
-            cache_dir=REPO_ROOT / "experiments" / "cache" / "semantic_scholar",
+            cache_dir=semantic_scholar_cache_dir(),
             api_key=(
                 os.environ.get("S2_API_KEY")
                 or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
@@ -252,7 +255,7 @@ def latest_candidate_json_path(output_base_dir: Path) -> Path:
 
 
 def _repository_dir(value: str | None) -> Path:
-    return Path(value or os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces"))
+    return Path(value) if value else workspaces_dir()
 
 
 if __name__ == "__main__":

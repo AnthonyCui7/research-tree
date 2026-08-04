@@ -77,46 +77,55 @@ export function WorkspaceCreator({
     const runId = run.run_id;
     const events = new EventSource(pipelineRunEventsUrl(runId));
     events.addEventListener("pipeline_run_updated", (event) => {
-      try {
-        const next = JSON.parse((event as MessageEvent<string>).data) as PipelineRun;
-        setRun(next);
-        onRunStarted(next);
-        if (["completed", "completed_with_warnings"].includes(next.status)) {
+      const next = parsePipelineRun((event as MessageEvent<string>).data);
+      if (!next) {
+        setError("A build update could not be read. The build itself continues on the server.");
+        return;
+      }
+      if (isTerminalRunStatus(next.status)) {
+        // The server stops streaming once a run leaves queued/running. Without
+        // this close EventSource reconnects every few seconds and replays the
+        // terminal update — and every replay re-runs the handlers below.
+        events.close();
+      }
+      setRun(next);
+      onRunStarted(next);
+      if (["completed", "completed_with_warnings"].includes(next.status)) {
+        void onCreated(next.workspace_id, next).then(() => {
+          onRunFinished(next.run_id);
+          readyRunIdRef.current = null;
+          setTopic("");
+          setReview(null);
+          setRun(null);
+          setError(null);
+          setCanceling(false);
+        }).catch((requestError: unknown) => setError(messageFrom(requestError)));
+        return;
+      }
+      if (next.status === "failed") {
+        if (readyRunIdRef.current === next.run_id || workspaceIsReadyForUse(next)) {
           void onCreated(next.workspace_id, next).then(() => {
             onRunFinished(next.run_id);
             readyRunIdRef.current = null;
             setTopic("");
             setReview(null);
             setRun(null);
-            setError(null);
             setCanceling(false);
           }).catch((requestError: unknown) => setError(messageFrom(requestError)));
-          return;
         }
-        if (next.status === "failed") {
-          if (readyRunIdRef.current === next.run_id || workspaceIsReadyForUse(next)) {
-            void onCreated(next.workspace_id, next).then(() => {
-              onRunFinished(next.run_id);
-              readyRunIdRef.current = null;
-              setTopic("");
-              setReview(null);
-              setRun(null);
-              setCanceling(false);
-            }).catch((requestError: unknown) => setError(messageFrom(requestError)));
-          }
-          return;
-        }
-        if (workspaceIsReadyForUse(next) && readyRunIdRef.current !== next.run_id) {
-          readyRunIdRef.current = next.run_id;
-          void onCreated(next.workspace_id, next).catch((requestError: unknown) => {
-            readyRunIdRef.current = null;
-            setError(messageFrom(requestError));
-          });
-        }
-      } catch (requestError) {
-        setError(messageFrom(requestError));
+        return;
+      }
+      if (workspaceIsReadyForUse(next) && readyRunIdRef.current !== next.run_id) {
+        readyRunIdRef.current = next.run_id;
+        void onCreated(next.workspace_id, next).catch((requestError: unknown) => {
+          readyRunIdRef.current = null;
+          setError(messageFrom(requestError));
+        });
       }
     });
+    // The server says when it is done on purpose; a backend that does not send
+    // this still closes on the terminal status above.
+    events.addEventListener("stream_complete", () => events.close());
     // EventSource reconnects automatically after transient network failures.
     // Treating every reconnect as a failed build leaves a stale error onscreen.
     events.onerror = () => {};
@@ -306,6 +315,27 @@ function workspaceIsReadyForUse(run: PipelineRun): boolean {
   return hydrateStatus === "completed" || hydrateStatus === "completed_with_warnings";
 }
 
+/** Statuses the server will send no further updates for. */
+const TERMINAL_RUN_STATUSES: PipelineRun["status"][] = [
+  "completed",
+  "completed_with_warnings",
+  "failed",
+  "cancelled",
+];
+
+function isTerminalRunStatus(status: PipelineRun["status"]): boolean {
+  return TERMINAL_RUN_STATUSES.includes(status);
+}
+
+/** A malformed frame is a reporting problem, not a build problem. */
+function parsePipelineRun(data: string): PipelineRun | null {
+  try {
+    return JSON.parse(data) as PipelineRun;
+  } catch {
+    return null;
+  }
+}
+
 function PipelineProgress({
   run,
   canceling,
@@ -323,6 +353,7 @@ function PipelineProgress({
     ["hydrate", "Loading details"],
     ["related", "Finding related work"],
   ] as const;
+  const warnings = (run.warnings ?? []).map((warning) => warning.trim()).filter(Boolean);
   return (
     <div className="grid gap-[18px] p-6 max-[720px]:p-5 max-[720px]:px-[18px]" aria-live="polite">
       <ol className="m-0 grid list-none p-0">
@@ -331,6 +362,14 @@ function PipelineProgress({
           return <li className="grid grid-cols-[18px_minmax(0,1fr)] gap-2.5 border-b border-border py-[13px]" key={stage}><span className={stageDotClass(status)} aria-hidden="true" /> <div className="grid gap-[3px]"><strong className="text-[13px]">{label}</strong><small className="text-[11px] text-text-secondary">{stageStatus(status)}</small></div></li>;
         })}
       </ol>
+      {warnings.length > 0 ? (
+        <div className="grid gap-1 rounded-sm bg-surface-subtle px-3 py-2.5 text-xs leading-[1.45] text-text-secondary">
+          <strong className="text-[11px] font-semibold text-text-primary">{warnings.length === 1 ? "Warning" : "Warnings"}</strong>
+          {warnings.map((warning, index) => (
+            <span className="[overflow-wrap:anywhere]" key={`${index}:${warning}`}>{warning}</span>
+          ))}
+        </div>
+      ) : null}
       {["queued", "running"].includes(run.status) ? (
         <button className="mt-0.5 min-w-28 justify-self-center rounded-sm border border-[color-mix(in_srgb,var(--color-text-muted)_46%,transparent)] bg-surface px-3.5 py-2 text-xs font-semibold text-text-secondary transition-[background-color,border-color,color] duration-200 ease-research enabled:hover:border-error enabled:hover:bg-[color-mix(in_srgb,var(--color-error)_7%,var(--color-surface))] enabled:hover:text-error disabled:cursor-not-allowed disabled:text-text-muted" type="button" onClick={onCancel} disabled={canceling}>
           {canceling ? "Cancelling…" : "Cancel"}
@@ -340,6 +379,16 @@ function PipelineProgress({
         <div className="grid gap-2.5">
           <p className="m-0 rounded-sm bg-[color-mix(in_srgb,var(--color-error)_9%,var(--color-surface))] px-3 py-2.5 text-xs leading-[1.45] text-error">
             {run.error || "The workspace could not be built. Your existing workspaces are unchanged."}
+          </p>
+          <button className={cx(secondaryActionClass, "justify-self-center")} type="button" onClick={onStartOver}>Start over</button>
+        </div>
+      ) : null}
+      {run.status === "cancelled" ? (
+        // A cancelled run offers no Cancel button and no failure block, so
+        // without this the only way out of the dialog is the close control.
+        <div className="grid gap-2.5">
+          <p className="m-0 rounded-sm bg-surface-subtle px-3 py-2.5 text-xs leading-[1.45] text-text-secondary">
+            Build cancelled. Your existing workspaces are unchanged.
           </p>
           <button className={cx(secondaryActionClass, "justify-self-center")} type="button" onClick={onStartOver}>Start over</button>
         </div>
@@ -364,7 +413,7 @@ function stageStatus(status: string) {
   if (status === "failed") return "Failed";
   if (status === "cancelled") return "Cancelled";
   if (status === "completed") return "Complete";
-  if (status === "completed_with_warnings") return "Complete";
+  if (status === "completed_with_warnings") return "Complete — with warnings";
   if (status === "reused") return "Reused from the prior run";
   return "Waiting";
 }

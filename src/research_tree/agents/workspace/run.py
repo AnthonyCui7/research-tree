@@ -14,12 +14,7 @@ class WorkspaceAgentRunResult:
     final_output: dict[str, Any] | None
     interrupted: bool
     interrupt_payloads: list[dict[str, Any]] = field(default_factory=list)
-    streamed_messages: list[str] = field(default_factory=list)
     state_updates: list[dict[str, Any]] = field(default_factory=list)
-
-
-_DEFAULT_GRAPH: Any | None = None
-_DEFAULT_REPOSITORY_GRAPHS: dict[int, Any] = {}
 
 
 def run_workspace_agent(
@@ -29,7 +24,11 @@ def run_workspace_agent(
     graph: Any | None = None,
     workspace_repository: Any | None = None,
 ) -> WorkspaceAgentRunResult:
-    active_graph = graph or _default_graph(workspace_repository=workspace_repository)
+    # Callers own graph lifetime (the app builds one per process); building one
+    # here is only for ad-hoc use such as scripts.
+    active_graph = graph or build_workspace_agent_graph(
+        workspace_repository=workspace_repository
+    )
     active_thread_id = _thread_id_for_input(input, explicit_thread_id=thread_id)
     run_input = dict(input)
     run_input["thread_id"] = active_thread_id
@@ -62,20 +61,6 @@ def _run_graph(
         interrupt_payloads=interrupts,
         state_updates=updates,
     )
-
-
-def _default_graph(*, workspace_repository: Any | None = None) -> Any:
-    global _DEFAULT_GRAPH
-    if workspace_repository is not None:
-        repository_key = id(workspace_repository)
-        if repository_key not in _DEFAULT_REPOSITORY_GRAPHS:
-            _DEFAULT_REPOSITORY_GRAPHS[repository_key] = build_workspace_agent_graph(
-                workspace_repository=workspace_repository
-            )
-        return _DEFAULT_REPOSITORY_GRAPHS[repository_key]
-    if _DEFAULT_GRAPH is None:
-        _DEFAULT_GRAPH = build_workspace_agent_graph()
-    return _DEFAULT_GRAPH
 
 
 def _thread_id_for_input(

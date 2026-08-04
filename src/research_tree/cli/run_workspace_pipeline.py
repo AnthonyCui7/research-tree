@@ -11,6 +11,7 @@ from research_tree.llm import DEFAULT_MODEL
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SEMANTIC_SCHOLAR_MAX_RETRIES,
     SemanticScholarClient,
 )
 from research_tree.retrieval.candidate_preparation import (
@@ -38,6 +39,7 @@ from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 from research_tree.artifacts import write_json_file
 from research_tree.workspace.schemas import paper_database_from_artifact
 from research_tree.workspace.serialization import load_json_artifact
+from research_tree.paths import workspaces_dir
 from research_tree.workspace.similar_papers import (
     DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
     DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
@@ -151,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(WORKSPACE_LLM_RESPONSE_FORMATS),
         default=DEFAULT_WORKSPACE_LLM_RESPONSE_FORMAT,
     )
-    parser.add_argument("--max-academic-retries", type=int, default=2)
+    parser.add_argument("--max-academic-retries", type=int, default=SEMANTIC_SCHOLAR_MAX_RETRIES)
     parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
@@ -167,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv_file(REPO_ROOT / ".env")
     repository_dir = Path(
         args.repository_dir
-        or os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces")
+        or workspaces_dir()
     )
     if args.candidate_json:
         candidate_json_path = Path(args.candidate_json).resolve()

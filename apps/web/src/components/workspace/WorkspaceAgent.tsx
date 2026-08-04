@@ -1,10 +1,16 @@
-import { messageFrom } from "../../lib/apiError";
+import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../../lib/apiError";
 import { iconButtonClass, primaryActionClass, secondaryActionClass } from "../../lib/controlClasses";
 import { useEffect, useRef, useState, type ComponentProps, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { cx } from "../../lib/cx";
+import {
+  beginPanelResize,
+  clampResizablePanelWidth,
+  resizablePanelMaxWidth,
+  useViewportWidth,
+} from "../../lib/resizablePanel";
 import type { AgentRunResult } from "../../lib/types";
 
 type WorkspaceAgentProps = {
@@ -25,7 +31,6 @@ const models = [
   { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", detail: "Smarter" },
   { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", detail: "Smartest" },
 ] as const;
-const DESKTOP_SIDEBAR_WIDTH = 252;
 const AGENT_PANEL_MIN_WIDTH = 480;
 // One turn is a user message plus the assistant's reply.
 const MAX_CONVERSATION_HISTORY_TURNS = 12;
@@ -56,6 +61,8 @@ export function WorkspaceAgent({
   const conversationRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const activeModel = models.find((option) => option.id === model) ?? models[0];
+  const viewportWidth = useViewportWidth();
+  const maxPanelWidth = resizablePanelMaxWidth(sidebarCollapsed, viewportWidth);
 
   useEffect(() => {
     if (open) {
@@ -70,6 +77,9 @@ export function WorkspaceAgent({
   }, [open, present]);
 
   useEffect(() => {
+    // A closed assistant must not hold global listeners: without this guard it
+    // answered every Escape in the app with onClose().
+    if (!open) return;
     function closeModelMenu(event: MouseEvent) {
       if (!modelPickerRef.current?.contains(event.target as Node)) {
         setModelMenuOpen(false);
@@ -92,7 +102,7 @@ export function WorkspaceAgent({
       document.removeEventListener("mousedown", closeModelMenu);
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [helpOpen, modelMenuOpen, onClose]);
+  }, [helpOpen, modelMenuOpen, onClose, open]);
 
   useEffect(() => {
     if (!busy) return;
@@ -125,11 +135,18 @@ export function WorkspaceAgent({
     setBusy(true);
     setError(null);
     const history = conversationHistoryForRequest(conversation);
+    // A previous failure is answered by this request; a pending review is not.
+    setResult((current) => (current && agentRunFailed(current.status) ? null : current));
     setConversation((items) => [...items, { role: "user", text: request }]);
     try {
       const next = await repositoryWorkspaceGateway.runAgent(workspaceId, request, model, history, threadId);
       setResult(next);
       setThreadId(next.thread_id ?? threadId);
+      if (agentRunFailed(next.status)) {
+        // A failed run produced no answer. Reporting one would file a failure
+        // as an assistant reply and leave it in the conversation history.
+        return;
+      }
       const response = next.final_response || (next.status === "pending_review"
         ? "I have prepared a structural revision for your review."
         : "Analysis complete.");
@@ -158,31 +175,18 @@ export function WorkspaceAgent({
       }]);
       setResult(null);
     } catch (requestError) {
-      setError(messageFrom(requestError));
+      if (isVersionConflict(requestError)) {
+        // The review was written against a workspace version the server has
+        // already moved past; reloading is what makes the next attempt valid.
+        setError(VERSION_CONFLICT_MESSAGE);
+        setResult(null);
+        await onWorkspaceChanged();
+      } else {
+        setError(messageFrom(requestError));
+      }
     } finally {
       setBusy(false);
     }
-  }
-
-  function beginResize(event: React.PointerEvent<HTMLButtonElement>) {
-    if (window.innerWidth <= 980) return;
-    event.preventDefault();
-    const startX = event.clientX;
-    const maxWidth = resizablePanelMaxWidth(sidebarCollapsed);
-    const startWidth = clampResizablePanelWidth(panelWidth, AGENT_PANEL_MIN_WIDTH, maxWidth);
-    document.body.style.cursor = "ew-resize";
-    document.body.style.userSelect = "none";
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      setPanelWidth(clampResizablePanelWidth(startWidth + startX - moveEvent.clientX, AGENT_PANEL_MIN_WIDTH, maxWidth));
-    };
-    const onPointerUp = () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
   }
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -198,11 +202,11 @@ export function WorkspaceAgent({
       data-state={closing ? "closing" : "open"}
       aria-label="Workspace Assistant"
       style={{
-        "--agent-panel-width": `${clampResizablePanelWidth(panelWidth, AGENT_PANEL_MIN_WIDTH, resizablePanelMaxWidth(sidebarCollapsed))}px`,
-        "--agent-panel-max-width": `${resizablePanelMaxWidth(sidebarCollapsed)}px`,
+        "--agent-panel-width": `${clampResizablePanelWidth(panelWidth, AGENT_PANEL_MIN_WIDTH, maxPanelWidth)}px`,
+        "--agent-panel-max-width": `${maxPanelWidth}px`,
       } as CSSProperties}
     >
-      <button className="group absolute top-1/2 -left-1 z-[1] grid h-12 w-2 -translate-y-1/2 cursor-ew-resize touch-none place-items-center rounded-full border border-border bg-surface p-0 shadow-control transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-accent hover:shadow-[0_8px_18px_rgb(31_35_40_/_14%)] focus-visible:border-accent focus-visible:shadow-[0_8px_18px_rgb(31_35_40_/_14%)] max-[980px]:hidden" type="button" onPointerDown={beginResize} aria-label="Resize Assistant panel"><span className="relative block h-[42px] w-1.5 rounded-full bg-[color-mix(in_srgb,var(--color-surface-subtle)_60%,var(--color-surface))] transition-[background-color,transform] duration-150 before:absolute before:top-2.5 before:bottom-2.5 before:left-1/2 before:block before:w-px before:-translate-x-1/2 before:bg-text-secondary before:opacity-80 before:content-[''] group-hover:bg-accent-subtle group-focus-visible:bg-accent-subtle" aria-hidden="true" /></button>
+      <button className="group absolute top-1/2 -left-1 z-[1] grid h-12 w-2 -translate-y-1/2 cursor-ew-resize touch-none place-items-center rounded-full border border-border bg-surface p-0 shadow-control transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-accent hover:shadow-[0_8px_18px_rgb(31_35_40_/_14%)] focus-visible:border-accent focus-visible:shadow-[0_8px_18px_rgb(31_35_40_/_14%)] max-[980px]:hidden" type="button" onPointerDown={(event) => beginPanelResize(event, { startWidth: panelWidth, minWidth: AGENT_PANEL_MIN_WIDTH, maxWidth: maxPanelWidth, onWidth: setPanelWidth })} aria-label="Resize Assistant panel"><span className="relative block h-[42px] w-1.5 rounded-full bg-[color-mix(in_srgb,var(--color-surface-subtle)_60%,var(--color-surface))] transition-[background-color,transform] duration-150 before:absolute before:top-2.5 before:bottom-2.5 before:left-1/2 before:block before:w-px before:-translate-x-1/2 before:bg-text-secondary before:opacity-80 before:content-[''] group-hover:bg-accent-subtle group-focus-visible:bg-accent-subtle" aria-hidden="true" /></button>
       <header className="flex h-10 min-h-10 items-center justify-between border-b border-border bg-surface px-3 py-1">
         <div className="flex items-center gap-[7px]">
           <h2 className="m-0 text-base font-semibold tracking-normal text-text-primary">Assistant</h2>
@@ -257,6 +261,7 @@ export function WorkspaceAgent({
           </div>
         </div>
       ) : null}
+      {result ? <AgentRunNotices result={result} /> : null}
       {error ? <p className="mx-6 mt-0 mb-5 rounded-sm bg-[color-mix(in_srgb,var(--color-error)_9%,var(--color-surface))] px-3 py-2.5 text-xs leading-[1.45] text-error" role="alert">{error}</p> : null}
       <form className="mx-[18px] mb-[18px] flex-none max-[720px]:mx-3.5" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <div className="grid gap-[5px] rounded-[10px] border border-border-strong bg-surface pt-[7px] pr-2 pb-[5px] pl-[5px] transition-[border-color,box-shadow] duration-150 focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-subtle)]">
@@ -331,6 +336,49 @@ export function WorkspaceAgent({
   );
 }
 
+/**
+ * A run that failed, or finished with warnings, states so. The backend reports
+ * both in `errors`/`warnings`, and a failed run's `final_response` is a failure
+ * notice rather than an answer — neither belongs in the conversation.
+ */
+function AgentRunNotices({ result }: { result: AgentRunResult }) {
+  const failed = agentRunFailed(result.status);
+  const errors = noticeLines(result.errors);
+  const warnings = noticeLines(result.warnings);
+  if (!failed && warnings.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mx-6 mt-0 mb-5 grid gap-2">
+      {failed ? (
+        <div className="grid gap-1 rounded-sm bg-[color-mix(in_srgb,var(--color-error)_9%,var(--color-surface))] px-3 py-2.5 text-xs leading-[1.45] text-error" role="alert">
+          <span>{result.final_response?.trim() || "The assistant could not complete that request. Your workspace is unchanged."}</span>
+          {errors.map((detail, index) => (
+            <span className="text-[11px] leading-[1.45] opacity-80 [overflow-wrap:anywhere]" key={`${index}:${detail}`}>{detail}</span>
+          ))}
+        </div>
+      ) : null}
+      {warnings.length > 0 ? (
+        <div className="grid gap-1 rounded-sm bg-surface-subtle px-3 py-2.5 text-xs leading-[1.45] text-text-secondary" role="status">
+          <strong className="text-[11px] font-semibold text-text-primary">{warnings.length === 1 ? "Warning" : "Warnings"}</strong>
+          {warnings.map((warning, index) => (
+            <span className="[overflow-wrap:anywhere]" key={`${index}:${warning}`}>{warning}</span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Backend failures are `failed`, `failed_validation`, `failed_guardrail`, `failed_exception`. */
+function agentRunFailed(status: string): boolean {
+  return status.startsWith("failed");
+}
+
+function noticeLines(values: string[] | undefined): string[] {
+  return (values ?? []).map((value) => value.trim()).filter(Boolean);
+}
+
 type MarkdownComponentProps<T extends keyof JSX.IntrinsicElements> = ComponentProps<T> & {
   node?: unknown;
 };
@@ -380,15 +428,6 @@ function diffLabel(diff: Record<string, unknown> | null): string {
   return count > 0 ? `${count} structural change${count === 1 ? "" : "s"} prepared.` : "Structural revision ready for review.";
 }
 
-function resizablePanelMaxWidth(sidebarCollapsed: boolean): number {
-  return Math.max(0, window.innerWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH));
-}
-
-function clampResizablePanelWidth(width: number, minWidth: number, maxWidth: number): number {
-  const effectiveMinWidth = Math.min(minWidth, maxWidth);
-  return Math.min(maxWidth, Math.max(effectiveMinWidth, width));
-}
-
 function displayMarkdown(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   return lines.map((line, index) => {
@@ -405,7 +444,7 @@ function displayMarkdown(text: string): string {
 }
 
 function isPlainAssistantHeading(lines: string[], index: number): boolean {
-  const line = lines[index].trim();
+  const line = lines[index]?.trim() ?? "";
   if (line.length > 72 || /[.!?:;,]$/.test(line)) return false;
   if (/^(#{1,6}|\d+\.|[-*+]\s|>|```)/.test(line)) return false;
   if (!/[A-Za-z]/.test(line)) return false;

@@ -1,8 +1,10 @@
 """Gather and rank the candidate papers a workspace is built from.
 
 The stage answers one question: of everything published on a topic, which
-~55-95 papers (50 authorities + up to 20 flagged riders + 5 surveys + up to
-20 frontier picks) should the construction model be allowed to choose from?
+~55-115 papers should the construction model be allowed to choose from? The
+worst case is 115 because `MAX_FLAGGED_PASSTHROUGH` applies per block, surveys
+included: 50 authorities + up to 20 flagged riders, 5 surveys + up to 20
+flagged riders, and up to 20 frontier picks.
 
     plan queries   one model call names the field's search vocabulary
     build pool     one boolean bulk query, plus a recency page
@@ -45,6 +47,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from research_tree.artifacts import write_json_file
+from research_tree.paths import cache_dir as default_cache_dir, data_root
 from research_tree.retrieval.citation_graph import (
     DEFAULT_HITS_MAX_ITERATIONS,
     DEFAULT_HITS_TOLERANCE,
@@ -66,6 +69,7 @@ from research_tree.retrieval.query_plan import (
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_BULK_PAGE_SIZE,
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SEMANTIC_SCHOLAR_MAX_RETRIES,
     SemanticScholarClient,
     paper_from_semantic_scholar,
     s2_api_key,
@@ -98,20 +102,22 @@ class PipelineConfig:
     authority_age_exponent: float = 0.75
     request_delay_seconds: float = SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS
     request_timeout_seconds: float = 20.0
-    max_academic_retries: int = 2
+    max_academic_retries: int = SEMANTIC_SCHOLAR_MAX_RETRIES
     refresh_cache: bool = False
     verbose: bool = True
     query_overrides: tuple[str, ...] = ()
+    # Both default to the data root. Exploratory scripts point them elsewhere
+    # so a benchmark run cannot land in the product's artifact directory.
+    output_base_dir: Path | None = None
+    cache_dir: Path | None = None
 
 
 def run_workspace_candidate_preparation_pipeline(
     config: PipelineConfig,
 ) -> dict[str, object]:
-    output_base_dir = (
-        config.repo_root / "experiments" / "output" / "workspace_candidate_preparation"
-    )
+    output_base_dir = config.output_base_dir or (data_root() / "candidate_runs")
     output_dir = _next_run_output_dir(output_base_dir)
-    cache_dir = config.repo_root / "experiments" / "cache"
+    cache_dir = config.cache_dir or default_cache_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -159,7 +165,11 @@ def run_workspace_candidate_preparation_pipeline(
     papers_by_id = {paper.semantic_scholar_id: paper for paper in pool if paper.semantic_scholar_id}
 
     _write_stage_status(output_dir, "citation_graph_construction")
-    root_set_ids = select_root_set(pool, size=config.root_set_size)
+    root_set_ids = select_root_set(
+        pool,
+        size=config.root_set_size,
+        topic_phrases=query_plan.phrases,
+    )
     references = semantic_scholar.get_references_batch(root_set_ids, warnings)
     _log(config, f"Fetched reference lists for {len(references)} of {len(root_set_ids)} root-set papers")
 
@@ -172,6 +182,18 @@ def run_workspace_candidate_preparation_pipeline(
             "Semantic Scholar returned no reference lists for any of the "
             f"{len(root_set_ids)} root-set papers; cannot rank the citation "
             "graph. Rerun when Semantic Scholar recovers."
+        )
+    if len(references) * 2 < len(root_set_ids):
+        # Partial hydration loss warns and continues (the client already
+        # retried the missing ids — a live run shipped fine at 48 of 250
+        # missing). Past half, the hub basis is a minority of the root set and
+        # the ranking is no longer the thing the artifact says it is, so this
+        # crosses from degraded data into a failed run.
+        raise RuntimeError(
+            "Semantic Scholar hydrated only "
+            f"{len(references)} of {len(root_set_ids)} root-set bibliographies; "
+            "more than half the citation graph's hub basis is missing. Rerun "
+            "when Semantic Scholar recovers."
         )
 
     _write_stage_status(output_dir, "citation_snowball")
@@ -191,6 +213,13 @@ def run_workspace_candidate_preparation_pipeline(
             snowballed, as_of=as_of, exponent=config.citation_age_exponent
         )
         pool = dedupe_papers([*pool, *snowballed])
+        # Dedupe keeps the larger citation count of each merged pair, so the
+        # scores computed above are stale for anything that merged. They drive
+        # root-set ordering and frontier ranking, so re-derive them from the
+        # counts that actually survived.
+        _score_age_adjusted_citations(
+            pool, as_of=as_of, exponent=config.citation_age_exponent
+        )
         papers_by_id = {
             paper.semantic_scholar_id: paper for paper in pool if paper.semantic_scholar_id
         }
@@ -200,6 +229,7 @@ def run_workspace_candidate_preparation_pipeline(
         known_ids=set(papers_by_id),
         max_iterations=config.hits_max_iterations,
         tolerance=config.hits_tolerance,
+        warnings=warnings,
     )
     _log(
         config,
@@ -328,7 +358,7 @@ def build_pool(
     citation_search_empty = not papers
     # Citation-sorted paging never reaches work published in the last few years,
     # which is exactly where an unsettled field is most active.
-    recent_start = as_of.replace(year=as_of.year - max(recency_years, 0))
+    recent_start = _years_before(as_of, max(recency_years, 0))
     papers.extend(
         semantic_scholar.bulk_search(
             query,
@@ -351,17 +381,103 @@ def build_pool(
     return dedupe_papers(papers)
 
 
-def select_root_set(pool: list[Paper], *, size: int) -> list[str]:
-    """Choose the papers whose bibliographies define the citation graph."""
+# Root-set slots held back for surveys the blend did not reach. Sized so the
+# survey block (5 slots) is ranked by real hub scores with margin, at no extra
+# request cost: the reserved ids ride in the same 250-id reference batch.
+ROOT_SET_SURVEY_RESERVE = 16
+
+
+def select_root_set(
+    pool: list[Paper],
+    *,
+    size: int,
+    survey_reserve: int = ROOT_SET_SURVEY_RESERVE,
+    topic_phrases: list[str] | None = None,
+) -> list[str]:
+    """Choose the papers whose bibliographies define the citation graph.
+
+    The blend of the raw-citation and age-adjusted orderings gets all but
+    `survey_reserve` of the slots; those are held for the highest-cited surveys
+    the blend missed.
+
+    Only root-set papers have their bibliographies fetched, so only they can
+    have a nonzero hub score — and `select_candidates` ranks the survey block
+    by hub score. Without the reservation almost every survey scores exactly
+    0.0 and the block silently falls back to raw citation count: on the live
+    prompting run 770 of 787 surveys had hub 0.0, because only 30 were in the
+    root set at all. It costs no extra Semantic Scholar requests — the root set
+    is one batch of `size` ids either way.
+
+    The reserve is gated on `topic_phrases` because an ungated one picks the
+    wrong surveys. Replayed offline on the saved Prompting run (5,090 papers,
+    787 surveys), reserving 16 slots by citation count alone admitted
+    ColorBrewer, a discrete-data econometrics book review, remote sensing for
+    precision agriculture, and data stream management: "highest-cited survey"
+    over a pool built from a broad boolean OR is not "this field's survey", and
+    an off-topic survey is a near-inert hub anyway because
+    `build_citation_graph` drops the edges that leave the pool. Requiring the
+    same token match that gates snowballed papers swaps those for surveys of
+    in-context learning, LLM explainability, and pretrained foundation models.
+    Slots no on-topic survey claims go back to the blend, so a field with few
+    surveys loses nothing.
+
+    The trade is real: those 16 slots come from the blend's tail (positions
+    ~234-250), which on that run carried 197 of the root set's 2,641 in-pool
+    edges (7.5%), including P-tuning. What cannot be measured offline is the
+    other side — the admitted surveys' own bibliographies were never fetched,
+    and a field survey citing 100+ in-pool papers plausibly returns more edges
+    than the tail gave up. Widen the reserve only with a live run to check.
+    """
 
     with_ids = [paper for paper in pool if paper.semantic_scholar_id]
-    by_citations = sorted(with_ids, key=lambda p: -(p.citation_count or 0))
-    by_age_adjusted = sorted(with_ids, key=lambda p: -p.age_adjusted_citation_score)
-    return blended_root_set(
+    # Explicit secondary keys: without them ties fall back to pool insertion
+    # order, i.e. whatever order S2 search happened to return.
+    by_citations = sorted(
+        with_ids,
+        key=lambda paper: (
+            -(paper.citation_count or 0),
+            -paper.age_adjusted_citation_score,
+            paper.title.casefold(),
+        ),
+    )
+    by_age_adjusted = sorted(
+        with_ids,
+        key=lambda paper: (
+            -paper.age_adjusted_citation_score,
+            -(paper.citation_count or 0),
+            paper.title.casefold(),
+        ),
+    )
+    blended = blended_root_set(
         [str(paper.semantic_scholar_id) for paper in by_citations],
         [str(paper.semantic_scholar_id) for paper in by_age_adjusted],
         size=size,
     )
+
+    reserve = min(max(survey_reserve, 0), size)
+    selected = blended[: size - reserve]
+    seen = set(selected)
+    for paper in by_citations:
+        if len(selected) >= size:
+            break
+        paper_id = str(paper.semantic_scholar_id)
+        if not paper.is_survey or paper_id in seen:
+            continue
+        if topic_phrases and not matches_topic(
+            f"{paper.title} {paper.abstract}", topic_phrases
+        ):
+            continue
+        seen.add(paper_id)
+        selected.append(paper_id)
+    # A pool with fewer unseen surveys than the reserve leaves slots unused;
+    # the blend's own tail takes them back rather than shrinking the root set.
+    for paper_id in blended[size - reserve :]:
+        if len(selected) >= size:
+            break
+        if paper_id not in seen:
+            seen.add(paper_id)
+            selected.append(paper_id)
+    return selected
 
 
 def rank_authorities(
@@ -370,14 +486,25 @@ def rank_authorities(
     known_ids: set[str],
     max_iterations: int = DEFAULT_HITS_MAX_ITERATIONS,
     tolerance: float = DEFAULT_HITS_TOLERANCE,
+    warnings: list[str] | None = None,
 ) -> CitationGraphRanking:
     graph = build_citation_graph(references, allowed_ids=known_ids)
-    return rank_citation_graph(
+    ranking = rank_citation_graph(
         graph,
         max_iterations=max_iterations,
         tolerance=tolerance,
         normalize_hub_by_out_degree=True,
     )
+    if not ranking.converged and warnings is not None:
+        # The artifact still ships — a stopped-early power iteration is close
+        # to the fixed point, not garbage — but the ordering it produced is not
+        # the converged one the ranking claims, so say so.
+        warnings.append(
+            "Citation-graph ranking did not converge: HITS stopped at the "
+            f"{max_iterations}-iteration cap without reaching tolerance "
+            f"{tolerance:g}. The authority ordering is approximate."
+        )
+    return ranking
 
 
 def snowball_pool(
@@ -452,6 +579,15 @@ def graph_blind_cutoff(
     2023. Walking back from the present while the mean in-pool vote count
     stays under the threshold finds the band per run; `max_years` caps the
     walk so a degraded graph cannot declare the whole pool blind.
+
+    The threshold is calibrated to this pipeline's two sizes, not absolute.
+    Votes can only come from the `root_set_size` (250) bibliographies that were
+    actually fetched, while `counts[year]` counts every pool paper in that year
+    and so scales with `pool_target` (5,000). The measured ratio is therefore
+    votes-per-250-hubs over papers-per-5,000-pool: raising `pool_target`
+    dilutes it and declares more years blind, raising `root_set_size`
+    concentrates it and declares fewer. Re-measure the threshold if either
+    changes.
     """
 
     votes: dict[int, int] = defaultdict(int)
@@ -492,6 +628,15 @@ def frontier_candidates(
     18-citation papers over Search-o1 and admits general LLM infrastructure,
     and a velocity-hub rank product readmits SAM 2 — topical belonging is a
     semantic judgment the graph cannot make.
+
+    One asymmetry is deliberate: this runs before `adjudicate_flags`, so the
+    `flagged_off_topic` filter below still reads the raw token match, and a
+    snowballed paper the judge would later rescue can never become a frontier
+    pick. It can still lose its flag and take an authority slot; it just
+    cannot take a frontier one. Ordering it the other way means judging the
+    frontier slice before knowing which flags survive — two judge calls
+    instead of one — to widen a band that snowballed papers (old work the
+    field keeps citing) barely reach in the first place.
     """
 
     recent = [
@@ -524,7 +669,9 @@ def adjudicate_flags(
 
     Returns the frontier paper ids the judge kept. Without a key, or if the
     call fails, token flags stand and no frontier paper is kept — an
-    unscreened velocity slice is worse than none.
+    unscreened velocity slice is worse than none. Both cases warn: losing the
+    whole frontier mechanism is a materially different artifact, and without a
+    warning the run still reports `retrieval_complete: true`.
     """
 
     flagged = [paper for paper in pool if paper.flagged_off_topic]
@@ -532,6 +679,10 @@ def adjudicate_flags(
     if not flagged and not frontier:
         return set()
     if not os.environ.get("OPENAI_API_KEY"):
+        warnings.append(
+            "Flag adjudication was skipped (no OPENAI_API_KEY); token-match "
+            "flags stand and no frontier picks were added for this run."
+        )
         return set()
     belongs = judge_flagged_papers(
         topic, phrases, [*flagged, *frontier], context_titles=context_titles
@@ -646,8 +797,15 @@ def _ranked_papers(
     Raw HITS authority compounds with age twice over — an old paper has had
     longer to collect citations, and its citers are themselves old high-hub
     papers — so the raw ordering ends years before the present. Dividing by
-    (age + 1)^exponent is age-cohort normalization, the eigenvector analog of
-    the citations/age^1.25 velocity score. Measured Aug 2026 offline on saved
+    (age + 1)^exponent is age-cohort normalization. It is *not* the eigenvector
+    analog of the citations/max(age, 0.5)^1.25 velocity score used elsewhere in
+    this module: that one floors its denominator at half a year, so a
+    brand-new paper divides by 0.5^1.25 ≈ 0.42, a 2.4x boost against the 1.0
+    this one gives at age 0, and the two curves stay far apart for the whole
+    first year. Different shapes, different exponents, tuned separately for
+    different jobs — do not treat a change to one as justified by the other.
+
+    Measured Aug 2026 offline on saved
     prompting / RAG / sampling runs: 0.75 lifts the field's own 2021-24 work
     (Self-Consistency 13→8, ReAct 33→28, Self-RAG 14→7, GraphRAG 31→15) with
     no adjacent-field celebrity paper entering and every founding paper keeping
@@ -737,6 +895,19 @@ def _candidate_age_years(paper: Paper, as_of: date) -> float | None:
     if publication_date is None:
         return None
     return max((as_of - publication_date).days, 1) / 365.25
+
+
+def _years_before(as_of: date, years: int) -> date:
+    """`years` calendar years before `as_of`.
+
+    `date.replace(year=...)` raises on Feb 29 of a leap year whenever the
+    target year is not one, which would have failed the run one day in four.
+    """
+
+    try:
+        return as_of.replace(year=as_of.year - years)
+    except ValueError:
+        return as_of.replace(year=as_of.year - years, day=28)
 
 
 def _candidate_publication_date(paper: Paper) -> date | None:
@@ -981,6 +1152,11 @@ def _config_dump(config: PipelineConfig) -> dict[str, object]:
     for recorded_elsewhere in ("repo_root", "topic", "verbose"):
         dump.pop(recorded_elsewhere, None)
     dump["query_overrides"] = list(config.query_overrides)
+    # Paths are where this run wrote, not settings that shaped it; keep them
+    # readable rather than letting json choke on Path.
+    for path_field in ("output_base_dir", "cache_dir"):
+        value = dump.get(path_field)
+        dump[path_field] = str(value) if value is not None else None
     return dump
 
 

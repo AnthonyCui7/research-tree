@@ -139,10 +139,7 @@ export function normalizeWorkspaceForTree(
     }
   }
 
-  const currentVersion =
-    workspace.current_workspace_version_hash ??
-    workspace.workspace_versions?.find((version) => version.is_current)?.version_hash ??
-    null;
+  const currentVersion = workspace.current_workspace_version_hash ?? null;
 
   return {
     workspaceId: workspace.workspace_id,
@@ -261,20 +258,21 @@ function layoutPath({
   measuredHeights?: MeasuredNodeHeights;
   state: LayoutState;
 }): number | null {
-  const steps = paperSteps(workspace, path).filter((step) => {
-    const paper = workspace.paper_cards[step.paper_id];
-    return paper && !isSurveyPaper(paper);
+  const stepPapers = pathPaperIds(path).flatMap((paperId) => {
+    const paper = workspace.paper_cards[paperId];
+    return paper && !isSurveyPaper(paper) ? [paper] : [];
   });
-  if (steps.length === 0) {
+  const [firstPaperNode] = stepPapers;
+  if (firstPaperNode === undefined) {
     return null;
   }
 
   const paperY = state.nextY;
   const paperX = branchX + BRANCH_WIDTH + COLUMN_GAP;
   const family = familyByBranch.get(branch.node_id) ?? null;
-  const paperNodes = steps.map((step, index) =>
+  const paperNodes = stepPapers.map((paper, index) =>
     paperNodeViewModel({
-      paper: workspace.paper_cards[step.paper_id],
+      paper,
       path,
       index,
       family,
@@ -292,15 +290,15 @@ function layoutPath({
   }
 
   state.nodes.push(...paperNodes);
-  state.pathStarts.push({ branchId: branch.node_id, paperNodeId: paperNodes[0].id });
+  // paperNodes mirrors stepPapers, which the guard above proved non-empty.
+  const firstNode = paperNodes[0]!;
+  const lastNode = paperNodes[paperNodes.length - 1]!;
+  state.pathStarts.push({ branchId: branch.node_id, paperNodeId: firstNode.id });
   for (let index = 1; index < paperNodes.length; index += 1) {
-    state.edges.push(edgeBetween(paperNodes[index - 1], paperNodes[index], "timeline"));
+    state.edges.push(edgeBetween(paperNodes[index - 1]!, paperNodes[index]!, "timeline"));
   }
 
-  state.maxRight = Math.max(
-    state.maxRight,
-    paperNodes[paperNodes.length - 1].position.x + paperNodes[paperNodes.length - 1].size.width,
-  );
+  state.maxRight = Math.max(state.maxRight, lastNode.position.x + lastNode.size.width);
   state.nextY += pathHeight + ROW_GAP;
   return timelineCenterY;
 }
@@ -341,17 +339,13 @@ function pathsGroupedByBranch(
   return paths;
 }
 
-function paperSteps(workspace: WorkspaceDocument, path: PaperPath): PaperStep[] {
+/** A path's papers in reading order; explicit steps win over the flat id list. */
+function pathPaperIds(path: PaperPath): string[] {
   const explicitSteps = Array.isArray(path.paper_steps) ? [...path.paper_steps] : [];
   if (explicitSteps.length > 0) {
-    return explicitSteps.sort(legacyStepOrder);
+    return explicitSteps.sort(legacyStepOrder).map((step) => step.paper_id);
   }
-  return path.paper_ids.map((paperId) => ({
-    paper_id: paperId,
-    why_read_here:
-      workspace.paper_cards[paperId]?.importance ||
-      "Part of this saved reading sequence.",
-  }));
+  return path.paper_ids;
 }
 
 function legacyStepOrder(left: PaperStep, right: PaperStep): number {
@@ -401,15 +395,11 @@ function anchorPaper(workspace: WorkspaceDocument, paperIds: string[]): PaperDet
 
 function paperDetails(paper: PaperCard): PaperDetails {
   return {
-    paperId: paper.paper_id,
     title: paper.title,
     authors: Array.isArray(paper.authors) ? paper.authors : [],
     year: paper.year ?? null,
     publicationDate: paper.publication_date ?? null,
     venue: paper.venue || "",
-    primaryLink: paper.primary_link ?? null,
-    doi: paper.doi ?? null,
-    arxivId: paper.arxiv_id ?? null,
     arxivLink: paper.arxiv_link ?? arxivLink(paper.arxiv_id),
     semanticScholarLink: paper.s2_link ?? null,
     citationCount: paper.citation_count ?? null,
@@ -543,16 +533,17 @@ function fallbackLineCount(value: string, charactersPerLine: number, firstLinePr
 }
 
 function compactAuthorLine(authors: string[]): string {
-  if (authors.length === 0) {
+  const [first, second] = authors;
+  if (first === undefined) {
     return "Authors unavailable";
   }
-  if (authors.length === 1) {
-    return authors[0];
+  if (second === undefined) {
+    return first;
   }
   if (authors.length === 2) {
-    return `${authors[0]} & ${authors[1]}`;
+    return `${first} & ${second}`;
   }
-  return `${authors[0]} et al.`;
+  return `${first} et al.`;
 }
 
 function edgeBetween(

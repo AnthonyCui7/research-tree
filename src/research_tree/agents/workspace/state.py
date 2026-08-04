@@ -3,9 +3,6 @@ from __future__ import annotations
 import operator
 from typing import Annotated, Any, Literal, TypedDict
 
-from langchain_core.messages import AnyMessage
-from langgraph.graph.message import add_messages
-
 
 WorkspaceAgentStatus = Literal[
     "started",
@@ -23,7 +20,6 @@ WorkspaceAgentStatus = Literal[
 
 
 class WorkspaceAgentState(TypedDict, total=False):
-    messages: Annotated[list[AnyMessage], add_messages]
     user_message: str
     conversation_history: list[dict[str, str]]
     final_response: str | None
@@ -46,11 +42,18 @@ class WorkspaceAgentState(TypedDict, total=False):
     similar_papers_context: dict[str, Any]
     off_path_papers: list[dict[str, Any]]
 
-    intent: dict[str, Any] | None
     next_action: dict[str, Any] | None
     action_history: Annotated[list[dict[str, Any]], operator.add]
-    action_iteration_count: int
-    max_action_iterations: int
+
+    # The tool loop. `transcript_items` holds raw Responses items — the model's
+    # own output (including encrypted reasoning) plus our tool results — and is
+    # replayed in full on each turn because `store` is false.
+    transcript_items: list[dict[str, Any]]
+    tool_rounds: int
+    max_tool_rounds: int
+    pending_tool_call_id: str | None
+    session_discovered_papers: dict[str, dict[str, Any]]
+    semantic_scholar_calls: int
 
     chat_context: dict[str, Any] | None
     modification_context: dict[str, Any] | None

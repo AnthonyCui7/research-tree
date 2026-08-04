@@ -18,6 +18,16 @@ class JsonRequestError(RuntimeError):
     pass
 
 
+# Statuses worth retrying on the backoff ladder. 429 is Semantic Scholar
+# shedding load, and its 5xx are the same condition reported differently — a
+# transient server-side failure that the next attempt may not see. Neither is
+# a statement about our request, so failing the whole run on the first one
+# throws away retries that could have succeeded. Every other 4xx *is* a
+# statement about our request and will fail identically on retry, so those
+# still raise immediately.
+RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
 class RateLimiter:
     """Spaces request starts across everything that shares this limiter.
 
@@ -124,9 +134,11 @@ class CachedJsonClient:
         url: str,
         body: dict[str, Any] | None,
     ) -> str:
-        # A shared 1 req/s limiter already paces normal traffic, so a 429 here is
-        # a transient burst rather than sustained overuse. `Retry-After` still
-        # wins whenever the server sends one.
+        # A shared limiter already paces normal traffic, so a 429 here is
+        # Semantic Scholar shedding load, not overuse on our side. Measured
+        # Aug 2026: recovery after a bulk 429 streak takes 30+ seconds, which
+        # is why the ladder climbs to 45/90 s. S2 never sends `Retry-After`,
+        # but it still wins here if that ever changes.
         backoffs = [5, 10, 45, 90, 90][: self.max_retries]
         last_error: Exception | None = None
         for attempt in range(len(backoffs) + 1):
@@ -150,7 +162,7 @@ class CachedJsonClient:
                     return response.read().decode("utf-8")
             except urllib.error.HTTPError as error:
                 last_error = error
-                if error.code != 429 or attempt >= len(backoffs):
+                if error.code not in RETRYABLE_HTTP_STATUS or attempt >= len(backoffs):
                     raise JsonRequestError(_format_http_error(error)) from error
                 retry_after = error.headers.get("Retry-After")
                 wait_seconds = _parse_retry_after(retry_after) or backoffs[attempt]

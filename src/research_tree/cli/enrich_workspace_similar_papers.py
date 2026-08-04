@@ -7,6 +7,7 @@ from pathlib import Path
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.workspace.publishing import publish_workspace_version
 from research_tree.workspace.serialization import load_json_artifact
+from research_tree.paths import workspaces_dir
 from research_tree.workspace.similar_papers import (
     build_similar_papers_from_files,
     write_similar_paper_artifacts,
@@ -43,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(workspace, dict):
         raise ValueError("workspace JSON must be an object.")
     repository_dir = Path(
-        args.repository_dir or os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces")
+        args.repository_dir or workspaces_dir()
     )
     output_dir = Path(args.output_dir).resolve() if args.output_dir else workspace_path.parent
     enriched, debug = build_similar_papers_from_files(

@@ -97,6 +97,8 @@ class WorkspaceRepository(Protocol):
         review_id: str | None = None,
         actor_type: str = "agent",
         actor_id: str | None = None,
+        review_type: str = "workspace_patch",
+        pipeline_rerun: dict[str, Any] | None = None,
     ) -> str:
         ...
 
@@ -222,6 +224,23 @@ class WorkspaceRepository(Protocol):
         ...
 
     def get_paper_content(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
+        ...
+
+    def append_agent_run_event(
+        self,
+        workspace_id: str,
+        *,
+        agent_run_id: str,
+        status: str,
+        payload: dict[str, Any],
+        actor_type: str = "system",
+        actor_id: str | None = None,
+        error_message: str | None = None,
+        errors: list[str] | None = None,
+    ) -> str:
+        ...
+
+    def list_agent_run_events(self, workspace_id: str) -> list[dict[str, Any]]:
         ...
 
 
@@ -497,6 +516,8 @@ class LocalJsonWorkspaceRepository:
         review_id: str | None = None,
         actor_type: str = "agent",
         actor_id: str | None = None,
+        review_type: str = "workspace_patch",
+        pipeline_rerun: dict[str, Any] | None = None,
     ) -> str:
         if not base_workspace_version_hash:
             raise ValueError(
@@ -536,6 +557,10 @@ class LocalJsonWorkspaceRepository:
             "agent_run_id": agent_run_id,
             "workspace_id": workspace_id,
             "status": "pending",
+            # "workspace_patch" applies a proposed workspace on approval;
+            # "pipeline_rerun" starts a pipeline stage instead.
+            "review_type": review_type,
+            "pipeline_rerun": pipeline_rerun or {},
             **actor_fields,
             "base_workspace_version_hash": base_workspace_version_hash,
             "proposed_workspace_version_hash": workspace_version_hash(proposed_workspace),
@@ -1118,6 +1143,11 @@ class LocalJsonWorkspaceRepository:
         payload = _read_json(path)
         if not isinstance(payload, dict):
             raise ValueError(f"pipeline run must be a JSON object: {path}")
+        # Reclaim on read, not only when reserving a new run: a run whose owner
+        # process died stays "running" forever otherwise, and callers that gate
+        # on active runs (the assistant) stay blocked until someone starts a
+        # build.
+        _reclaim_dead_pipeline_run(path, payload)
         return payload
 
     def list_pipeline_runs(self, workspace_id: str) -> list[dict[str, Any]]:
@@ -1128,6 +1158,7 @@ class LocalJsonWorkspaceRepository:
         for path in runs_dir.glob("*.json"):
             payload = _read_json(path)
             if isinstance(payload, dict) and payload.get("workspace_id") == workspace_id:
+                _reclaim_dead_pipeline_run(path, payload)
                 runs.append(payload)
         return sorted(runs, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 

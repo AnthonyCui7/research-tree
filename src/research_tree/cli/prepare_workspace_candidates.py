@@ -6,6 +6,7 @@ from pathlib import Path
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SEMANTIC_SCHOLAR_MAX_RETRIES,
 )
 from research_tree.retrieval.candidate_preparation import (
     DEFAULT_TOPIC,
@@ -36,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         default=SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
     )
     parser.add_argument("--request-timeout-seconds", type=float, default=20.0)
-    parser.add_argument("--max-academic-retries", type=int, default=2)
+    parser.add_argument("--max-academic-retries", type=int, default=SEMANTIC_SCHOLAR_MAX_RETRIES)
     parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)

@@ -1,35 +1,40 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 from uuid import uuid4
 
-from langgraph.types import Command, interrupt
+from langgraph.types import Command
 
 from research_tree.agents.workspace.cache import needs_similar_paper_context
 from research_tree.agents.workspace.llm import (
-    AGENT_ACTION_PROFILE,
     AGENT_CHAT_PROFILE,
     AGENT_CRITIQUE_PROFILE,
-    AGENT_INTENT_PROFILE,
+    AGENT_TOOL_LOOP_PROFILE,
     AgentRequestProfile,
     OpenAIResponsesAgentClient,
+    ToolCall,
     WorkspaceAgentLlmClient,
     default_workspace_agent_llm_client,
 )
 from research_tree.agents.workspace.models import (
-    AgentIntent,
-    AgentNextAction,
     PipelineRerunRequest,
     WorkspaceCritique,
     WorkspaceValidationSummary,
 )
 from research_tree.agents.workspace.prompts import (
-    build_intent_prompt,
-    build_next_action_prompt,
+    build_agent_loop_prompt,
     build_workspace_chat_prompt,
     build_workspace_critique_prompt,
+)
+from research_tree.agents.workspace.tools import (
+    ALL_TOOLS,
+    ToolContext,
+    run_tool,
+    tool_schemas,
+    web_search_enabled,
 )
 from research_tree.agents.workspace.state import WorkspaceAgentState
 from research_tree.llm import DEFAULT_MODEL
@@ -40,7 +45,10 @@ from research_tree.retrieval.pipeline_args import (
     pipeline_config_from_normalized_args,
     validate_pipeline_rerun_request,
 )
-from research_tree.workspace.construction import construct_workspace
+from research_tree.workspace.construction import (
+    DERIVED_PAPER_CARD_FIELDS,
+    construct_workspace,
+)
 from research_tree.workspace.context import (
     build_workspace_chat_context,
     build_workspace_summary,
@@ -53,6 +61,7 @@ from research_tree.workspace.enrichment import (
 )
 from research_tree.workspace.operations import (
     WorkspacePatchError,
+    operation_target_ids as _operation_target_ids,
     apply_structured_workspace_patch,
     apply_workspace_patch_in_memory,
     remove_visible_paper_operation,
@@ -73,6 +82,18 @@ from research_tree.workspace.validators import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+
+# Model turns per request. Each round is one LLM call plus its tools, so this
+# bounds both cost and latency for a single user message.
+MAX_TOOL_ROUNDS = 8
+
+# Editing and critique both need the heavy workspace context, so they route
+# through the node that builds it; a rerun does not.
+_TERMINAL_TOOL_NODES = {
+    "propose_workspace_edit": "build_workspace_context",
+    "propose_pipeline_rerun": "prepare_retrieval_rerun",
+    "critique_workspace": "build_workspace_context",
+}
 
 
 class WorkspaceAgentNodes:
@@ -151,45 +172,159 @@ class WorkspaceAgentNodes:
             "warnings": [],
             "errors": errors,
             "node_trace": [_trace("load_workspace")],
-            "messages": [{"role": "user", "content": state.get("user_message", "")}],
             "conversation_history": state.get("conversation_history") or [],
         }
 
-    def classify_intent(
+    def agent_loop(
         self,
         state: WorkspaceAgentState,
-    ) -> Command[Literal["build_workspace_context"]]:
-        prompt = build_intent_prompt(
-            user_message=state.get("user_message", ""),
-            conversation_history=state.get("conversation_history") or [],
-            workspace_summary=state.get("workspace_summary"),
-        )
-        intent = self.llm_client.complete_structured(
-            prompt=prompt,
-            response_model=AgentIntent,
+    ) -> Command[
+        Literal[
+            "execute_tools",
+            "build_workspace_context",
+            "prepare_retrieval_rerun",
+            "finalize_response",
+        ]
+    ]:
+        """Ask the model what to do next; it answers by calling a tool or not.
+
+        This replaced a pair of LLM calls that classified an intent and then
+        planned an action from a fixed taxonomy. Tool selection is the same
+        decision made once, by a model that can look things up first.
+        """
+
+        rounds = int(state.get("tool_rounds", 0)) + 1
+        max_rounds = int(state.get("max_tool_rounds", MAX_TOOL_ROUNDS))
+        transcript = list(state.get("transcript_items") or [])
+        if not transcript:
+            transcript = [
+                {
+                    "role": "user",
+                    "content": build_agent_loop_prompt(
+                        user_message=state.get("user_message", ""),
+                        conversation_history=state.get("conversation_history") or [],
+                        workspace_summary=state.get("workspace_summary") or {},
+                    ),
+                }
+            ]
+
+        # On the last round, offer no tools. Running out of budget should end in
+        # an answer built from what was already gathered, not an error.
+        out_of_budget = rounds >= max_rounds
+        if out_of_budget:
+            transcript = [
+                *transcript,
+                {
+                    "role": "user",
+                    "content": (
+                        "You have no tool calls left. Answer now using what you "
+                        "have gathered, and say plainly what you could not check."
+                    ),
+                },
+            ]
+
+        turn = self.llm_client.complete_with_tools(
+            input_items=transcript,
+            tools=(
+                []
+                if out_of_budget
+                else tool_schemas(include_web_search=self._web_search_available())
+            ),
             model_name=state.get("agent_model"),
-            **self._request_profile_kwargs(AGENT_INTENT_PROFILE),
+            **self._request_profile_kwargs(AGENT_TOOL_LOOP_PROFILE),
         )
+        # Every output item is replayed verbatim next turn: with store=false a
+        # reasoning model needs its own encrypted reasoning back alongside the
+        # calls it made.
+        transcript = [*transcript, *turn.output_items]
+
+        terminal = next(
+            (call for call in turn.tool_calls if ALL_TOOLS[call.name].terminal),
+            None,
+        ) if all(call.name in ALL_TOOLS for call in turn.tool_calls) else None
+
+        update: dict[str, Any] = {
+            "transcript_items": transcript,
+            "tool_rounds": rounds,
+            "status": "planning",
+            "node_trace": [_trace("agent_loop")],
+        }
+        if terminal is not None and not out_of_budget:
+            update["next_action"] = _next_action_from_tool_call(terminal, state)
+            update["pending_tool_call_id"] = terminal.call_id
+            return Command(update=update, goto=_TERMINAL_TOOL_NODES[terminal.name])
+        if turn.tool_calls and not out_of_budget:
+            return Command(update=update, goto="execute_tools")
+
+        update["final_response"] = turn.output_text or "Assistant completed."
+        update["status"] = "completed"
+        if out_of_budget:
+            update["warnings"] = [
+                "The assistant reached its tool-call limit for this message."
+            ]
+        return Command(update=update, goto="finalize_response")
+
+    def execute_tools(
+        self,
+        state: WorkspaceAgentState,
+    ) -> Command[Literal["agent_loop"]]:
+        """Run the read tools the model asked for, one at a time.
+
+        Strictly sequential: Semantic Scholar enforces roughly one request per
+        second across every endpoint, process-wide.
+        """
+
+        context = ToolContext(
+            workspace=_required_mapping(state.get("workspace"), "workspace"),
+            workspace_id=_workspace_id(state),
+            repository=self.workspace_repository,
+            repo_root=self.repo_root,
+            chat_context=state.get("chat_context") or {},
+            discovered_papers=dict(state.get("session_discovered_papers") or {}),
+            semantic_scholar_calls=int(state.get("semantic_scholar_calls", 0)),
+        )
+        outputs: list[dict[str, Any]] = []
+        executed: list[str] = []
+        for call in _pending_tool_calls(state):
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call["call_id"],
+                    "output": run_tool(call["name"], context, call["arguments"]),
+                }
+            )
+            executed.append(call["name"])
         return Command(
             update={
-                "intent": intent.model_dump(),
-                "status": "planning",
-                "node_trace": [_trace("classify_intent")],
+                "transcript_items": [*(state.get("transcript_items") or []), *outputs],
+                "session_discovered_papers": context.discovered_papers,
+                "semantic_scholar_calls": context.semantic_scholar_calls,
+                "node_trace": [_trace(f"execute_tools:{','.join(executed)}")],
             },
-            goto="build_workspace_context",
+            goto="agent_loop",
         )
 
-    def build_workspace_context(self, state: WorkspaceAgentState) -> dict[str, Any]:
+    def _web_search_available(self) -> bool:
+        # The built-in tool is executed by OpenAI, so it only exists on the
+        # live client.
+        return isinstance(self.llm_client, OpenAIResponsesAgentClient) and web_search_enabled()
+
+    def build_workspace_context(
+        self,
+        state: WorkspaceAgentState,
+    ) -> Command[Literal["construct_workspace_modification", "critique_workspace"]]:
+        """Assemble the heavy context the editing and critique nodes need.
+
+        This runs only on the paths that use it. It downloads nothing, but it
+        does read every relevant paper's stored full text and rank similar
+        papers, which is wasted work for a question the model can answer by
+        calling a read tool.
+        """
+
         workspace = _required_mapping(state.get("workspace"), "workspace")
-        intent = state.get("intent") or {}
         next_action = state.get("next_action") or {}
-        target_branch_id = (
-            next_action.get("target_branch_id") or intent.get("target_branch_id")
-        )
-        target_paper_ids = sorted(
-            set(intent.get("target_paper_ids") or [])
-            | set(next_action.get("target_paper_ids") or [])
-        )
+        target_branch_id = next_action.get("target_branch_id")
+        target_paper_ids = sorted(set(next_action.get("target_paper_ids") or []))
         similar_papers_context = (
             _similar_papers_context_for_scope(
                 workspace=workspace,
@@ -226,100 +361,23 @@ class WorkspaceAgentNodes:
             )
             context["paper_full_text"] = _bounded_full_text_context(paper_contents)
             context["requested_full_text_paper_ids"] = content_paper_ids
-        return {
-            "chat_context": context,
-            "modification_context": context,
-            "similar_papers_context": similar_papers_context,
-            "off_path_papers": context.get("off_path_papers") or [],
-            "workspace_summary": build_workspace_summary(workspace),
-            "warnings": content_warnings,
-            "node_trace": [_trace("build_workspace_context")],
-        }
-
-    def plan_next_action(
-        self,
-        state: WorkspaceAgentState,
-    ) -> Command[
-        Literal[
-            "answer_chat",
-            "critique_workspace",
-            "construct_workspace_modification",
-            "prepare_retrieval_rerun",
-            "repair_workspace_proposal",
-            "finalize_response",
-        ]
-    ]:
-        iteration = int(state.get("action_iteration_count", 0)) + 1
-        if iteration > int(state.get("max_action_iterations", 6)):
-            return Command(
-                update={
-                    "status": "failed",
-                    "errors": ["Assistant exceeded max action iterations."],
-                    "node_trace": [_trace("plan_next_action")],
-                },
-                goto="finalize_response",
-            )
-
-        prompt = build_next_action_prompt(
-            user_message=state.get("user_message", ""),
-            conversation_history=state.get("conversation_history") or [],
-            intent=state.get("intent") or {},
-            workspace_context=state.get("chat_context") or {},
-            action_history=state.get("action_history") or [],
-            warnings=state.get("warnings") or [],
-            validation_summary=state.get("validation_summary"),
-        )
-        action = self.llm_client.complete_structured(
-            prompt=prompt,
-            response_model=AgentNextAction,
-            model_name=state.get("agent_model"),
-            **self._request_profile_kwargs(AGENT_ACTION_PROFILE),
-        )
-        action_type = action.action_type
-        if needs_similar_paper_context(state):
-            action_type = "construct_workspace_modification"
-        if state.get("retrieval_result") and action_type == "prepare_retrieval_rerun":
-            intent = state.get("intent") or {}
-            action_type = (
-                "construct_workspace_modification"
-                if intent.get("requires_workspace_modification")
-                else "finalize"
-            )
-        goto = "finalize_response" if action_type == "finalize" else action_type
+        action_type = str(next_action.get("action_type") or "")
         return Command(
             update={
-                "next_action": action.model_dump(),
-                "action_history": [
-                    {
-                        "action_type": action_type,
-                        "reason": action.reason,
-                        "iteration": iteration,
-                    }
-                ],
-                "action_iteration_count": iteration,
-                "status": "planning",
-                "node_trace": [_trace("plan_next_action")],
+                "chat_context": context,
+                "modification_context": context,
+                "similar_papers_context": similar_papers_context,
+                "off_path_papers": context.get("off_path_papers") or [],
+                "workspace_summary": build_workspace_summary(workspace),
+                "warnings": content_warnings,
+                "node_trace": [_trace("build_workspace_context")],
             },
-            goto=goto,
+            goto=(
+                "critique_workspace"
+                if action_type == "critique_workspace"
+                else "construct_workspace_modification"
+            ),
         )
-
-    def answer_chat(self, state: WorkspaceAgentState) -> dict[str, Any]:
-        prompt = build_workspace_chat_prompt(
-            user_message=state.get("user_message", ""),
-            conversation_history=state.get("conversation_history") or [],
-            workspace_context=state.get("chat_context") or {},
-        )
-        answer = self.llm_client.complete_text(
-            prompt=prompt,
-            model_name=state.get("agent_model"),
-            **self._request_profile_kwargs(AGENT_CHAT_PROFILE),
-        )
-        return {
-            "final_response": answer,
-            "status": "completed",
-            "node_trace": [_trace("answer_chat")],
-            "messages": [{"role": "assistant", "content": answer}],
-        }
 
     def critique_workspace(self, state: WorkspaceAgentState) -> dict[str, Any]:
         prompt = build_workspace_critique_prompt(
@@ -338,7 +396,6 @@ class WorkspaceAgentNodes:
             "final_response": final_response,
             "status": "completed",
             "node_trace": [_trace("critique_workspace")],
-            "messages": [{"role": "assistant", "content": final_response}],
         }
 
     def prepare_retrieval_rerun(self, state: WorkspaceAgentState) -> dict[str, Any]:
@@ -400,28 +457,72 @@ class WorkspaceAgentNodes:
             "node_trace": [_trace("answer_with_guardrail_rejection")],
         }
 
-    def maybe_review_expensive_rerun(
-        self,
-        state: WorkspaceAgentState,
-    ) -> Command[Literal["rerun_candidate_pipeline", "finalize_rejection"]]:
+    def persist_rerun_review(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        """Save a rerun as a pending review the user approves or rejects.
+
+        Approving it triggers the pipeline through the same reviews API that
+        applies workspace patches, so there is one approval path in the product
+        rather than two.
+        """
+
         guardrail = state.get("retrieval_guardrail_result") or {}
+        request = state.get("retrieval_request") or {}
+        stage = str(request.get("stage") or "candidates")
+        reason = str(request.get("reason") or "")
+        review_id = state.get("review_id") or f"review_{uuid4().hex}"
         payload = {
             "type": "pipeline_rerun_approval",
-            "question": "Approve retrieving more papers?",
+            "review_id": review_id,
+            "question": f"Rerun the {stage} stage of the pipeline?",
+            "stage": stage,
+            "reason": reason,
             "normalized_args": guardrail.get("normalized_args") or {},
             "warnings": guardrail.get("warnings") or [],
-            "reason": (state.get("retrieval_request") or {}).get("reason") or "",
+            "choices": ["approve", "reject"],
         }
-        decision = interrupt(payload)
-        approved = _decision_choice(decision) == "approve"
-        return Command(
-            update={
-                "approval_decision": _decision_dict(decision),
-                "approval_payload": payload,
-                "node_trace": [_trace("maybe_review_expensive_rerun")],
-            },
-            goto="rerun_candidate_pipeline" if approved else "finalize_rejection",
-        )
+        persisted_event_ids: list[str] = []
+        if self.workspace_repository is not None:
+            self.workspace_repository.save_pending_review(
+                _workspace_id(state),
+                review_id=review_id,
+                agent_run_id=str(state.get("agent_run_id") or ""),
+                base_workspace_version_hash=str(
+                    state.get("workspace_version_hash") or ""
+                ),
+                user_message=state.get("user_message", ""),
+                proposed_workspace={},
+                proposed_operations=[],
+                diff_summary={},
+                validation_summary={},
+                interrupt_payload=payload,
+                review_type="pipeline_rerun",
+                pipeline_rerun={
+                    "stage": stage,
+                    "reason": reason,
+                    "normalized_args": guardrail.get("normalized_args") or {},
+                },
+            )
+            run_event_id = self._append_agent_run_event(
+                state,
+                status="pending_review",
+                payload={"review_id": review_id, "pipeline_rerun_stage": stage},
+                actor_type="agent",
+            )
+            if run_event_id:
+                persisted_event_ids.append(run_event_id)
+        return {
+            "approval_payload": payload,
+            "approval_required": True,
+            "review_id": review_id,
+            "review_status": "pending",
+            "status": "awaiting_approval",
+            "final_response": (
+                f"Rerunning the {stage} stage would {reason or 'refresh this workspace'}. "
+                "Approve it and I will start the run."
+            ),
+            "persisted_event_ids": persisted_event_ids,
+            "node_trace": [_trace("persist_rerun_review")],
+        }
 
     def rerun_candidate_pipeline(self, state: WorkspaceAgentState) -> dict[str, Any]:
         guardrail = _required_mapping(
@@ -726,183 +827,6 @@ class WorkspaceAgentNodes:
             "node_trace": [_trace("repair_workspace_proposal")],
         }
 
-    def human_review_proposal(
-        self,
-        state: WorkspaceAgentState,
-    ) -> Command[
-        Literal[
-            "apply_patch_in_memory",
-            "validate_user_edited_patch",
-            "finalize_rejection",
-        ]
-    ]:
-        payload = state.get("approval_payload")
-        if not isinstance(payload, Mapping):
-            payload = _review_interrupt_payload(
-                state,
-                review_id=state.get("review_id"),
-            )
-        decision = interrupt(payload)
-        choice = _decision_choice(decision)
-        if choice == "approve":
-            goto = "apply_patch_in_memory"
-        elif choice == "edit":
-            goto = "validate_user_edited_patch"
-        else:
-            goto = "finalize_rejection"
-        return Command(
-            update={
-                "approval_payload": payload,
-                "approval_decision": _decision_dict(decision),
-                "approval_required": True,
-                "status": "awaiting_approval",
-                "node_trace": [_trace("human_review_proposal")],
-            },
-            goto=goto,
-        )
-
-    def validate_user_edited_patch(self, state: WorkspaceAgentState) -> dict[str, Any]:
-        decision = state.get("approval_decision") or {}
-        edited_workspace = decision.get("proposed_workspace") or decision.get("workspace")
-        updates: dict[str, Any] = {
-            "status": "validating",
-            "node_trace": [_trace("validate_user_edited_patch")],
-        }
-        if isinstance(edited_workspace, Mapping):
-            edited_workspace_dict = dict(edited_workspace)
-            updates["proposed_workspace"] = edited_workspace_dict
-            if self.workspace_repository is not None and state.get("review_id"):
-                result = self.workspace_repository.edit_review_once(
-                    _workspace_id(state),
-                    str(state["review_id"]),
-                    edited_workspace=edited_workspace_dict,
-                    target_ids=_operation_target_ids(
-                        state.get("proposed_operations") or []
-                    ),
-                    approval_decision=decision,
-                )
-                updates["persisted_event_ids"] = result.get("persisted_event_ids") or []
-                if not result.get("ok"):
-                    error_message = (
-                        result.get("error_message")
-                        or "edited review payload could not be persisted."
-                    )
-                    updates["status"] = "failed"
-                    updates["errors"] = [str(error_message)]
-                    return updates
-            else:
-                event_id = self._append_event(
-                    state,
-                    event_type="workspace_patch_edited",
-                    before_hash=state.get("workspace_version_hash"),
-                    after_hash=workspace_version_hash(edited_workspace_dict),
-                    payload={
-                        "approval_decision": decision,
-                        "diff_summary": state.get("diff_summary") or {},
-                        "review_id": state.get("review_id"),
-                    },
-                    actor_type="user",
-                )
-                if event_id:
-                    updates["persisted_event_ids"] = [event_id]
-            updates["review_id"] = None
-            updates["review_status"] = "edited"
-            updates["approval_payload"] = None
-        else:
-            updates["errors"] = ["edited review payload did not include a proposed_workspace."]
-        return updates
-
-    def apply_patch_in_memory(self, state: WorkspaceAgentState) -> dict[str, Any]:
-        if self.workspace_repository is not None and state.get("review_id"):
-            result = self.workspace_repository.approve_review_once(
-                _workspace_id(state),
-                str(state["review_id"]),
-                reason=(state.get("next_action") or {}).get("reason")
-                or state.get("user_message", "approved workspace agent patch"),
-                target_ids=_operation_target_ids(state.get("proposed_operations") or []),
-                approval_decision=state.get("approval_decision") or {},
-            )
-            if not result.get("ok"):
-                error_message = (
-                    result.get("error_message")
-                    or "Workspace review could not be approved."
-                )
-                return {
-                    "status": "failed",
-                    "review_status": result.get("status"),
-                    "final_response": str(error_message),
-                    "errors": [str(error_message)],
-                    "persisted_event_ids": result.get("persisted_event_ids") or [],
-                    "node_trace": [_trace("apply_patch_in_memory:approval_failed")],
-                }
-            return {
-                "updated_workspace": result.get("updated_workspace"),
-                "status": "approved",
-                "review_status": result.get("status"),
-                "persisted_version_hash": result.get("persisted_version_hash"),
-                "persisted_event_ids": result.get("persisted_event_ids") or [],
-                "node_trace": [_trace("apply_patch_in_memory")],
-            }
-
-        updated_workspace = apply_workspace_patch_in_memory(
-            base_workspace=_required_mapping(state.get("workspace"), "workspace"),
-            proposed_workspace=_required_mapping(
-                state.get("proposed_workspace"),
-                "proposed_workspace",
-            ),
-            validation_summary=state.get("validation_summary"),
-        )
-        persisted_version_hash = None
-        persisted_event_ids: list[str] = []
-        if self.workspace_repository is not None:
-            workspace_id = _workspace_id(state)
-            parent_hash = state.get("workspace_version_hash")
-            persisted_version_hash = self.workspace_repository.save_workspace_version(
-                workspace_id,
-                updated_workspace,
-                actor="agent",
-                actor_type="agent",
-                actor_id="workspace_agent",
-                parent_version_hash=parent_hash,
-                reason=(state.get("next_action") or {}).get("reason")
-                or state.get("user_message", "approved workspace agent patch"),
-                agent_run_id=state.get("agent_run_id"),
-            )
-            event_id = self._append_event(
-                state,
-                event_type="workspace_patch_approved_applied",
-                before_hash=parent_hash,
-                after_hash=persisted_version_hash,
-                payload={
-                    "proposed_operations": state.get("proposed_operations") or [],
-                    "diff_summary": state.get("diff_summary") or {},
-                    "validation_summary": state.get("validation_summary") or {},
-                    "approval_decision": state.get("approval_decision") or {},
-                },
-                actor_type="user",
-            )
-            if event_id:
-                persisted_event_ids.append(event_id)
-            run_event_id = self._append_agent_run_event(
-                state,
-                status="approved_applied",
-                payload={
-                    "version_hash": persisted_version_hash,
-                    "event_id": event_id,
-                },
-                actor_type="user",
-            )
-            if run_event_id:
-                persisted_event_ids.append(run_event_id)
-        return {
-            "updated_workspace": updated_workspace,
-            "status": "approved",
-            "review_status": "approved_applied" if state.get("review_id") else None,
-            "persisted_version_hash": persisted_version_hash,
-            "persisted_event_ids": persisted_event_ids,
-            "node_trace": [_trace("apply_patch_in_memory")],
-        }
-
     def finalize_response(self, state: WorkspaceAgentState) -> dict[str, Any]:
         final_response = state.get("final_response")
         if not final_response:
@@ -918,68 +842,6 @@ class WorkspaceAgentNodes:
             "final_response": final_response,
             "status": "completed" if not state.get("errors") else state.get("status", "failed"),
             "node_trace": [_trace("finalize_response")],
-        }
-
-    def finalize_rejection(self, state: WorkspaceAgentState) -> dict[str, Any]:
-        if self.workspace_repository is not None and state.get("review_id"):
-            result = self.workspace_repository.reject_review_once(
-                _workspace_id(state),
-                str(state["review_id"]),
-                reason="user rejected workspace patch",
-                target_ids=_operation_target_ids(state.get("proposed_operations") or []),
-                approval_decision=state.get("approval_decision") or {},
-            )
-            if not result.get("ok"):
-                error_message = (
-                    result.get("error_message")
-                    or "Workspace review could not be rejected."
-                )
-                return {
-                    "status": "failed",
-                    "review_status": result.get("status"),
-                    "final_response": str(error_message),
-                    "errors": [str(error_message)],
-                    "persisted_event_ids": result.get("persisted_event_ids") or [],
-                    "node_trace": [_trace("finalize_rejection:failed")],
-                }
-            return {
-                "status": "rejected",
-                "review_status": result.get("status"),
-                "final_response": "Workspace change was rejected. No patch was applied.",
-                "persisted_event_ids": result.get("persisted_event_ids") or [],
-                "node_trace": [_trace("finalize_rejection")],
-            }
-
-        persisted_event_ids: list[str] = []
-        event_id = self._append_event(
-            state,
-            event_type="workspace_patch_rejected",
-            before_hash=state.get("workspace_version_hash"),
-            after_hash=None,
-            payload={
-                "approval_decision": state.get("approval_decision") or {},
-                "proposed_operations": state.get("proposed_operations") or [],
-                "diff_summary": state.get("diff_summary") or {},
-                "validation_summary": state.get("validation_summary") or {},
-            },
-            actor_type="user",
-        )
-        if event_id:
-            persisted_event_ids.append(event_id)
-        run_event_id = self._append_agent_run_event(
-            state,
-            status="rejected",
-            payload={"event_id": event_id},
-            actor_type="user",
-        )
-        if run_event_id:
-            persisted_event_ids.append(run_event_id)
-        return {
-            "status": "rejected",
-            "review_status": "rejected" if state.get("review_id") else None,
-            "final_response": "Workspace change was rejected. No patch was applied.",
-            "persisted_event_ids": persisted_event_ids,
-            "node_trace": [_trace("finalize_rejection")],
         }
 
     def _append_event(
@@ -1024,14 +886,7 @@ class WorkspaceAgentNodes:
     ) -> str | None:
         if self.workspace_repository is None:
             return None
-        append_run_event = getattr(
-            self.workspace_repository,
-            "append_agent_run_event",
-            None,
-        )
-        if append_run_event is None:
-            return None
-        return append_run_event(
+        return self.workspace_repository.append_agent_run_event(
             _workspace_id(state),
             agent_run_id=str(state.get("agent_run_id") or ""),
             status=status,
@@ -1111,6 +966,76 @@ def _review_interrupt_payload(
     return payload
 
 
+def _next_action_from_tool_call(
+    call: ToolCall,
+    state: WorkspaceAgentState,
+) -> dict[str, Any]:
+    """Translate a terminal tool call into the shape the action nodes read."""
+
+    arguments = call.arguments
+    if call.name == "propose_pipeline_rerun":
+        return {
+            "action_type": "prepare_retrieval_rerun",
+            "reason": str(arguments.get("reason") or ""),
+            "retrieval_request": {
+                # Anything the model supplied is forwarded, including keys the
+                # tool schema does not define, so the guardrail stays the single
+                # authority on what a rerun may change.
+                **arguments,
+                "topic": arguments.get("topic") or _workspace_topic(state),
+                "reason": arguments.get("reason") or "",
+                "stage": arguments.get("stage") or "candidates",
+            },
+        }
+    if call.name == "critique_workspace":
+        return {
+            "action_type": "critique_workspace",
+            "reason": str(arguments.get("focus") or "workspace critique"),
+        }
+    return {
+        "action_type": "construct_workspace_modification",
+        "reason": str(arguments.get("instruction") or ""),
+        "modification_instruction": arguments.get("instruction"),
+        "edit_kind": arguments.get("edit_kind") or "structural",
+        "target_branch_id": arguments.get("target_branch_id"),
+        "target_paper_ids": [
+            str(paper_id) for paper_id in arguments.get("target_paper_ids") or []
+        ],
+        "add_paper_ids": [
+            str(paper_id) for paper_id in arguments.get("add_paper_ids") or []
+        ],
+    }
+
+
+def _pending_tool_calls(state: WorkspaceAgentState) -> list[dict[str, Any]]:
+    """Read the calls from the last model turn that still need results."""
+
+    answered = {
+        str(item.get("call_id"))
+        for item in state.get("transcript_items") or []
+        if isinstance(item, Mapping) and item.get("type") == "function_call_output"
+    }
+    calls: list[dict[str, Any]] = []
+    for item in state.get("transcript_items") or []:
+        if not isinstance(item, Mapping) or item.get("type") != "function_call":
+            continue
+        call_id = str(item.get("call_id") or item.get("id") or "")
+        if call_id in answered:
+            continue
+        try:
+            arguments = json.loads(item.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        calls.append(
+            {
+                "call_id": call_id,
+                "name": str(item.get("name") or ""),
+                "arguments": arguments if isinstance(arguments, dict) else {},
+            }
+        )
+    return calls
+
+
 def _workspace_topic(state: WorkspaceAgentState) -> str:
     workspace = state.get("workspace")
     if isinstance(workspace, Mapping) and workspace.get("topic"):
@@ -1125,38 +1050,6 @@ def _workspace_id(state: WorkspaceAgentState) -> str:
     if isinstance(workspace, Mapping) and workspace.get("workspace_id"):
         return str(workspace["workspace_id"])
     raise ValueError("workspace_id is required for persistence.")
-
-
-def _operation_target_ids(operations: list[dict[str, Any]]) -> dict[str, Any]:
-    branch_ids: set[str] = set()
-    paper_ids: set[str] = set()
-    path_ids: set[str] = set()
-    operation_types: set[str] = set()
-    for operation in operations:
-        if not isinstance(operation, Mapping):
-            continue
-        operation_types.add(str(operation.get("operation_type") or ""))
-        target_ids = operation.get("target_ids")
-        if not isinstance(target_ids, Mapping):
-            continue
-        for key, value in target_ids.items():
-            if value is None:
-                continue
-            values = value if isinstance(value, list) else [value]
-            for item in values:
-                text = str(item)
-                if "paper" in key:
-                    paper_ids.add(text)
-                elif "path" in key:
-                    path_ids.add(text)
-                elif "branch" in key:
-                    branch_ids.add(text)
-    return {
-        "operation_types": sorted(item for item in operation_types if item),
-        "branch_ids": sorted(branch_ids),
-        "paper_ids": sorted(paper_ids),
-        "path_ids": sorted(path_ids),
-    }
 
 
 def _paper_ids_for_explanation(
@@ -1352,7 +1245,11 @@ def _workspace_only_candidate_artifact(
         payload = dict(source_paper) if source_paper is not None else dict(card)
         payload["paper_id"] = payload.get("paper_id") or str(paper_id)
         payload["is_survey"] = bool(payload.get("is_survey")) or _card_is_survey(card)
-        payload.pop("similar_papers", None)
+        # Same derived payloads the editing prompt drops: the model selects
+        # papers by id, and deterministic post-processing restores their
+        # metadata from the real artifact.
+        for derived_field in DERIVED_PAPER_CARD_FIELDS:
+            payload.pop(derived_field, None)
         if _card_is_survey(card):
             artifact["survey_papers"].append(payload)
         else:

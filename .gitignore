@@ -21,16 +21,12 @@ dist/
 .DS_Store
 .*.tmp
 
-# Agent tool scratch
-/.codex/
-.rocketride/
-
-# Local data, logs, and experiment outputs (not part of the product)
+# Local runtime data (workspaces, pipeline artifacts, caches, logs)
 /data/
+
+# Exploratory scripts and their outputs — not part of the product
 /experiments/
-cache/
-output/
-tests/output/
+/tests/output/
 
 # Stray root images
 /*.png

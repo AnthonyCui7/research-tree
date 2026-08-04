@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "npm --workspace @research-tree/web run dev",
     "build": "npm --workspace @research-tree/web run build",
-    "lint": "npm --workspace @research-tree/web run lint",
+    "preview": "npm --workspace @research-tree/web run preview",
     "typecheck": "npm --workspace @research-tree/web run typecheck"
   }
 }

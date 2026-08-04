@@ -31,11 +31,14 @@ npm install
 npm run dev
 ```
 
+Research Tree currently runs as a **local single-user app**: it persists to JSON
+on disk, has no authentication, and binds to localhost.
+
 ## Verifying changes
 
 ```sh
-uv run pytest -q
-cd apps/web && npm run typecheck
+uv run pytest -q       # passes without API keys (deterministic LLM fallback)
+npm run typecheck
 ```
 
 ## Notes

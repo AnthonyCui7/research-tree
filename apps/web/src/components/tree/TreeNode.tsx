@@ -128,16 +128,17 @@ function familyTone(family: number | "group" | null | undefined) {
 }
 
 export function authorLine(authors: string[]): string {
-  if (authors.length === 0) {
+  const [first, second] = authors;
+  if (first === undefined) {
     return "Authors unavailable";
   }
-  if (authors.length === 1) {
-    return citedAuthorName(authors[0]);
+  if (second === undefined) {
+    return citedAuthorName(first);
   }
   if (authors.length === 2) {
-    return `${citedAuthorName(authors[0])} & ${citedAuthorName(authors[1])}`;
+    return `${citedAuthorName(first)} & ${citedAuthorName(second)}`;
   }
-  return `${citedAuthorName(authors[0])} et al.`;
+  return `${citedAuthorName(first)} et al.`;
 }
 
 function citedAuthorName(author: string): string {
@@ -146,7 +147,7 @@ function citedAuthorName(author: string): string {
     return "Author";
   }
   if (trimmed.includes(",")) {
-    return trimmed.split(",", 1)[0].trim() || trimmed;
+    return trimmed.split(",", 1)[0]?.trim() || trimmed;
   }
   return trimmed.split(/\s+/).at(-1) || trimmed;
 }

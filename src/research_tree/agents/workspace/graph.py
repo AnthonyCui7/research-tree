@@ -51,36 +51,26 @@ def build_workspace_agent_graph(
     )
     builder.add_node("load_workspace", nodes.load_workspace)
     builder.add_node(
-        "classify_intent",
-        nodes.classify_intent,
-        destinations=("build_workspace_context",),
-    )
-    builder.add_node(
         "build_workspace_context",
         nodes.build_workspace_context,
         cache_policy=CachePolicy(key_func=workspace_context_cache_key),
+        destinations=("construct_workspace_modification", "critique_workspace"),
     )
     builder.add_node(
-        "plan_next_action",
-        nodes.plan_next_action,
+        "agent_loop",
+        nodes.agent_loop,
         destinations=(
-            "answer_chat",
-            "critique_workspace",
-            "construct_workspace_modification",
+            "execute_tools",
+            "build_workspace_context",
             "prepare_retrieval_rerun",
-            "repair_workspace_proposal",
             "finalize_response",
         ),
     )
-    builder.add_node("answer_chat", nodes.answer_chat)
+    builder.add_node("execute_tools", nodes.execute_tools, destinations=("agent_loop",))
     builder.add_node("critique_workspace", nodes.critique_workspace)
     builder.add_node("prepare_retrieval_rerun", nodes.prepare_retrieval_rerun)
     builder.add_node("validate_rerun_args", nodes.validate_rerun_args)
-    builder.add_node(
-        "maybe_review_expensive_rerun",
-        nodes.maybe_review_expensive_rerun,
-        destinations=("rerun_candidate_pipeline", "finalize_rejection"),
-    )
+    builder.add_node("persist_rerun_review", nodes.persist_rerun_review)
     builder.add_node("rerun_candidate_pipeline", nodes.rerun_candidate_pipeline)
     builder.add_node(
         "answer_with_guardrail_rejection",
@@ -109,29 +99,17 @@ def build_workspace_agent_graph(
     )
     builder.add_node("persist_pending_review", nodes.persist_pending_review)
     builder.add_node("repair_workspace_proposal", nodes.repair_workspace_proposal)
-    builder.add_node(
-        "human_review_proposal",
-        nodes.human_review_proposal,
-        destinations=(
-            "apply_patch_in_memory",
-            "validate_user_edited_patch",
-            "finalize_rejection",
-        ),
-    )
-    builder.add_node("validate_user_edited_patch", nodes.validate_user_edited_patch)
-    builder.add_node("apply_patch_in_memory", nodes.apply_patch_in_memory)
     builder.add_node("finalize_response", nodes.finalize_response)
-    builder.add_node("finalize_rejection", nodes.finalize_rejection)
     builder.add_node("finalize_validation_failure", nodes.finalize_validation_failure)
 
     builder.add_edge(START, "load_workspace")
-    builder.add_edge("load_workspace", "classify_intent")
-    builder.add_edge("build_workspace_context", "plan_next_action")
-    builder.add_edge("answer_chat", "finalize_response")
+    # The loop opens on the workspace summary alone; the heavy context is built
+    # only for the paths that read it.
+    builder.add_edge("load_workspace", "agent_loop")
     builder.add_edge("critique_workspace", "finalize_response")
     builder.add_edge("prepare_retrieval_rerun", "validate_rerun_args")
     builder.add_conditional_edges("validate_rerun_args", route_after_rerun_guardrail)
-    builder.add_edge("rerun_candidate_pipeline", "build_workspace_context")
+    builder.add_edge("rerun_candidate_pipeline", "finalize_response")
     builder.add_edge("answer_with_guardrail_rejection", END)
     builder.add_edge("construct_workspace_modification", "derive_operations_and_diff")
     builder.add_edge("derive_operations_and_diff", "select_validators")
@@ -141,12 +119,12 @@ def build_workspace_agent_graph(
         fan_out_validators_with_send,
     )
     builder.add_edge("run_validator", "combine_validation_results")
-    builder.add_edge("persist_pending_review", "human_review_proposal")
+    # A proposal ends the run. Approval happens later through the reviews API,
+    # not by resuming this graph.
+    builder.add_edge("persist_pending_review", "finalize_response")
+    builder.add_edge("persist_rerun_review", "finalize_response")
     builder.add_edge("repair_workspace_proposal", "derive_operations_and_diff")
-    builder.add_edge("validate_user_edited_patch", "derive_operations_and_diff")
-    builder.add_edge("apply_patch_in_memory", "finalize_response")
     builder.add_edge("finalize_response", END)
-    builder.add_edge("finalize_rejection", END)
     builder.add_edge("finalize_validation_failure", END)
 
     return builder.compile(

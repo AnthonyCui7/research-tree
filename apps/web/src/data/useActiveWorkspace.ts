@@ -10,10 +10,11 @@ type ActiveWorkspaceState = {
 };
 
 /**
- * Fetches the full document (and version list) for the selected workspace
- * only. Keyed on the summary's version hash, so the collection SSE stream
- * refreshing summaries is what triggers a refetch after any change — no
- * per-document polling and no whole-collection fan-out.
+ * Fetches the full document for the selected workspace only. Keyed on the
+ * summary's version hash, so the collection SSE stream refreshing summaries is
+ * what triggers a refetch after any change — no per-document polling and no
+ * whole-collection fan-out. The version list is not fetched here: only the
+ * History panel reads it, so it loads when that panel opens.
  */
 export function useActiveWorkspace(summary: WorkspaceSummary | null): ActiveWorkspaceState {
   const [state, setState] = useState<ActiveWorkspaceState>({
@@ -37,10 +38,7 @@ export function useActiveWorkspace(summary: WorkspaceSummary | null): ActiveWork
     }));
     void (async () => {
       try {
-        const [response, versions] = await Promise.all([
-          repositoryWorkspaceGateway.getWorkspace(workspaceId),
-          repositoryWorkspaceGateway.getWorkspaceVersions(workspaceId),
-        ]);
+        const response = await repositoryWorkspaceGateway.getWorkspace(workspaceId);
         if (!active) {
           return;
         }
@@ -48,7 +46,6 @@ export function useActiveWorkspace(summary: WorkspaceSummary | null): ActiveWork
           workspace: {
             ...response.workspace,
             current_workspace_version_hash: response.workspace_version_hash,
-            workspace_versions: versions,
           },
           loading: false,
           error: null,

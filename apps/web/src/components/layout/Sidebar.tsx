@@ -11,6 +11,8 @@ type SidebarProps = {
   onToggleSidebar: () => void;
   buildingRun: PipelineRun | null;
   onResumeBuild: () => void;
+  /** False once the workspace event stream drops; the list stops self-updating. */
+  live: boolean;
 };
 
 export function Sidebar({
@@ -22,6 +24,7 @@ export function Sidebar({
   onToggleSidebar,
   buildingRun,
   onResumeBuild,
+  live,
 }: SidebarProps) {
   const buildingActive =
     buildingRun?.status === "queued" || buildingRun?.status === "running";
@@ -43,6 +46,12 @@ export function Sidebar({
         <div className="max-[980px]:hidden">
           <h1 className="m-0 whitespace-nowrap text-[19px] font-bold leading-[1.2] tracking-normal text-text-primary">Research Tree</h1>
           <p className="mt-[5px] mb-0 whitespace-nowrap text-[11px] leading-[1.3] text-text-secondary">{workspaces.length} workspace{workspaces.length === 1 ? "" : "s"}</p>
+          {!live ? (
+            <p className="mt-[3px] mb-0 flex items-center gap-1.5 whitespace-nowrap text-[11px] leading-[1.3] text-text-muted" role="status" title="The workspace event stream dropped. Reconnecting…">
+              <span className="h-1.5 w-1.5 flex-none rounded-full bg-text-muted" aria-hidden="true" />
+              Live updates paused
+            </p>
+          ) : null}
         </div>
         <button
           className="grid h-8 w-8 flex-none place-items-center rounded-md border border-transparent bg-transparent p-0 text-text-secondary transition-[background-color,border-color,color,transform] duration-200 ease-research enabled:hover:border-border enabled:hover:bg-surface enabled:hover:text-text-primary enabled:active:scale-[0.94] disabled:cursor-not-allowed disabled:text-text-muted [&_svg]:h-[18px] [&_svg]:w-[18px]"

@@ -21,12 +21,15 @@ export function TreeCanvas({ tree, workspace, selectedNodeId, onSelectNode }: Tr
     heights: MeasuredNodeHeights;
   } | null>(null);
   const [fontsReady, setFontsReady] = useState(false);
+  const remeasuredForFontsRef = useRef(false);
   const zoomPercent = Math.round(zoom * 100);
   const treeKey = `${tree.workspaceId}:${tree.currentVersionHash ?? ""}`;
   const measured = measuredHeights?.treeKey === treeKey;
 
   // Cards are rendered once into a hidden layer and measured from the DOM, so
   // layout heights always match the real CSS — no typography mirror to drift.
+  // `measured` is a dependency because the layer only exists while it is false:
+  // discarding heights is what remounts the layer and asks for a fresh pass.
   useLayoutEffect(() => {
     const layer = measureLayerRef.current;
     if (!layer) {
@@ -39,7 +42,7 @@ export function TreeCanvas({ tree, workspace, selectedNodeId, onSelectNode }: Tr
       );
     });
     setMeasuredHeights({ treeKey, heights });
-  }, [treeKey, tree, fontsReady]);
+  }, [treeKey, tree, measured]);
 
   useEffect(() => {
     let active = true;
@@ -52,6 +55,18 @@ export function TreeCanvas({ tree, workspace, selectedNodeId, onSelectNode }: Tr
       active = false;
     };
   }, []);
+
+  // Inter is loaded with `display=swap`, so a cold load measures every card
+  // against the fallback face. Throwing that pass away once the real face
+  // arrives re-measures against the metrics that actually paint; the ref keeps
+  // it to a single extra pass.
+  useEffect(() => {
+    if (!fontsReady || remeasuredForFontsRef.current) {
+      return;
+    }
+    remeasuredForFontsRef.current = true;
+    setMeasuredHeights(null);
+  }, [fontsReady]);
 
   const displayTree = useMemo(() => {
     if (!workspace || !measured || !measuredHeights) {
@@ -69,7 +84,6 @@ export function TreeCanvas({ tree, workspace, selectedNodeId, onSelectNode }: Tr
     canvas.scrollTop = Math.max(0, displayTree.root.position.y - 36);
     // displayTree is intentionally read but not tracked: re-centering belongs to
     // a workspace switch and to the first measured layout, not to every relayout.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tree.workspaceId, measured]);
 
   useLayoutEffect(() => {

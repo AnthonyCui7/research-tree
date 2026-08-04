@@ -7,6 +7,7 @@ from research_tree.services.errors import InvalidResourceIdError
 
 
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,180}$")
+_VERSION_HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 def validate_resource_id(value: str, *, field_name: str) -> str:
@@ -18,42 +19,24 @@ def validate_resource_id(value: str, *, field_name: str) -> str:
     return resource_id
 
 
+def validate_version_hash(value: str, *, field_name: str = "version_hash") -> str:
+    """Reject a malformed hash here so it answers 400 rather than 500.
+
+    The repository raises the same ValueError for a malformed hash and for a
+    corrupt version file; only the first is the caller's fault.
+    """
+
+    version_hash = value.strip().casefold()
+    if not _VERSION_HASH_PATTERN.fullmatch(version_hash):
+        raise InvalidResourceIdError(
+            f"{field_name} must be a 64-character SHA-256 hash."
+        )
+    return version_hash
+
+
 def as_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         from research_tree.services.errors import InvalidPayloadError
 
         raise InvalidPayloadError(f"{field_name} must be a JSON object.")
     return dict(value)
-
-
-def operation_target_ids(operations: list[dict[str, Any]]) -> dict[str, Any]:
-    branch_ids: set[str] = set()
-    paper_ids: set[str] = set()
-    path_ids: set[str] = set()
-    operation_types: set[str] = set()
-    for operation in operations:
-        if not isinstance(operation, Mapping):
-            continue
-        operation_types.add(str(operation.get("operation_type") or ""))
-        target_ids = operation.get("target_ids")
-        if not isinstance(target_ids, Mapping):
-            continue
-        for key, value in target_ids.items():
-            if value is None:
-                continue
-            values = value if isinstance(value, list) else [value]
-            for item in values:
-                text = str(item)
-                if "paper" in key:
-                    paper_ids.add(text)
-                elif "path" in key:
-                    path_ids.add(text)
-                elif "branch" in key:
-                    branch_ids.add(text)
-    return {
-        "operation_types": sorted(item for item in operation_types if item),
-        "branch_ids": sorted(branch_ids),
-        "paper_ids": sorted(paper_ids),
-        "path_ids": sorted(path_ids),
-    }
-

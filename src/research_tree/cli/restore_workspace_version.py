@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
+from research_tree.paths import workspaces_dir
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -15,7 +16,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workspace-id", required=True)
     parser.add_argument(
         "--repository-dir",
-        default=os.environ.get("RESEARCH_TREE_DATA_DIR", "data/workspaces"),
+        default=str(workspaces_dir()),
     )
     parser.add_argument("--version-hash")
     parser.add_argument("--list", action="store_true", help="List saved versions and exit.")

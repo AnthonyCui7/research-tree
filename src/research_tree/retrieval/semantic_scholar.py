@@ -20,6 +20,13 @@ from research_tree.retrieval.text import (
 # shedding, which 429s compliant clients when S2 is stressed.
 SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.5
 
+# Four retries engage the client's full backoff ladder (5/10/45/90 s). The
+# probed recovery window after a bulk 429 streak was 30+ seconds, so the 45 s
+# tier is the first one that can actually outlast a shedding period; with only
+# two retries (5/10 s) every real shedding window killed the run. A request
+# that still fails after ~2.5 minutes of patience is a genuine outage.
+SEMANTIC_SCHOLAR_MAX_RETRIES = 4
+
 # Every Semantic Scholar client shares one request budget — across threads,
 # clients, and processes (backend, CLIs, anything else using this key from
 # this machine). The file holds the last-request timestamp under an flock.
@@ -79,7 +86,7 @@ class SemanticScholarClient:
         api_key: str | None = None,
         request_delay_seconds: float = SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
         refresh_cache: bool = False,
-        max_retries: int = 2,
+        max_retries: int = SEMANTIC_SCHOLAR_MAX_RETRIES,
         timeout_seconds: float = 20.0,
     ) -> None:
         headers = {"User-Agent": "research-tree/0.1"}

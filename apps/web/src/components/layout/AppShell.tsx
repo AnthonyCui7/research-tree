@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { TreeCanvas } from "../tree/TreeCanvas";
@@ -13,6 +14,7 @@ import type { PipelineRun, TreeNodeId, TreeViewModel, WorkspaceDocument, Workspa
 type AppShellProps = {
   status: "loading" | "ready" | "error";
   error: string | null;
+  live: boolean;
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
   tree: TreeViewModel | null;
@@ -44,6 +46,7 @@ type AppShellProps = {
 export function AppShell({
   status,
   error,
+  live,
   workspaces,
   activeWorkspaceId,
   tree,
@@ -71,10 +74,23 @@ export function AppShell({
   onPipelineStarted,
   onPipelineFinished,
 }: AppShellProps) {
+  // A failed background refresh keeps the workspaces already on screen, so the
+  // failure has nowhere else to appear. Dismissal is tracked by message, so a
+  // later — different — failure still speaks up.
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
   const selectedNode = tree && selectedNodeId ? tree.nodesById[selectedNodeId] ?? null : null;
   const activePipelineRunning =
     buildingRun?.workspace_id === activeWorkspaceId &&
     (buildingRun.status === "queued" || buildingRun.status === "running");
+  const refreshError =
+    status !== "error" && error && error !== dismissedError ? error : null;
+  // A refresh that succeeds re-arms the strip, so the same failure returning
+  // after a good refresh is reported again rather than silently swallowed.
+  useEffect(() => {
+    if (!error) {
+      setDismissedError(null);
+    }
+  }, [error]);
 
   return (
     <div
@@ -94,6 +110,7 @@ export function AppShell({
         onToggleSidebar={onToggleSidebar}
         buildingRun={buildingRun}
         onResumeBuild={onResumeBuild}
+        live={live}
       />
       <button
         className="fixed bottom-4 left-4 z-[calc(var(--z-panel)_+_1)] grid h-10 w-10 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-surface shadow-launcher transition-none enabled:hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-border-strong [&_img]:h-5 [&_img]:w-5"
@@ -106,7 +123,7 @@ export function AppShell({
         <img src={agentIcon} alt="" aria-hidden="true" />
       </button>
 
-      <main className="grid h-screen min-w-0 grid-rows-[64px_minmax(0,1fr)] max-[720px]:grid-rows-[auto_minmax(0,1fr)]" aria-label="Research workspace">
+      <main className="grid h-full min-w-0 grid-rows-[64px_minmax(0,1fr)] max-[720px]:grid-rows-[auto_minmax(0,1fr)]" aria-label="Research workspace">
         <TopBar
           workspaceTitle={tree?.title ?? "Workspace"}
           tree={tree}
@@ -170,7 +187,6 @@ export function AppShell({
                   workspaceId={activeWorkspace.workspace_id}
                   workspaceTitle={activeWorkspace.title}
                   currentVersionHash={tree.currentVersionHash}
-                  versions={activeWorkspace.workspace_versions ?? []}
                   onClose={onCloseUtility}
                   onChanged={onWorkspaceChanged}
                   onDeleted={onWorkspaceDeleted}
@@ -187,6 +203,20 @@ export function AppShell({
                 />
               ) : null}
             </>
+          ) : null}
+          {refreshError ? (
+            <div className="absolute right-6 bottom-6 z-[2] flex max-w-[min(420px,calc(100%_-_48px))] items-start gap-2 rounded-sm border border-[color-mix(in_srgb,var(--color-error)_26%,transparent)] bg-[color-mix(in_srgb,var(--color-error)_9%,var(--color-surface))] px-3 py-2.5 text-xs leading-[1.45] text-error shadow-control max-[720px]:right-3 max-[720px]:bottom-3" role="alert">
+              <span className="min-w-0">{refreshError}</span>
+              <button
+                className="grid h-5 w-5 flex-none place-items-center rounded-sm border-0 bg-transparent p-0 text-error transition-[background-color] duration-150 hover:bg-[color-mix(in_srgb,var(--color-error)_14%,transparent)] [&_svg]:h-3.5 [&_svg]:w-3.5 max-[720px]:h-8 max-[720px]:w-8"
+                type="button"
+                onClick={() => setDismissedError(refreshError)}
+                aria-label="Dismiss workspace refresh error"
+                title="Dismiss"
+              >
+                <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+              </button>
+            </div>
           ) : null}
         </section>
       </main>

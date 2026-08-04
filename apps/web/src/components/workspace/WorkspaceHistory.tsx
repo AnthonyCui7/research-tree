@@ -1,4 +1,4 @@
-import { messageFrom } from "../../lib/apiError";
+import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../../lib/apiError";
 import { useEffect, useState } from "react";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { cx } from "../../lib/cx";
@@ -9,7 +9,6 @@ type WorkspaceHistoryProps = {
   workspaceId: string;
   workspaceTitle: string;
   currentVersionHash: string;
-  versions: WorkspaceVersion[];
   onClose: () => void;
   onChanged: () => Promise<void>;
   onDeleted: () => Promise<void>;
@@ -20,7 +19,6 @@ export function WorkspaceHistory({
   workspaceId,
   workspaceTitle,
   currentVersionHash,
-  versions,
   onClose,
   onChanged,
   onDeleted,
@@ -30,6 +28,8 @@ export function WorkspaceHistory({
   const [error, setError] = useState<string | null>(null);
   const [present, setPresent] = useState(open);
   const [closing, setClosing] = useState(false);
+  const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
   useEffect(() => {
     if (open) {
       setPresent(true);
@@ -59,6 +59,27 @@ export function WorkspaceHistory({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, open]);
+  // Nothing outside this panel reads the version list, so it is fetched when
+  // the panel opens instead of on every workspace load. The current hash keys
+  // it: any change to the workspace produces a new hash and a fresh list.
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setLoadingVersions(true);
+    void (async () => {
+      try {
+        const loaded = await repositoryWorkspaceGateway.getWorkspaceVersions(workspaceId);
+        if (active) setVersions(loaded);
+      } catch (requestError) {
+        if (active) setError(messageFrom(requestError));
+      } finally {
+        if (active) setLoadingVersions(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [currentVersionHash, open, workspaceId]);
   if (!present) return null;
 
   async function restore(versionHash: string) {
@@ -69,8 +90,14 @@ export function WorkspaceHistory({
       await repositoryWorkspaceGateway.restoreWorkspace(workspaceId, versionHash, currentVersionHash);
       await onChanged();
     } catch (requestError) {
-      setError(messageFrom(requestError));
+      const conflict = isVersionConflict(requestError);
+      setError(conflict ? VERSION_CONFLICT_MESSAGE : messageFrom(requestError));
       setBusyHash(null);
+      if (conflict) {
+        // The restore was aimed at a hash the server has already replaced.
+        // Reloading is what makes the next attempt valid.
+        await onChanged();
+      }
     }
   }
 
@@ -81,7 +108,14 @@ export function WorkspaceHistory({
       await repositoryWorkspaceGateway.deleteWorkspace(workspaceId, currentVersionHash);
       await onDeleted();
     } catch (requestError) {
-      setError(messageFrom(requestError));
+      const conflict = isVersionConflict(requestError);
+      setError(conflict ? VERSION_CONFLICT_MESSAGE : messageFrom(requestError));
+      if (conflict) {
+        // Deleting a workspace that changed underneath the request deserves a
+        // fresh look before it is confirmed again.
+        setConfirmDelete(false);
+        await onChanged();
+      }
     } finally {
       setBusyHash(null);
     }
@@ -97,7 +131,9 @@ export function WorkspaceHistory({
       </header>
       <ol className="scrollbar-rt m-0 min-h-0 flex-1 list-none overflow-y-auto px-6 pt-2 max-[720px]:px-[18px]">
         {versions.length === 0 ? (
-          <li className="py-[15px] text-xs text-text-secondary">No saved versions yet.</li>
+          <li className="py-[15px] text-xs text-text-secondary">
+            {loadingVersions ? "Loading versions…" : "No saved versions yet."}
+          </li>
         ) : null}
         {[...versions].reverse().map((version) => (
           <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border py-[15px]" key={`${version.navigation_index ?? 0}:${version.version_hash}`}>
@@ -116,7 +152,7 @@ export function WorkspaceHistory({
           <button className="min-h-[34px] rounded-sm border border-border-strong bg-surface px-2.5 py-[7px] text-xs font-semibold text-text-primary enabled:hover:border-accent enabled:hover:text-accent-deep" type="button" disabled={Boolean(busyHash)} onClick={() => setConfirmDelete(true)}>Delete workspace</button>
         ) : (
           <div className="flex flex-wrap justify-end gap-2">
-            <p className="m-0 mb-1.5 w-full text-xs leading-[1.45] text-text-secondary">Delete “{workspaceTitle}”? You can recover it from local trash.</p>
+            <p className="m-0 mb-1.5 w-full text-xs leading-[1.45] text-text-secondary">Delete “{workspaceTitle}”? This removes the workspace from Research Tree.</p>
             <button className="min-h-[34px] rounded-sm border border-border-strong bg-surface px-2.5 py-[7px] text-xs font-semibold text-text-primary enabled:hover:border-accent enabled:hover:text-accent-deep" type="button" onClick={() => setConfirmDelete(false)}>Cancel</button>
             <button className="min-h-[34px] rounded-sm border border-error bg-error px-2.5 py-[7px] text-xs font-semibold text-surface" type="button" disabled={Boolean(busyHash)} onClick={() => void deleteWorkspace()}>
               {busyHash === "delete" ? "Deleting…" : "Delete"}

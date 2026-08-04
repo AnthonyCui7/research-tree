@@ -15,6 +15,7 @@ from research_tree.retrieval.candidate_preparation import (
     PipelineConfig,
     run_workspace_candidate_preparation_pipeline,
 )
+from research_tree.paths import data_root, pipeline_runs_dir, semantic_scholar_cache_dir
 from research_tree.retrieval.semantic_scholar import SemanticScholarClient, s2_api_key
 from research_tree.services.errors import InvalidPayloadError, WorkspaceNotFoundError
 from research_tree.services.topics import TopicReviewService, topic_slug
@@ -62,25 +63,11 @@ class WorkspacePipelineService:
         self.repo_root = repo_root.resolve()
         self.dispatch = dispatch or _dispatch_local_thread
 
-    def start_new_workspace(self, *, topic: str, model: str = DEFAULT_MODEL) -> dict[str, Any]:
-        review = TopicReviewService(self.repository).review(topic)
-        if not review["is_research_topic"]:
-            raise InvalidPayloadError(review["guidance"] or "Enter an academic research topic.")
-        if review["existing_workspace"]:
-            raise InvalidPayloadError(
-                "A workspace for this topic already exists. Open it and use the Assistant to revise or expand it."
-            )
-        return self._start_approved_new_workspace(
-            topic=str(review["normalized_topic"]),
-            model=model,
-        )
-
     def start_approved_new_workspace(
         self,
         *,
         topic: str,
         topic_review_token: str,
-        model: str = DEFAULT_MODEL,
     ) -> dict[str, Any]:
         normalized_topic = TopicReviewService(self.repository).consume_approved_topic(
             token=topic_review_token,
@@ -90,15 +77,10 @@ class WorkspacePipelineService:
             raise InvalidPayloadError(
                 "Review the research focus again before building a workspace."
             )
-        return self._start_approved_new_workspace(topic=normalized_topic, model=model)
-
-    def _start_approved_new_workspace(self, *, topic: str, model: str) -> dict[str, Any]:
-        normalized_topic = topic
         workspace_id = self._available_workspace_id(topic_slug(normalized_topic))
         return self._start(
             workspace_id=workspace_id,
             topic=normalized_topic,
-            model=model,
             start_stage="candidates",
             source_run=None,
             source_version_hash=None,
@@ -110,7 +92,6 @@ class WorkspacePipelineService:
         workspace_id: str,
         *,
         start_stage: str,
-        model: str = DEFAULT_MODEL,
         expected_version_hash: str | None = None,
     ) -> dict[str, Any]:
         if start_stage not in PIPELINE_STAGES:
@@ -134,7 +115,6 @@ class WorkspacePipelineService:
         return self._start(
             workspace_id=workspace_id,
             topic=str(workspace.get("topic") or workspace.get("title") or ""),
-            model=model,
             start_stage=start_stage,
             source_run=source_run,
             source_version_hash=current_hash,
@@ -164,7 +144,6 @@ class WorkspacePipelineService:
         *,
         workspace_id: str,
         topic: str,
-        model: str,
         start_stage: str,
         source_run: dict[str, Any] | None,
         source_version_hash: str | None,
@@ -177,6 +156,9 @@ class WorkspacePipelineService:
             "run_id": run_id,
             "workspace_id": workspace_id,
             "topic": topic,
+            # Construction is locked to one model: the prompt and its structured
+            # output schema are tuned against it, and a workspace's quality
+            # should not vary with whatever the caller asked for.
             "model": DEFAULT_MODEL,
             "status": "queued",
             "current_stage": None,
@@ -496,20 +478,21 @@ class WorkspacePipelineService:
         return artifacts
 
     def _pipeline_artifact_dir(self, run_id: str) -> Path:
-        directory = (
-            self.repo_root
-            / "experiments"
-            / "output"
-            / "workspace_pipeline_runs"
-            / run_id
-        ).resolve()
+        directory = (pipeline_runs_dir() / run_id).resolve()
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
     def _safe_artifact_path(self, value: str) -> Path:
+        """Confine artifact paths to the data root.
+
+        The candidates stage reports where it wrote, and that path is later
+        read back and passed to file APIs; nothing outside the directory the
+        product owns is a legitimate answer.
+        """
+
         path = Path(value).resolve()
-        if not path.is_relative_to(self.repo_root):
-            raise InvalidPayloadError("pipeline artifact path is outside the repository.")
+        if not path.is_relative_to(data_root().resolve()):
+            raise InvalidPayloadError("pipeline artifact path is outside the data directory.")
         return path
 
     def _available_workspace_id(self, base_id: str) -> str:
@@ -532,7 +515,7 @@ class WorkspacePipelineService:
         # Shares the candidates stage's cache directory, so a paper already
         # fetched during retrieval costs no request during hydration.
         return SemanticScholarClient(
-            cache_dir=self.repo_root / "experiments" / "cache" / "semantic_scholar",
+            cache_dir=semantic_scholar_cache_dir(),
             api_key=s2_api_key(),
         )
 

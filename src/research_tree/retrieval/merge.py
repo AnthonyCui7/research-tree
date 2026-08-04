@@ -36,6 +36,16 @@ def stable_paper_key(paper: Paper) -> str:
 
 
 def merge_papers(existing: Paper, incoming: Paper) -> Paper:
+    """Fold `incoming` into `existing` and return the surviving record.
+
+    Note for callers: `citation_count` can go *up* here (the merge keeps the
+    larger of the two), which invalidates anything derived from it —
+    `citations_per_year` and `age_adjusted_citation_score`. This module owns
+    identity, not scoring, and has no clock, so it cannot recompute them.
+    Any caller that dedupes papers it has already scored must re-score the
+    result (see `_score_age_adjusted_citations` in `candidate_preparation`).
+    """
+
     existing.title = _prefer_longer(existing.title, incoming.title)
     existing.abstract = _prefer_longer(existing.abstract, incoming.abstract)
     existing.year = existing.year or incoming.year
@@ -71,15 +81,26 @@ def dedupe_papers(papers: Iterable[Paper]) -> list[Paper]:
 
     for paper in papers:
         keys = identity_keys(paper)
-        canonical_key = _find_existing_key(keys, aliases)
-        if canonical_key is None:
+        canonical_keys = _existing_keys(keys, aliases)
+        if not canonical_keys:
             canonical_key = keys[0] if keys else stable_paper_key(paper)
             papers_by_key[canonical_key] = paper
         else:
-            papers_by_key[canonical_key] = merge_papers(
-                papers_by_key[canonical_key],
-                paper,
-            )
+            # One record can match several already-registered records at once:
+            # a DOI-only record and an arXiv-only record are two entries until
+            # a third arrives carrying both identifiers and proves they are the
+            # same paper. Fold all of them together, or the losers survive as
+            # duplicates whose aliases now point at a record they are not in.
+            canonical_key, *superseded = canonical_keys
+            merged = papers_by_key[canonical_key]
+            for other_key in superseded:
+                merged = merge_papers(merged, papers_by_key.pop(other_key))
+            if superseded:
+                folded = set(superseded)
+                for key, target in list(aliases.items()):
+                    if target in folded:
+                        aliases[key] = canonical_key
+            papers_by_key[canonical_key] = merge_papers(merged, paper)
 
         for key in identity_keys(papers_by_key[canonical_key]):
             aliases[key] = canonical_key
@@ -87,11 +108,15 @@ def dedupe_papers(papers: Iterable[Paper]) -> list[Paper]:
     return list(papers_by_key.values())
 
 
-def _find_existing_key(keys: list[str], aliases: dict[str, str]) -> str | None:
+def _existing_keys(keys: list[str], aliases: dict[str, str]) -> list[str]:
+    """Canonical keys already registered for any of `keys`, in match order."""
+
+    found: list[str] = []
     for key in keys:
-        if key in aliases:
-            return aliases[key]
-    return None
+        canonical = aliases.get(key)
+        if canonical is not None and canonical not in found:
+            found.append(canonical)
+    return found
 
 
 def _prefer_longer(existing: str, incoming: str) -> str:
