@@ -37,7 +37,6 @@ class WorkspaceAgentService:
         conversation_history: list[dict[str, str]] | None = None,
         thread_id: str | None = None,
         allow_pipeline_rerun: bool = False,
-        require_approval: bool = True,
         model: str = DEFAULT_MODEL,
     ) -> dict[str, Any]:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
@@ -71,7 +70,6 @@ class WorkspaceAgentService:
                     ),
                     "thread_id": thread_id,
                     "allow_pipeline_rerun": allow_pipeline_rerun,
-                    "require_approval": require_approval,
                     "agent_model": model,
                 },
                 graph=graph,
@@ -85,6 +83,9 @@ class WorkspaceAgentService:
             return {
                 "workspace_id": safe_workspace_id,
                 "status": "failed_exception",
+                # The request's thread id, so the client can continue the
+                # conversation after a failed turn.
+                "thread_id": thread_id,
                 "final_response": "Assistant failed before completing the request.",
                 "errors": ["The assistant could not complete that request. Try again."],
                 "warnings": [],

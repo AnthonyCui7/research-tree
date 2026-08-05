@@ -354,10 +354,9 @@ def test_agent_request_passes_bounded_conversation_history() -> None:
 def test_remove_paper_request_persists_a_review_without_calling_the_model() -> None:
     """Paper removal is deterministic, but it still goes through the graph.
 
-    It used to short-circuit before intent classification on any message
-    containing "remove", which turned questions like "why would I remove the
-    DPR paper?" into deletion proposals. The construction node still recognizes
-    the removal and skips the constructor, so no model writes the patch.
+    The model declares `edit_kind: remove_papers` with explicit target ids on
+    its tool call; message wording never routes a deletion, and no model
+    writes the patch.
     """
 
     repository = LocalJsonWorkspaceRepository(_temp_dir())
@@ -366,7 +365,13 @@ def test_remove_paper_request_persists_a_review_without_calling_the_model() -> N
     def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
             llm_client=DeterministicWorkspaceAgentLlmClient(
-                tool_turns=[_edit_tool_turn("Remove Core Method paper.")]
+                tool_turns=[
+                    _edit_tool_turn(
+                        "Remove Core Method paper.",
+                        edit_kind="remove_papers",
+                        target_paper_ids=["p1"],
+                    )
+                ]
             ),
             workspace_constructor=_unexpected_constructor,
             workspace_repository=active_repository,
@@ -453,9 +458,16 @@ def test_modify_agent_request_returns_pending_review_and_persists_review() -> No
     assert response.status_code == 200
     assert payload["status"] == "pending_review"
     assert payload["review_id"]
+    # The offline fallback supplies message_to_user, so the reply is never the
+    # "Assistant completed." placeholder.
+    assert payload["final_response"] == (
+        "I drafted a workspace change from your request for review."
+    )
     review = repository.get_pending_review("workspace-1", payload["review_id"])
     assert review["status"] == "pending"
     assert review["interrupt_payload"]["review_id"] == payload["review_id"]
+    # Keyless, the skeptic degrades to no objections rather than blocking.
+    assert review["interrupt_payload"]["skeptic_notes"] == []
 
 
 def test_get_persisted_review() -> None:
@@ -598,10 +610,9 @@ def test_edit_review_validation_failure_returns_failed_validation() -> None:
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
-def test_guardrail_rejection_returns_failed_guardrail_and_skips_retrieval_runner() -> None:
+def test_guardrail_rejection_returns_failed_guardrail_and_starts_nothing() -> None:
     repository = LocalJsonWorkspaceRepository(_temp_dir())
     _seed_current(repository)
-    retrieval_calls: list[object] = []
 
     def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
@@ -611,7 +622,6 @@ def test_guardrail_rejection_returns_failed_guardrail_and_skips_retrieval_runner
                 ]
             ),
             workspace_repository=active_repository,
-            retrieval_runner=lambda config: retrieval_calls.append(config) or {},
         )
 
     app = create_app()
@@ -629,7 +639,9 @@ def test_guardrail_rejection_returns_failed_guardrail_and_skips_retrieval_runner
 
     assert response.status_code == 200
     assert response.json()["status"] == "failed_guardrail"
-    assert retrieval_calls == []
+    # The rejected rerun leaves no review and no pipeline run behind.
+    assert repository.list_workspace_reviews("workspace-1") == []
+    assert repository.list_pipeline_runs("workspace-1") == []
 
 
 def test_invalid_workspace_proposal_returns_failed_validation_status() -> None:
@@ -846,10 +858,15 @@ def _client_with_repository() -> tuple[TestClient, LocalJsonWorkspaceRepository]
     return TestClient(app), repository
 
 
-def _edit_tool_turn(instruction: str) -> AgentTurn:
+def _edit_tool_turn(instruction: str, **extra: Any) -> AgentTurn:
     """One model turn that asks for a workspace edit."""
 
-    arguments = {"instruction": instruction}
+    arguments = {
+        "instruction": instruction,
+        "edit_kind": "structural",
+        "message_to_user": "I drafted this change for your review.",
+        **extra,
+    }
     return AgentTurn(
         output_items=[
             {
@@ -871,7 +888,11 @@ def _edit_tool_turn(instruction: str) -> AgentTurn:
 def _rerun_tool_turn(reason: str) -> AgentTurn:
     """One model turn that asks to rerun the candidates stage."""
 
-    arguments = {"stage": "candidates", "reason": reason}
+    arguments = {
+        "stage": "candidates",
+        "reason": reason,
+        "message_to_user": "I want to rerun candidate retrieval.",
+    }
     return AgentTurn(
         output_items=[
             {

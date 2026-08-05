@@ -17,32 +17,31 @@ def workspace_context_cache_key(state: Mapping[str, Any]) -> str:
 
 
 def _target_branch_id(state: Mapping[str, Any]) -> str | None:
-    for key in ("next_action", "intent"):
-        value = state.get(key)
-        if isinstance(value, Mapping) and value.get("target_branch_id"):
-            return str(value["target_branch_id"])
+    next_action = state.get("next_action")
+    if isinstance(next_action, Mapping) and next_action.get("target_branch_id"):
+        return str(next_action["target_branch_id"])
     return None
 
 
 def _target_paper_ids(state: Mapping[str, Any]) -> list[str]:
-    paper_ids: set[str] = set()
-    for key in ("next_action", "intent"):
-        value = state.get(key)
-        if isinstance(value, Mapping):
-            paper_ids.update(str(item) for item in value.get("target_paper_ids") or [])
-    return sorted(paper_ids)
+    next_action = state.get("next_action")
+    if not isinstance(next_action, Mapping):
+        return []
+    return sorted(str(item) for item in next_action.get("target_paper_ids") or [])
 
 
 def needs_similar_paper_context(state: Mapping[str, Any]) -> bool:
-    message = str(state.get("user_message") or "").casefold()
+    """Similar-paper context is built only when the model asked for that edit.
+
+    The model declares the edit kind on its tool call; message wording never
+    routes an edit.
+    """
+
     next_action = state.get("next_action")
-    instruction = (
-        str(next_action.get("modification_instruction") or "").casefold()
-        if isinstance(next_action, Mapping)
-        else ""
+    return (
+        isinstance(next_action, Mapping)
+        and next_action.get("edit_kind") == "refresh_similar_papers"
     )
-    text = f"{message} {instruction}"
-    return "similar paper" in text or "related paper" in text
 
 
 def _stable_key(prefix: str, payload: Mapping[str, Any]) -> str:

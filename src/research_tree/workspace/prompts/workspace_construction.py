@@ -6,7 +6,7 @@ from typing import Any, Mapping
 from research_tree.retrieval.text import truncate_words
 
 
-WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v12"
+WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v13"
 # Budgeted in words, the unit abstracts are written in. 250 words is a full
 # abstract for almost every paper: the model curating a field should read the
 # argument, not the first two sentences of it.
@@ -124,7 +124,7 @@ def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
-_WORKSPACE_PROMPT = """You must construct Research Tree workspaces: compact, editable maps of an academic field.
+_WORKSPACE_PROMPT = """You are an academic editor constructing one Research Tree workspace: a compact, editable map of an academic field.
 
 The workspace gives a reader a durable model of the field: central questions, distinct lines of work, and a reading route that makes later papers intelligible. The candidate artifact is a high-recall library, not a bibliography to reproduce. Return only JSON matching the supplied schema. Do not invent papers or metadata.
 
@@ -144,7 +144,7 @@ Build the tree from meaningful intellectual divisions: method families, benchmar
 
 Paths are learning sequences, not date-sorted bibliographies. Order conceptual prerequisites before refinements, with chronology breaking ties. Three to six papers is a reading-load estimate, not a cap: use the number required by intellectual dependencies without adding filler. `why_read_here` states what the reader can now understand because of that step. Use parallel or side paths only for genuinely independent lines of development.
 
-Write as an academic editor for a research-literate reader. Name mechanisms, debates, and intellectual forks directly. Use concrete claims and short sentences.
+Write for a research-literate reader. Name mechanisms, debates, and intellectual forks directly. Use concrete claims and short sentences.
 
 Descriptions and significance
 
@@ -172,4 +172,6 @@ Candidate artifact
 <candidate_artifact_json>
 {candidate_artifact_json}
 </candidate_artifact_json>
+
+Construct the workspace now from the candidate artifact above, following the editorial rules and the output contract.
 """

@@ -253,17 +253,6 @@ def unrelated_rewrite_validator(payload: ValidatorPayload) -> dict[str, Any]:
     return _result("unrelated_rewrite_validator", valid=not errors, errors=errors, warnings=warnings)
 
 
-def pipeline_rerun_guardrail_validator(payload: ValidatorPayload) -> dict[str, Any]:
-    guardrail = _mapping(payload.get("retrieval_guardrail_result"))
-    errors = [] if guardrail.get("allowed") else [str(guardrail.get("rejection_reason") or "pipeline rerun was rejected")]
-    return _result(
-        "pipeline_rerun_guardrail_validator",
-        valid=not errors,
-        errors=errors,
-        warnings=[str(item) for item in guardrail.get("warnings") or []],
-    )
-
-
 WORKSPACE_VALIDATORS: dict[str, WorkspaceValidator] = {
     "schema_validator": schema_validator,
     "paper_reference_validator": paper_reference_validator,
@@ -273,7 +262,6 @@ WORKSPACE_VALIDATORS: dict[str, WorkspaceValidator] = {
     "similar_papers_context_validator": similar_papers_context_validator,
     "operation_target_validator": operation_target_validator,
     "unrelated_rewrite_validator": unrelated_rewrite_validator,
-    "pipeline_rerun_guardrail_validator": pipeline_rerun_guardrail_validator,
 }
 
 

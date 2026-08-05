@@ -46,6 +46,10 @@ logger = logging.getLogger("uvicorn.error")
 
 DEFAULT_WORKSPACE_LLM_TIMEOUT_SECONDS = 900.0
 DEFAULT_WORKSPACE_LLM_REASONING_EFFORT = "xhigh"
+# Agent edits are bounded transformations of an existing document, not
+# open-ended synthesis; xhigh reasoning added latency without changing the
+# small deltas these calls return.
+AGENT_EDIT_REASONING_EFFORT = "high"
 DEFAULT_WORKSPACE_LLM_MAX_OUTPUT_TOKENS: int | None = None
 DEFAULT_WORKSPACE_LLM_TEXT_VERBOSITY = "low"
 DEFAULT_WORKSPACE_LLM_RESPONSE_FORMAT = "json_schema"
@@ -117,10 +121,16 @@ class OpenAIResponsesWorkspaceClient:
         self.text_verbosity = text_verbosity
         self.response_format = response_format
 
-    def call_workspace_llm(self, *, prompt: str, model: str) -> WorkspaceLlmResponse:
+    def call_workspace_llm(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> WorkspaceLlmResponse:
         text_options: dict[str, Any] = {
             "format": (
-                workspace_response_format()
+                (response_schema or workspace_response_format())
                 if self.response_format == "json_schema"
                 else {"type": "json_object"}
             )
@@ -215,17 +225,31 @@ def construct_workspace(
             run_metadata=run_metadata or {},
         )
 
+    delta_schema = (
+        None
+        if construction_mode == "initial_workspace"
+        else workspace_edit_delta_response_format()
+    )
     if raw_llm_output is not None:
         raw_output = raw_llm_output
     elif llm_client is not None:
         raw_output = llm_client.call_workspace_llm(
             prompt=prompt_text,
             model=model,
+            response_schema=delta_schema,
         ).raw_response
     elif os.environ.get("OPENAI_API_KEY"):
-        raw_output = OpenAIResponsesWorkspaceClient().call_workspace_llm(
+        client = (
+            OpenAIResponsesWorkspaceClient()
+            if construction_mode == "initial_workspace"
+            else OpenAIResponsesWorkspaceClient(
+                reasoning_effort=AGENT_EDIT_REASONING_EFFORT
+            )
+        )
+        raw_output = client.call_workspace_llm(
             prompt=prompt_text,
             model=model,
+            response_schema=delta_schema,
         ).raw_response
     elif construction_mode == "workspace_repair" and isinstance(
         (run_metadata or {}).get("proposed_workspace"),
@@ -244,10 +268,25 @@ def construct_workspace(
     else:
         raise RuntimeError("OPENAI_API_KEY is required for workspace construction.")
 
-    workspace = parse_workspace_output(raw_output)
+    if construction_mode == "initial_workspace":
+        workspace = parse_workspace_output(raw_output)
+    else:
+        # Agent edits come back as a delta: only what changes. Deterministic
+        # merge onto the current document means the model cannot touch — or
+        # lose — anything it did not name, and a rename costs hundreds of
+        # output tokens instead of the whole workspace.
+        payload = _agent_output_payload(raw_output)
+        if _is_edit_delta(payload):
+            merge_base = base_workspace
+            if construction_mode == "workspace_repair" and isinstance(
+                (run_metadata or {}).get("proposed_workspace"), dict
+            ):
+                merge_base = (run_metadata or {})["proposed_workspace"]
+            workspace = apply_workspace_edit_delta(merge_base or {}, payload)
+        else:
+            # A full workspace document (offline fallback, replayed artifacts).
+            workspace = payload
     normalize_workspace_payload(workspace)
-    if base_workspace is not None:
-        restore_derived_paper_card_fields(workspace, base_workspace)
     if active_candidate_artifact is not None:
         materialize_workspace_candidate_references(workspace, active_candidate_artifact)
         fill_paper_card_source_metadata(workspace, active_candidate_artifact)
@@ -257,6 +296,14 @@ def construct_workspace(
                 workspace,
                 semantic_scholar_client,
             )
+    # Restore runs last: the steps above can only reintroduce empty derived
+    # payloads (an agent edit's artifact strips them for prompt economy), and
+    # running earlier let exactly that overwrite the restored values. The
+    # label refresh runs after restore because restore reimposes base card
+    # locations verbatim, which carry the old label text after a rename.
+    if base_workspace is not None:
+        restore_derived_paper_card_fields(workspace, base_workspace)
+        refresh_card_location_labels(workspace, base_workspace)
     if construction_mode == "initial_workspace" and active_candidate_artifact is not None:
         _fill_workspace_metadata(
             workspace=workspace,
@@ -410,27 +457,496 @@ def workspace_for_editing_prompt(workspace: Mapping[str, Any]) -> dict[str, Any]
     return projected
 
 
+# The card fields the editing model's output schema actually carries (beyond
+# paper_id). Everything else on a card — provider metadata, TLDRs, analysis
+# fields, reading status, user notes — is owned by deterministic code or the
+# user, so a proposal's value for it can only be reconstruction noise.
+AGENT_EDITABLE_CARD_FIELDS = ("primary_tree_location", "secondary_tags", "importance")
+
+
+# The complete vocabulary of an agent edit. A payload using any of these keys
+# is a delta; one carrying `tree` or `paper_cards` is a full document.
+WORKSPACE_EDIT_DELTA_KEYS = (
+    "title",
+    "topic",
+    "root",
+    "upsert_tree_nodes",
+    "remove_tree_node_ids",
+    "upsert_paper_paths",
+    "remove_paper_path_ids",
+    "upsert_paper_cards",
+    "remove_paper_ids",
+)
+
+
+def workspace_edit_delta_response_format() -> dict[str, Any]:
+    """The JSON schema the agent-edit model answers in: a delta, not a document."""
+
+    string_list = {"type": "array", "items": {"type": "string"}}
+    return {
+        "type": "json_schema",
+        "name": "workspace_edit_delta",
+        "description": (
+            "Only the parts of the workspace this edit changes. Every omitted "
+            "key, object, and field keeps its current value."
+        ),
+        "strict": False,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "title": {"type": "string"},
+                "topic": {"type": "string"},
+                "root": {
+                    "type": "object",
+                    "description": "Only the root fields being changed.",
+                    "additionalProperties": True,
+                },
+                "upsert_tree_nodes": {
+                    "type": "array",
+                    "description": (
+                        "Changed or new branches: node_id plus only the fields "
+                        "being changed. An included list replaces that list."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {"node_id": {"type": "string"}},
+                        "required": ["node_id"],
+                        "additionalProperties": True,
+                    },
+                },
+                "remove_tree_node_ids": string_list,
+                "upsert_paper_paths": {
+                    "type": "array",
+                    "description": (
+                        "Changed or new reading paths: path_id (or "
+                        "branch_node_id for a new path) plus only the fields "
+                        "being changed."
+                    ),
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "remove_paper_path_ids": string_list,
+                "upsert_paper_cards": {
+                    "type": "object",
+                    "description": (
+                        "paper_id to only the card fields being changed "
+                        "(primary_tree_location, secondary_tags, importance)."
+                    ),
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": True,
+                    },
+                },
+                "remove_paper_ids": string_list,
+            },
+        },
+    }
+
+
+def _agent_output_payload(raw_output: str | Mapping[str, Any]) -> dict[str, Any]:
+    """Extract the JSON payload of an agent-edit response.
+
+    Accepts a Responses API envelope, raw JSON text, or an already-parsed
+    payload (test hooks and offline fallbacks hand those in directly)."""
+
+    if (
+        isinstance(raw_output, Mapping)
+        and "output" not in raw_output
+        and "output_text" not in raw_output
+    ):
+        return dict(raw_output)
+    return parse_workspace_output(raw_output)
+
+
+def _is_edit_delta(payload: Mapping[str, Any]) -> bool:
+    if any(key.startswith(("upsert_", "remove_")) for key in payload):
+        return True
+    return "tree" not in payload and "paper_cards" not in payload
+
+
+def apply_workspace_edit_delta(
+    base_workspace: Mapping[str, Any],
+    delta: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Merge an edit delta onto the current workspace document.
+
+    Upserts merge the provided fields onto the existing object (an included
+    list replaces that list wholesale); everything the delta does not mention
+    is carried over verbatim. The merge also keeps the denormalized pieces
+    consistent for the parts it touched: a paper newly listed on a branch
+    leaves its old branch and its card follows; a card whose location moved
+    joins the new branch's membership; papers of a removed branch move up to
+    its parent.
+    """
+
+    workspace = copy.deepcopy(dict(base_workspace))
+    for field_name in ("title", "topic"):
+        value = delta.get(field_name)
+        if isinstance(value, str) and value.strip():
+            workspace[field_name] = value.strip()
+    root_delta = delta.get("root")
+    if isinstance(root_delta, Mapping):
+        root = workspace.setdefault("root", {})
+        if isinstance(root, dict):
+            for key, value in root_delta.items():
+                root[key] = copy.deepcopy(value)
+
+    tree = workspace.setdefault("tree", {"root_node_id": "root", "nodes": []})
+    if not isinstance(tree, dict):
+        workspace["tree"] = tree = {"root_node_id": "root", "nodes": []}
+    nodes = tree.setdefault("nodes", [])
+    if not isinstance(nodes, list):
+        tree["nodes"] = nodes = []
+    nodes_by_id: dict[str, dict[str, Any]] = {
+        str(node.get("node_id")): node
+        for node in nodes
+        if isinstance(node, dict) and node.get("node_id")
+    }
+    base_membership = _membership_by_node(base_workspace)
+
+    structure_changed = False
+    upserted_node_ids: set[str] = set()
+    for node_delta in delta.get("upsert_tree_nodes") or []:
+        if not isinstance(node_delta, Mapping) or not node_delta.get("node_id"):
+            continue
+        node_id = str(node_delta["node_id"])
+        upserted_node_ids.add(node_id)
+        existing = nodes_by_id.get(node_id)
+        if existing is None:
+            node = copy.deepcopy(dict(node_delta))
+            node["node_id"] = node_id
+            node.setdefault("parent_id", "root")
+            node.setdefault("label", node_id.replace("_", " ").title())
+            node.setdefault("description", "")
+            node.setdefault("why_it_matters", node.get("description") or "")
+            node.setdefault("child_node_ids", [])
+            node.setdefault("primary_paper_ids", [])
+            node.setdefault("secondary_paper_ids", [])
+            node.setdefault("tags", [])
+            node.setdefault("open_questions", [])
+            nodes.append(node)
+            nodes_by_id[node_id] = node
+            structure_changed = True
+            continue
+        if (
+            node_delta.get("parent_id")
+            and node_delta["parent_id"] != existing.get("parent_id")
+        ):
+            structure_changed = True
+        for key, value in node_delta.items():
+            existing[key] = copy.deepcopy(value)
+
+    removed_node_ids = [
+        node_id
+        for node_id in _delta_string_list(delta.get("remove_tree_node_ids"))
+        if node_id in nodes_by_id
+    ]
+    for node_id in removed_node_ids:
+        removed = nodes_by_id.pop(node_id)
+        nodes[:] = [
+            node
+            for node in nodes
+            if not (isinstance(node, dict) and str(node.get("node_id")) == node_id)
+        ]
+        structure_changed = True
+        parent_id = str(removed.get("parent_id") or "root")
+        parent = nodes_by_id.get(parent_id)
+        # Its papers move up to the surviving parent rather than dangling.
+        orphan_ids = [
+            *_delta_string_list(removed.get("primary_paper_ids")),
+            *_delta_string_list(removed.get("secondary_paper_ids")),
+        ]
+        if isinstance(parent, dict) and orphan_ids:
+            primary = _delta_string_list(parent.get("primary_paper_ids"))
+            parent["primary_paper_ids"] = primary + [
+                paper_id for paper_id in orphan_ids if paper_id not in primary
+            ]
+        workspace["paper_paths"] = [
+            path
+            for path in workspace.get("paper_paths") or []
+            if not (
+                isinstance(path, Mapping)
+                and str(path.get("branch_node_id")) == node_id
+            )
+        ]
+        for card in (workspace.get("paper_cards") or {}).values():
+            location = card.get("primary_tree_location") if isinstance(card, dict) else None
+            if isinstance(location, dict) and str(location.get("node_id")) == node_id:
+                location["node_id"] = parent_id
+                location.pop("path", None)
+                location.pop("label", None)
+
+    if structure_changed:
+        children_by_parent: dict[str, list[str]] = {}
+        for node in nodes:
+            if isinstance(node, dict) and node.get("node_id"):
+                children_by_parent.setdefault(
+                    str(node.get("parent_id") or "root"), []
+                ).append(str(node["node_id"]))
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node["child_node_ids"] = children_by_parent.get(str(node.get("node_id")), [])
+            node["is_leaf"] = not node["child_node_ids"]
+
+    paths = workspace.setdefault("paper_paths", [])
+    if not isinstance(paths, list):
+        workspace["paper_paths"] = paths = []
+    for path_delta in delta.get("upsert_paper_paths") or []:
+        if not isinstance(path_delta, Mapping):
+            continue
+        existing_path = _matching_path(paths, path_delta)
+        if existing_path is None:
+            paths.append(copy.deepcopy(dict(path_delta)))
+            continue
+        for key, value in path_delta.items():
+            existing_path[key] = copy.deepcopy(value)
+        if "paper_steps" in path_delta and "paper_ids" not in path_delta:
+            existing_path["paper_ids"] = [
+                str(step.get("paper_id"))
+                for step in path_delta.get("paper_steps") or []
+                if isinstance(step, Mapping) and step.get("paper_id")
+            ]
+    removed_path_ids = set(_delta_string_list(delta.get("remove_paper_path_ids")))
+    if removed_path_ids:
+        paths[:] = [
+            path
+            for path in paths
+            if not (
+                isinstance(path, Mapping)
+                and str(path.get("path_id")) in removed_path_ids
+            )
+        ]
+
+    cards = workspace.setdefault("paper_cards", {})
+    if not isinstance(cards, dict):
+        workspace["paper_cards"] = cards = {}
+    base_cards = (
+        base_workspace.get("paper_cards")
+        if isinstance(base_workspace.get("paper_cards"), Mapping)
+        else {}
+    )
+    card_moves: dict[str, str] = {}
+    card_deltas = delta.get("upsert_paper_cards")
+    for paper_id, card_delta in (
+        card_deltas.items() if isinstance(card_deltas, Mapping) else ()
+    ):
+        if not isinstance(card_delta, Mapping):
+            continue
+        paper_id = str(paper_id)
+        card = cards.get(paper_id)
+        if not isinstance(card, dict):
+            card = {"paper_id": paper_id}
+            cards[paper_id] = card
+        for key, value in card_delta.items():
+            card[key] = copy.deepcopy(value)
+        base_node = _location_node_id(base_cards.get(paper_id))
+        new_node = _location_node_id(card)
+        if new_node and base_node and new_node != base_node:
+            card_moves[paper_id] = new_node
+
+    # A card that declares a new location joins that branch's membership.
+    for paper_id, node_id in card_moves.items():
+        target = nodes_by_id.get(node_id)
+        if not isinstance(target, dict):
+            continue
+        for node in nodes_by_id.values():
+            for field_name in ("primary_paper_ids", "secondary_paper_ids"):
+                node[field_name] = [
+                    item
+                    for item in _delta_string_list(node.get(field_name))
+                    if item != paper_id
+                ]
+        target["primary_paper_ids"] = [
+            *_delta_string_list(target.get("primary_paper_ids")),
+            paper_id,
+        ]
+
+    # A paper newly listed on an upserted branch leaves the branches the delta
+    # did not touch, and its card follows.
+    node_labels = _node_labels(workspace)
+    for node_id in upserted_node_ids:
+        node = nodes_by_id.get(node_id)
+        if not isinstance(node, dict):
+            continue
+        base_ids = base_membership.get(node_id, set())
+        for field_name in ("primary_paper_ids", "secondary_paper_ids"):
+            for paper_id in _delta_string_list(node.get(field_name)):
+                if paper_id in base_ids or paper_id in card_moves:
+                    continue
+                for other_id, other in nodes_by_id.items():
+                    if other_id == node_id or other_id in upserted_node_ids:
+                        continue
+                    for other_field in ("primary_paper_ids", "secondary_paper_ids"):
+                        other[other_field] = [
+                            item
+                            for item in _delta_string_list(other.get(other_field))
+                            if item != paper_id
+                        ]
+                card = cards.get(paper_id)
+                if isinstance(card, dict) and _location_node_id(card) != node_id:
+                    card["primary_tree_location"] = {
+                        "node_id": node_id,
+                        "path": _location_path(node_id, node_labels),
+                    }
+
+    remove_ids = [
+        paper_id
+        for paper_id in _delta_string_list(delta.get("remove_paper_ids"))
+        if paper_id in cards
+    ]
+    if remove_ids:
+        from research_tree.workspace.operations import (
+            apply_structured_workspace_patch,
+            remove_visible_paper_operation,
+        )
+
+        workspace = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[
+                remove_visible_paper_operation(paper_id=paper_id)
+                for paper_id in remove_ids
+            ],
+        )
+    return workspace
+
+
+def refresh_card_location_labels(
+    workspace: dict[str, Any],
+    base_workspace: Mapping[str, Any],
+) -> None:
+    """Rewrite renamed branch labels inside card location display text.
+
+    Card locations store the branch label path as display text, and the
+    restore step reimposes base locations verbatim — so after a rename the
+    text still says the old label. Substituting old for new label on the
+    affected cards is deterministic and format-preserving (locations exist
+    as both plain strings and label lists in stored workspaces)."""
+
+    renames = {}
+    base_labels = _node_labels(base_workspace)
+    for node_id, label in _node_labels(workspace).items():
+        old_label = base_labels.get(node_id)
+        if old_label and label and old_label != label:
+            renames[old_label] = label
+    if not renames:
+        return
+    for card in (workspace.get("paper_cards") or {}).values():
+        location = card.get("primary_tree_location") if isinstance(card, dict) else None
+        if not isinstance(location, dict):
+            continue
+        for key in ("path", "label"):
+            value = location.get(key)
+            if isinstance(value, str) and value in renames:
+                location[key] = renames[value]
+            elif isinstance(value, list):
+                location[key] = [
+                    renames.get(item, item) if isinstance(item, str) else item
+                    for item in value
+                ]
+
+
+def _membership_by_node(workspace: Mapping[str, Any]) -> dict[str, set[str]]:
+    tree = workspace.get("tree") if isinstance(workspace.get("tree"), Mapping) else {}
+    membership: dict[str, set[str]] = {}
+    for node in tree.get("nodes") or []:
+        if not isinstance(node, Mapping) or not node.get("node_id"):
+            continue
+        membership[str(node["node_id"])] = {
+            *_delta_string_list(node.get("primary_paper_ids")),
+            *_delta_string_list(node.get("secondary_paper_ids")),
+        }
+    return membership
+
+
+def _matching_path(
+    paths: list[Any],
+    path_delta: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    path_id = str(path_delta.get("path_id") or "")
+    if path_id:
+        for path in paths:
+            if isinstance(path, dict) and str(path.get("path_id")) == path_id:
+                return path
+        return None
+    branch_id = str(path_delta.get("branch_node_id") or "")
+    candidates = [
+        path
+        for path in paths
+        if isinstance(path, dict) and str(path.get("branch_node_id")) == branch_id
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _location_node_id(card: Any) -> str:
+    if not isinstance(card, Mapping):
+        return ""
+    location = card.get("primary_tree_location")
+    if isinstance(location, Mapping):
+        return str(location.get("node_id") or "")
+    if isinstance(location, str):
+        return location.rstrip("/").split("/")[-1]
+    return ""
+
+
+def _delta_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
 def restore_derived_paper_card_fields(
     workspace: dict[str, Any],
     base_workspace: Mapping[str, Any],
 ) -> None:
-    """Put the dropped payloads back, so an edit cannot silently delete them."""
+    """Reimpose everything on a card the editing model does not own.
+
+    Runs last in the agent-edit post-pass. For cards that exist in the base
+    workspace: fields outside the model's output schema come back verbatim
+    (the model never wrote them, so whatever the proposal carries is noise);
+    the model-owned editorial fields come back only when the proposal left
+    them empty (empty means unwritten, not cleared); a location whose node_id
+    is unchanged keeps the base value so display-path format drift never
+    reads as a move. New cards keep whatever materialization built.
+
+    Discarded candidates likewise: the base records (with their discard
+    reasons) are the durable data, restored wholesale minus any candidate the
+    proposal promotes to a visible card.
+    """
 
     base_cards = base_workspace.get("paper_cards")
     paper_cards = workspace.get("paper_cards")
     if not isinstance(base_cards, Mapping) or not isinstance(paper_cards, dict):
         return
+    editable = set(AGENT_EDITABLE_CARD_FIELDS)
     for paper_id, card in paper_cards.items():
         base_card = base_cards.get(paper_id)
         if not isinstance(card, dict) or not isinstance(base_card, Mapping):
             continue
-        for field in DERIVED_PAPER_CARD_FIELDS:
-            if field not in card and field in base_card:
-                card[field] = copy.deepcopy(base_card[field])
-    if "discarded_candidates" not in workspace and "discarded_candidates" in base_workspace:
-        workspace["discarded_candidates"] = copy.deepcopy(
-            base_workspace["discarded_candidates"]
-        )
+        for field, base_value in base_card.items():
+            if field == "paper_id":
+                continue
+            if field in editable:
+                if not card.get(field) and base_value:
+                    card[field] = copy.deepcopy(base_value)
+            else:
+                card[field] = copy.deepcopy(base_value)
+        location = card.get("primary_tree_location")
+        base_location = base_card.get("primary_tree_location")
+        if (
+            isinstance(location, Mapping)
+            and isinstance(base_location, Mapping)
+            and location.get("node_id") == base_location.get("node_id")
+        ):
+            card["primary_tree_location"] = copy.deepcopy(base_location)
+    base_discarded = base_workspace.get("discarded_candidates")
+    if isinstance(base_discarded, list):
+        visible_ids = {str(paper_id) for paper_id in paper_cards}
+        workspace["discarded_candidates"] = [
+            copy.deepcopy(item)
+            for item in base_discarded
+            if isinstance(item, Mapping) and str(item.get("paper_id")) not in visible_ids
+        ]
 
 
 def _build_agent_workspace_prompt(
@@ -458,12 +974,18 @@ def _build_agent_workspace_prompt(
         target_branch_id=target_branch_id,
         target_paper_ids=target_paper_ids,
     )
+    prompt_artifact = _slim_artifact_for_editing_prompt(
+        candidate_artifact,
+        base_workspace,
+    )
     if construction_mode == "workspace_repair":
         return build_workspace_repair_prompt(
             user_message=user_message,
             base_workspace=base_workspace,
             proposed_workspace=(
-                proposed_workspace if isinstance(proposed_workspace, dict) else {}
+                workspace_for_editing_prompt(proposed_workspace)
+                if isinstance(proposed_workspace, dict)
+                else {}
             ),
             validation_errors=[
                 str(error) for error in run_metadata.get("validation_errors") or []
@@ -474,18 +996,59 @@ def _build_agent_workspace_prompt(
                 for item in run_metadata.get("operation_history") or []
                 if isinstance(item, dict)
             ],
-            candidate_artifact=candidate_artifact,
+            candidate_artifact=prompt_artifact,
         )
     return build_agent_modify_workspace_prompt(
         user_message=user_message,
         workspace=base_workspace,
         workspace_context=workspace_context,
-        candidate_artifact=candidate_artifact,
+        candidate_artifact=prompt_artifact,
         agent_instruction=agent_instruction,
         target_branch_id=target_branch_id,
         target_paper_ids=target_paper_ids,
         similar_papers_context=similar_papers_context,
     )
+
+
+def _slim_artifact_for_editing_prompt(
+    candidate_artifact: dict[str, Any] | None,
+    base_workspace: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Compact the candidate artifact for the editing prompt.
+
+    Papers already visible in the workspace appear in the prompt as cards, so
+    repeating their full candidate payloads only re-reads the same document.
+    The full payload is kept for papers the edit could newly introduce —
+    session discoveries, discarded candidates, anchors without cards."""
+
+    if not isinstance(candidate_artifact, Mapping):
+        return None
+    visible_ids = {
+        str(paper_id)
+        for paper_id in (
+            base_workspace.get("paper_cards")
+            if isinstance(base_workspace.get("paper_cards"), Mapping)
+            else {}
+        )
+    }
+    slim = dict(candidate_artifact)
+    for key in ("non_survey_papers", "survey_papers"):
+        slim[key] = [
+            (
+                {
+                    "paper_id": paper.get("paper_id"),
+                    "title": paper.get("title"),
+                    "year": paper.get("year"),
+                    "is_survey": paper.get("is_survey"),
+                    "already_visible_in_workspace": True,
+                }
+                if isinstance(paper, Mapping)
+                and str(paper.get("paper_id")) in visible_ids
+                else paper
+            )
+            for paper in candidate_artifact.get(key) or []
+        ]
+    return slim
 
 
 def _extract_llm_text(raw_response: dict[str, Any]) -> str:

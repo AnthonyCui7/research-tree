@@ -27,7 +27,6 @@ def build_workspace_agent_graph(
     cache: Any = None,
     llm_client: WorkspaceAgentLlmClient | None = None,
     workspace_constructor: Any = None,
-    retrieval_runner: Any = None,
     workspace_repository: Any = None,
 ) -> Any:
     nodes = WorkspaceAgentNodes(
@@ -37,7 +36,6 @@ def build_workspace_agent_graph(
             if workspace_constructor is not None
             else {}
         ),
-        **({"retrieval_runner": retrieval_runner} if retrieval_runner is not None else {}),
         **(
             {"workspace_repository": workspace_repository}
             if workspace_repository is not None
@@ -49,6 +47,7 @@ def build_workspace_agent_graph(
         input_schema=WorkspaceAgentInput,
         output_schema=WorkspaceAgentOutput,
     )
+    builder.add_node("begin_turn", nodes.begin_turn)
     builder.add_node("load_workspace", nodes.load_workspace)
     builder.add_node(
         "build_workspace_context",
@@ -71,7 +70,6 @@ def build_workspace_agent_graph(
     builder.add_node("prepare_retrieval_rerun", nodes.prepare_retrieval_rerun)
     builder.add_node("validate_rerun_args", nodes.validate_rerun_args)
     builder.add_node("persist_rerun_review", nodes.persist_rerun_review)
-    builder.add_node("rerun_candidate_pipeline", nodes.rerun_candidate_pipeline)
     builder.add_node(
         "answer_with_guardrail_rejection",
         nodes.answer_with_guardrail_rejection,
@@ -91,25 +89,26 @@ def build_workspace_agent_graph(
         "combine_validation_results",
         nodes.combine_validation_results,
         destinations=(
-            "persist_pending_review",
+            "skeptic_review_proposal",
             "repair_workspace_proposal",
             "finalize_validation_failure",
             "finalize_response",
         ),
     )
+    builder.add_node("skeptic_review_proposal", nodes.skeptic_review_proposal)
     builder.add_node("persist_pending_review", nodes.persist_pending_review)
     builder.add_node("repair_workspace_proposal", nodes.repair_workspace_proposal)
     builder.add_node("finalize_response", nodes.finalize_response)
     builder.add_node("finalize_validation_failure", nodes.finalize_validation_failure)
 
-    builder.add_edge(START, "load_workspace")
+    builder.add_edge(START, "begin_turn")
+    builder.add_edge("begin_turn", "load_workspace")
     # The loop opens on the workspace summary alone; the heavy context is built
     # only for the paths that read it.
     builder.add_edge("load_workspace", "agent_loop")
     builder.add_edge("critique_workspace", "finalize_response")
     builder.add_edge("prepare_retrieval_rerun", "validate_rerun_args")
     builder.add_conditional_edges("validate_rerun_args", route_after_rerun_guardrail)
-    builder.add_edge("rerun_candidate_pipeline", "finalize_response")
     builder.add_edge("answer_with_guardrail_rejection", END)
     builder.add_edge("construct_workspace_modification", "derive_operations_and_diff")
     builder.add_edge("derive_operations_and_diff", "select_validators")
@@ -119,6 +118,8 @@ def build_workspace_agent_graph(
         fan_out_validators_with_send,
     )
     builder.add_edge("run_validator", "combine_validation_results")
+    # One skeptic reading rides on every proposal that survives validation.
+    builder.add_edge("skeptic_review_proposal", "persist_pending_review")
     # A proposal ends the run. Approval happens later through the reviews API,
     # not by resuming this graph.
     builder.add_edge("persist_pending_review", "finalize_response")

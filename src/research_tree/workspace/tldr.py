@@ -89,7 +89,7 @@ Style target:
 - 18 to 28 words when possible.
 - Plain academic prose with a direct claim about the paper's method, finding, benchmark, or framing.
 - No hype, no markdown, no citation language, no title restatement.
-- Never use these words: it, its, it's, itself.
+- Make the paper's method, finding, or framing the grammatical subject. Never use "it", "its", "it's", or "itself": the sentence is displayed alone on a card, where the referent is lost.
 
 Two examples:
 

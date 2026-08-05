@@ -2,7 +2,13 @@ import { MenuItem, MenuSection, PopoverMenu, type MenuAnchor } from "../ui/Popov
 import { BugIcon, GearIcon, HelpIcon, KeyIcon, SignOutIcon } from "../ui/icons";
 
 /** The screens this menu opens; the shell owns which one is showing. */
-export type AccountScreen = "settings" | "api-keys" | "help" | "report-bug";
+export type AccountScreen =
+  | "settings"
+  | "api-keys"
+  | "help"
+  | "report-bug"
+  | "sign-in"
+  | "create-account";
 
 type ProfileMenuProps = {
   anchor: MenuAnchor;
@@ -66,6 +72,12 @@ export function ProfileMenu({ anchor, onClose, onOpenScreen, apiKeyLabel }: Prof
       </MenuSection>
 
       <MenuSection>
+        <MenuItem
+          icon={<SignOutIcon className="h-[15px] w-[15px] -scale-x-100" />}
+          onClick={() => onOpenScreen("sign-in")}
+        >
+          Sign in / create account
+        </MenuItem>
         <MenuItem
           tone="danger"
           icon={<SignOutIcon className="h-[15px] w-[15px]" />}

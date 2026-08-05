@@ -1,12 +1,15 @@
 import { ApiError } from "../lib/apiError";
 import type {
   AgentRunResult,
+  AnnotationRetrievalMode,
   ApiKeyStatus,
   BugReportResult,
   PaperAnnotation,
   PipelineRun,
+  ReviewActionResponse,
   TopicReview,
   WorkspaceDocument,
+  WorkspaceReview,
   WorkspaceSummary,
   WorkspaceVersion,
 } from "../lib/types";
@@ -68,11 +71,16 @@ export type WorkspaceGateway = {
     conversationHistory?: Array<{ role: "user" | "assistant"; text: string }>,
     threadId?: string | null,
   ) => Promise<AgentRunResult>;
-  approveReview: (workspaceId: string, reviewId: string) => Promise<void>;
-  rejectReview: (workspaceId: string, reviewId: string) => Promise<void>;
+  getWorkspaceReviews: (workspaceId: string) => Promise<WorkspaceReview[]>;
+  approveReview: (workspaceId: string, reviewId: string) => Promise<ReviewActionResponse>;
+  rejectReview: (workspaceId: string, reviewId: string) => Promise<ReviewActionResponse>;
   getApiKeys: () => Promise<{ openai: ApiKeyStatus }>;
   reportBug: (summary: string, details: string, area: string) => Promise<BugReportResult>;
-  getPaperAnnotations: (workspaceId: string, paperId: string) => Promise<PaperAnnotation[]>;
+  getPaperAnnotations: (
+    workspaceId: string,
+    paperId: string,
+    options?: PaperAnnotationOptions,
+  ) => Promise<PaperAnnotationsResult>;
 };
 
 export const repositoryWorkspaceGateway: WorkspaceGateway = {
@@ -143,7 +151,6 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
         model,
         conversation_history: conversationHistory,
         thread_id: threadId,
-        require_approval: true,
         allow_pipeline_rerun: true,
       }),
       // An agent run is a tool loop over the whole workspace, and a single
@@ -153,12 +160,28 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     });
   },
 
+  async getWorkspaceReviews(workspaceId) {
+    // The server lists records by filename (a uuid), not chronologically, and
+    // each record carries the full proposed workspace. Callers sort by
+    // created_at and read only what they render.
+    const payload = await getJson<{ reviews: WorkspaceReview[] }>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/reviews`,
+    );
+    return Array.isArray(payload.reviews) ? payload.reviews : [];
+  },
+
   async approveReview(workspaceId, reviewId) {
-    await postJson(`/workspaces/${encodeURIComponent(workspaceId)}/reviews/${encodeURIComponent(reviewId)}/approve`, {});
+    return postJson<ReviewActionResponse>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/reviews/${encodeURIComponent(reviewId)}/approve`,
+      {},
+    );
   },
 
   async rejectReview(workspaceId, reviewId) {
-    await postJson(`/workspaces/${encodeURIComponent(workspaceId)}/reviews/${encodeURIComponent(reviewId)}/reject`, {});
+    return postJson<ReviewActionResponse>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/reviews/${encodeURIComponent(reviewId)}/reject`,
+      {},
+    );
   },
 
   async getApiKeys() {
@@ -169,10 +192,12 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     return postJson<BugReportResult>("/account/bug-reports", { summary, details, area });
   },
 
-  async getPaperAnnotations(workspaceId, paperId) {
-    const payload = await requestJson<{ annotations: PaperAnnotation[] }>(
-      `/workspaces/${encodeURIComponent(workspaceId)}/paper-annotations` +
-        `?paper_id=${encodeURIComponent(paperId)}`,
+  async getPaperAnnotations(workspaceId, paperId, options) {
+    const query = new URLSearchParams({ paper_id: paperId });
+    if (options?.mode) query.set("mode", options.mode);
+    if (options?.refresh) query.set("refresh", "true");
+    const payload = await requestJson<PaperAnnotationsResult>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/paper-annotations?${query.toString()}`,
       {
         method: "GET",
         // Annotating a paper the server has not seen before is a model call per
@@ -180,8 +205,26 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
         signal: AbortSignal.timeout(ANNOTATION_REQUEST_TIMEOUT_MS),
       },
     );
-    return Array.isArray(payload.annotations) ? payload.annotations : [];
+    return {
+      annotations: Array.isArray(payload.annotations) ? payload.annotations : [],
+      retrieval_mode: payload.retrieval_mode ?? null,
+      model: payload.model ?? null,
+      generated_at: payload.generated_at ?? null,
+    };
   },
+};
+
+export type PaperAnnotationOptions = {
+  mode?: AnnotationRetrievalMode;
+  /** Regenerate from scratch, ignoring the cached result. */
+  refresh?: boolean;
+};
+
+export type PaperAnnotationsResult = {
+  annotations: PaperAnnotation[];
+  retrieval_mode: string | null;
+  model: string | null;
+  generated_at: string | null;
 };
 
 async function getJson<T>(path: string): Promise<T> {

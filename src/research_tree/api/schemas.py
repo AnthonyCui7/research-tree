@@ -155,6 +155,7 @@ class PaperAnnotationsResponse(BaseModel):
     paper_id: str
     generated_at: str | None = None
     model: str | None = None
+    retrieval_mode: str | None = None
     annotations: list[PaperAnnotation]
 
 
@@ -173,7 +174,8 @@ class AgentRunRequest(BaseModel):
         default=None, max_length=180, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
     allow_pipeline_rerun: bool = False
-    require_approval: bool = True
+    # `require_approval` was removed: proposals and reruns always become pending
+    # reviews. Old clients still sending it are ignored by pydantic.
     model: str = Field(default=DEFAULT_MODEL, min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:-]+$")
 
 

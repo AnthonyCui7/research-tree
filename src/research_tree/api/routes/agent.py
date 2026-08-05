@@ -22,6 +22,5 @@ def run_workspace_agent(
         conversation_history=request.conversation_history,
         thread_id=request.thread_id,
         allow_pipeline_rerun=request.allow_pipeline_rerun,
-        require_approval=request.require_approval,
         model=request.model,
     )

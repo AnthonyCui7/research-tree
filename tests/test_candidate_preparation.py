@@ -749,8 +749,12 @@ class CandidatePreparationTest(unittest.TestCase):
             )
 
         self.assertEqual(belongs, {"real"})
+        # The listing sits between the "Papers:" header and the closing
+        # instruction line that restates the task after the data.
         listing = json.loads(
-            call.call_args.args[0]["input"].rsplit("Papers:\n", 1)[1]
+            call.call_args.args[0]["input"]
+            .rsplit("Papers:\n", 1)[1]
+            .split("\n\nReturn one verdict", 1)[0]
         )
         self.assertEqual([item["id"] for item in listing], ["real"])
 

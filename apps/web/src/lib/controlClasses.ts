@@ -19,6 +19,9 @@ export const dangerActionClass = `${buttonBase} rounded-md border border-error b
 /** The smaller button used inside panel rows (history, proposals). */
 export const compactActionClass = `${buttonBase} rounded-[6px] border border-border bg-surface px-[11px] py-1 text-[11px] text-text-primary enabled:hover:border-accent enabled:hover:text-accent-deep disabled:text-text-muted`;
 
+/** The compact sibling of primaryActionClass, for a row's one main action. */
+export const compactPrimaryActionClass = `${buttonBase} rounded-[6px] border border-transparent bg-accent px-3 py-1 text-[11px] text-white enabled:hover:bg-accent-deep disabled:bg-border-strong disabled:text-white`;
+
 /** Bordered 30px affordance used where the control sits on white chrome. */
 export const outlineIconButtonClass =
   "grid h-[30px] w-[30px] flex-none place-items-center rounded-[7px] border border-border bg-surface p-0 text-text-secondary transition-[background-color,border-color,color] duration-150 enabled:hover:bg-surface-subtle enabled:hover:text-text-primary disabled:cursor-not-allowed disabled:text-border-strong";

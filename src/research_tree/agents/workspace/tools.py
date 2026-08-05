@@ -238,6 +238,81 @@ def _get_semantic_scholar_paper(context: ToolContext, arguments: dict[str, Any])
     return {"paper": next(iter(details.values()))}
 
 
+def _get_workspace_overview(context: ToolContext, _arguments: dict[str, Any]) -> Any:
+    workspace = context.workspace
+    root = workspace.get("root")
+    provenance = workspace.get("provenance")
+    provenance = dict(provenance) if isinstance(provenance, Mapping) else {}
+    provenance.pop("warnings", None)
+    nodes = _tree_nodes(workspace)
+    cards = workspace.get("paper_cards")
+    return {
+        "workspace_id": workspace.get("workspace_id"),
+        "title": workspace.get("title"),
+        "topic": workspace.get("topic"),
+        "scope": workspace.get("scope"),
+        "root": dict(root) if isinstance(root, Mapping) else {},
+        "comparison_tables": workspace.get("comparison_tables") or [],
+        "provenance": provenance,
+        "discarded_candidates": [
+            {
+                "paper_id": item.get("paper_id"),
+                "title": item.get("title"),
+                "discard_reason": item.get("discard_reason"),
+            }
+            for item in workspace.get("discarded_candidates") or []
+            if isinstance(item, Mapping)
+        ],
+        "counts": {
+            "branches": len(nodes),
+            "visible_papers": len(cards) if isinstance(cards, Mapping) else 0,
+            "paper_paths": len(workspace.get("paper_paths") or []),
+        },
+    }
+
+
+def _list_reading_order(context: ToolContext, _arguments: dict[str, Any]) -> Any:
+    workspace = context.workspace
+    cards = workspace.get("paper_cards")
+    cards = cards if isinstance(cards, Mapping) else {}
+
+    def _title(paper_id: str) -> Any:
+        card = cards.get(paper_id)
+        return card.get("title") if isinstance(card, Mapping) else None
+
+    return {
+        "reading_order": [
+            {
+                "order": entry.get("order"),
+                "paper_id": entry.get("paper_id"),
+                "title": _title(str(entry.get("paper_id") or "")),
+                "reason": entry.get("reason"),
+            }
+            for entry in workspace.get("reading_order") or []
+            if isinstance(entry, Mapping)
+        ],
+        "paper_paths": [
+            {
+                "path_id": path.get("path_id"),
+                "branch_node_id": path.get("branch_node_id"),
+                "label": path.get("label"),
+                "description": path.get("description"),
+                "papers": [
+                    {
+                        "paper_id": step.get("paper_id"),
+                        "title": _title(str(step.get("paper_id") or "")),
+                        "why_read_here": step.get("why_read_here"),
+                    }
+                    for step in path.get("paper_steps") or []
+                    if isinstance(step, Mapping)
+                ],
+            }
+            for path in workspace.get("paper_paths") or []
+            if isinstance(path, Mapping)
+        ],
+    }
+
+
 def _list_workspace_history(context: ToolContext, _arguments: dict[str, Any]) -> Any:
     if context.repository is None:
         return {"error": "no workspace repository is available"}
@@ -329,6 +404,26 @@ READ_TOOLS: tuple[AgentTool, ...] = (
         handler=_get_semantic_scholar_paper,
     ),
     AgentTool(
+        name="get_workspace_overview",
+        description=(
+            "Read the workspace's editorial front matter: the root overview, "
+            "scope, key terms, open questions, survey anchors, comparison "
+            "tables, provenance (including the similar-papers policy), and "
+            "the candidates the pipeline considered but discarded."
+        ),
+        parameters=_object({}, []),
+        handler=_get_workspace_overview,
+    ),
+    AgentTool(
+        name="list_reading_order",
+        description=(
+            "Read the workspace-wide reading order and every reading path "
+            "with its ordered papers and per-step rationale."
+        ),
+        parameters=_object({}, []),
+        handler=_list_reading_order,
+    ),
+    AgentTool(
         name="list_workspace_history",
         description="List recent workspace versions and reviews.",
         parameters=_object({}, []),
@@ -353,11 +448,30 @@ TERMINAL_TOOLS: tuple[AgentTool, ...] = (
             {
                 "instruction": {
                     "type": "string",
-                    "description": "What to change, specifically.",
+                    "description": (
+                        "Exactly the change the user asked for — no cleanups "
+                        "or improvements they did not request."
+                    ),
                 },
                 "edit_kind": {
                     "type": "string",
-                    "enum": ["structural", "refresh_similar_papers"],
+                    "enum": ["structural", "remove_papers", "refresh_similar_papers"],
+                    "description": (
+                        "structural: any tree, paper, path, or card edit, "
+                        "including adding papers. remove_papers: delete exactly "
+                        "the papers in target_paper_ids from the visible "
+                        "workspace. refresh_similar_papers: recompute "
+                        "similar-paper recommendations only, changing nothing "
+                        "else."
+                    ),
+                },
+                "message_to_user": {
+                    "type": "string",
+                    "description": (
+                        "One or two sentences telling the user what you are "
+                        "proposing and why. Shown as your chat reply above the "
+                        "review card."
+                    ),
                 },
                 "target_branch_id": {"type": "string"},
                 "target_paper_ids": {"type": "array", "items": {"type": "string"}},
@@ -365,12 +479,14 @@ TERMINAL_TOOLS: tuple[AgentTool, ...] = (
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Semantic Scholar ids returned by a search tool in this "
-                        "conversation. Ids from anywhere else are rejected."
+                        "Required when the edit adds papers: every Semantic "
+                        "Scholar id the edit should newly add, exactly as a "
+                        "search tool returned it in this conversation. Ids "
+                        "from anywhere else are rejected."
                     ),
                 },
             },
-            ["instruction"],
+            ["instruction", "edit_kind", "message_to_user"],
         ),
         terminal=True,
     ),
@@ -390,10 +506,18 @@ TERMINAL_TOOLS: tuple[AgentTool, ...] = (
                     "enum": ["candidates", "construct", "hydrate", "related"],
                 },
                 "reason": {"type": "string"},
+                "message_to_user": {
+                    "type": "string",
+                    "description": (
+                        "One or two sentences telling the user what rerunning "
+                        "would do and why. Shown as your chat reply above the "
+                        "review card."
+                    ),
+                },
                 "topic": {"type": "string"},
                 "max_candidates": {"type": "integer"},
             },
-            ["stage", "reason"],
+            ["stage", "reason", "message_to_user"],
         ),
         terminal=True,
     ),

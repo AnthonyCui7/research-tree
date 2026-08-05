@@ -7,19 +7,12 @@ export const DESKTOP_SIDEBAR_WIDTH = 250;
 /** Below this width the panel is docked full-height over the canvas, not resizable. */
 export const RESIZE_DISABLED_BELOW = 900;
 
-/** The panel never grows past this, however wide the window is. */
-export const PANEL_MAX_WIDTH = 960;
-
-/** Canvas kept visible beside a docked panel, so resizing cannot swallow it. */
-const MIN_VISIBLE_CANVAS = 280;
-
+/** A panel may be dragged over the whole canvas, stopping at the sidebar. */
 export function resizablePanelMaxWidth(
   sidebarCollapsed: boolean,
   viewportWidth: number = window.innerWidth,
 ): number {
-  const available =
-    viewportWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH) - MIN_VISIBLE_CANVAS;
-  return Math.max(0, Math.min(PANEL_MAX_WIDTH, available));
+  return Math.max(0, viewportWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH));
 }
 
 export function clampResizablePanelWidth(

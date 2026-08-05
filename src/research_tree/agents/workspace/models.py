@@ -5,44 +5,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class AgentIntent(BaseModel):
-    intent_type: Literal[
-        "chat",
-        "explain_paper",
-        "explain_branch",
-        "explain_workspace",
-        "recommend_papers",
-        "critique_workspace",
-        "modify_workspace",
-        "expand_branch",
-        "retrieve_more_papers",
-        "repair_workspace",
-    ]
-    confidence: float = Field(ge=0.0, le=1.0)
-    target_branch_id: str | None = None
-    target_paper_ids: list[str] = Field(default_factory=list)
-    requires_workspace_modification: bool
-    requires_more_papers: bool
-    reason: str
-
-
-class AgentNextAction(BaseModel):
-    action_type: Literal[
-        "answer_chat",
-        "critique_workspace",
-        "construct_workspace_modification",
-        "prepare_retrieval_rerun",
-        "repair_workspace_proposal",
-        "finalize",
-    ]
-    reason: str
-    target_branch_id: str | None = None
-    target_paper_ids: list[str] = Field(default_factory=list)
-    needs_more_context: bool = False
-    retrieval_request: dict[str, Any] | None = None
-    modification_instruction: str | None = None
-
-
 class PipelineRerunRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -54,6 +16,16 @@ class PipelineRerunRequest(BaseModel):
     alpha: float | None = None
     reason: str
     requested_by_agent: bool = True
+
+
+class ProposalSkepticNotes(BaseModel):
+    """Second-reader objections attached to a pending review.
+
+    Every field defaults, so the keyless fallback client's empty payload
+    validates to "no objections" and the proposal proceeds.
+    """
+
+    objections: list[str] = Field(default_factory=list, max_length=2)
 
 
 class WorkspaceCritiqueFinding(BaseModel):

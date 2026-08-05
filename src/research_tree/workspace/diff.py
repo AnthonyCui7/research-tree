@@ -23,6 +23,7 @@ def derive_operations_and_diff_summary(
     operations.extend(_paper_path_operations(workspace, proposed_workspace))
     operations.extend(_reading_order_operations(workspace, proposed_workspace))
     operations.extend(_root_operations(workspace, proposed_workspace))
+    operations.extend(_workspace_rename_operations(workspace, proposed_workspace))
 
     if not operations and changed_top_level:
         operations.append(
@@ -90,6 +91,25 @@ def _branch_operations(
                     after={"parent_id": after.get("parent_id")},
                     rationale="Branch parent changed.",
                     confidence=0.5,
+                )
+            )
+        # Editorial text only: membership changes surface through the paper
+        # operations, so listing them here would double-report every move.
+        editorial_changes = {
+            field
+            for field in ("description", "why_it_matters", "tags", "open_questions")
+            if before.get(field) != after.get(field)
+        }
+        if editorial_changes:
+            changed = sorted(editorial_changes)
+            operations.append(
+                _operation(
+                    "update_branch_details",
+                    {"branch_id": node_id},
+                    before={field: before.get(field) for field in changed},
+                    after={field: after.get(field) for field in changed},
+                    rationale="Branch description or editorial detail changed.",
+                    confidence=0.7,
                 )
             )
 
@@ -184,6 +204,11 @@ def _paper_card_operations(
                 for key in set(before) | set(after)
                 if before.get(key) != after.get(key)
             }
+            # A location change is either a move (reported above) or derived
+            # display-text drift for the same node; neither is a card edit.
+            changed_fields.discard("primary_tree_location")
+            if not changed_fields:
+                continue
             if changed_fields == {"similar_papers"}:
                 operations.append(
                     _operation(
@@ -227,6 +252,17 @@ def _paper_path_operations(
                 confidence=0.7,
             )
         )
+    for path_id in sorted(set(before_paths) - set(after_paths)):
+        operations.append(
+            _operation(
+                "remove_paper_path",
+                {"path_id": path_id, "branch_id": before_paths[path_id].get("branch_node_id")},
+                before=dict(before_paths[path_id]),
+                after=None,
+                rationale="Proposal removes a paper path.",
+                confidence=0.7,
+            )
+        )
     for path_id in sorted(set(before_paths) & set(after_paths)):
         if before_paths[path_id] != after_paths[path_id]:
             operations.append(
@@ -266,7 +302,14 @@ def _root_operations(
 ) -> list[dict[str, Any]]:
     before_root = _mapping(workspace.get("root"))
     after_root = _mapping(proposed_workspace.get("root"))
-    root_fields = ("overview", "suggested_reading_direction", "key_terms", "open_questions")
+    root_fields = (
+        "label",
+        "overview",
+        "why_it_matters",
+        "suggested_reading_direction",
+        "key_terms",
+        "open_questions",
+    )
     changed = {
         field: {"before": before_root.get(field), "after": after_root.get(field)}
         for field in root_fields
@@ -282,6 +325,30 @@ def _root_operations(
             after={field: values["after"] for field, values in changed.items()},
             rationale="Proposal updates the root overview.",
             confidence=0.7,
+        )
+    ]
+
+
+def _workspace_rename_operations(
+    workspace: Mapping[str, Any],
+    proposed_workspace: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    changed = {
+        field
+        for field in ("title", "topic")
+        if workspace.get(field) != proposed_workspace.get(field)
+    }
+    if not changed:
+        return []
+    fields = sorted(changed)
+    return [
+        _operation(
+            "rename_workspace",
+            {},
+            before={field: workspace.get(field) for field in fields},
+            after={field: proposed_workspace.get(field) for field in fields},
+            rationale="Proposal renames the workspace.",
+            confidence=0.8,
         )
     ]
 

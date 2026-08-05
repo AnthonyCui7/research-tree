@@ -93,16 +93,79 @@ export type PipelineRun = {
   updated_at: string;
 };
 
+/**
+ * One concrete change inside a proposed revision (backend workspace/diff.py).
+ * `target_ids` keys vary per operation type, and `before`/`after` carry whole
+ * card or path dicts, so both stay loosely typed and are read through the
+ * guarded helpers in lib/proposedOperations.ts.
+ */
+export type ProposedOperation = {
+  operation_type: string;
+  target_ids?: Record<string, unknown>;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  rationale?: string;
+  confidence?: number;
+};
+
+export type AgentValidationSummary = {
+  valid?: boolean;
+  error_count?: number;
+  warning_count?: number;
+  errors?: string[];
+  warnings?: string[];
+};
+
+/** The review payload an agent run pauses on; stored verbatim on the review record. */
+export type AgentInterruptPayload = {
+  type?: string;
+  question?: string;
+  review_id?: string;
+  diff_summary?: Record<string, unknown> | null;
+  proposed_operations?: ProposedOperation[];
+  validation_summary?: AgentValidationSummary | null;
+  skeptic_notes?: string[];
+  warnings?: string[];
+  choices?: string[];
+};
+
 export type AgentRunResult = {
   workspace_id: string;
   status: string;
   thread_id: string | null;
   agent_run_id: string | null;
   review_id: string | null;
+  interrupt_payload?: AgentInterruptPayload | null;
   final_response: string | null;
   diff_summary: Record<string, unknown> | null;
+  validation_summary?: AgentValidationSummary | null;
   warnings: string[];
   errors: string[];
+};
+
+/** A stored review record, as returned by GET /workspaces/{id}/reviews. */
+export type WorkspaceReview = {
+  review_id: string;
+  status: string;
+  review_type?: string;
+  agent_run_id?: string;
+  user_message?: string;
+  created_at?: string;
+  updated_at?: string;
+  proposed_operations?: ProposedOperation[];
+  diff_summary?: Record<string, unknown> | null;
+  validation_summary?: AgentValidationSummary | null;
+  interrupt_payload?: AgentInterruptPayload | null;
+};
+
+export type ReviewActionResponse = {
+  workspace_id: string;
+  review_id: string;
+  status: string;
+  idempotent?: boolean;
+  workspace_version_hash?: string | null;
+  persisted_version_hash?: string | null;
+  pipeline_run?: Record<string, unknown> | null;
 };
 
 export type WorkspaceTree = {
@@ -237,6 +300,9 @@ export type PaperContentSummary = {
 };
 
 export type AnnotationType = "highlight" | "note" | "definition";
+
+/** `fast` groups the paper into sections; `dense` situates every passage. */
+export type AnnotationRetrievalMode = "fast" | "dense";
 
 /** One rectangle of a highlight, as a fraction of the page it sits on. */
 export type HighlightFragment = {

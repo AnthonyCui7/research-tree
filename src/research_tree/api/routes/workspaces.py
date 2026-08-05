@@ -239,9 +239,11 @@ def get_paper_pdf(
 def get_paper_annotations(
     workspace_id: str,
     paper_id: str,
+    mode: str | None = None,
+    refresh: bool = False,
     service: PaperAnnotationService = Depends(get_paper_annotation_service),
 ) -> dict[str, object]:
-    return service.get_paper_annotations(workspace_id, paper_id)
+    return service.get_paper_annotations(workspace_id, paper_id, mode=mode, refresh=refresh)
 
 
 @router.get("/{workspace_id}/versions", response_model=WorkspaceVersionsResponse)

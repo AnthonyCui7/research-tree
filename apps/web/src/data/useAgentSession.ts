@@ -1,14 +1,14 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { repositoryWorkspaceGateway } from "./workspaceApi";
 import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../lib/apiError";
-import type { AgentRunResult } from "../lib/types";
+import type { AgentRunResult, WorkspaceReview } from "../lib/types";
 
 export type ConversationItem = {
   role: "user" | "agent";
   text: string;
 };
 
-export type ReviewOutcome = "applied" | "rejected" | null;
+export type ReviewOutcome = "applied" | "rejected" | "rerun_started" | null;
 
 // One turn is a user message plus the assistant's reply.
 const MAX_HISTORY_TURNS = 12;
@@ -26,6 +26,8 @@ export type AgentSession = {
   /** The unsent message, kept here so closing the panel does not discard it. */
   draft: string;
   setDraft: (draft: string) => void;
+  /** Set when the pending review was restored from storage after a reload. */
+  restoredUserMessage: string | null;
   send: (request: string) => Promise<void>;
   decide: (choice: "approve" | "reject") => Promise<void>;
   dismissError: () => void;
@@ -41,6 +43,7 @@ type SessionState = {
   model: string;
   draft: string;
   threadId: string | null;
+  restoredUserMessage: string | null;
 };
 
 const NEW_SESSION: SessionState = {
@@ -52,6 +55,7 @@ const NEW_SESSION: SessionState = {
   model: "gpt-5.6-luna",
   draft: "",
   threadId: null,
+  restoredUserMessage: null,
 };
 
 /**
@@ -66,6 +70,10 @@ export function useAgentSession(
   onWorkspaceChanged: () => Promise<void>,
 ): AgentSession {
   const [sessions, setSessions] = useState<Record<string, SessionState>>({});
+  // Chat state is in-memory, so a reload orphans any review still pending on
+  // the server. Probed once per workspace; a ref, not state, so the effect
+  // cannot loop on its own writes.
+  const restoredWorkspaceIds = useRef<Set<string>>(new Set());
   const session = (workspaceId ? sessions[workspaceId] : null) ?? NEW_SESSION;
 
   const update = useCallback(
@@ -74,6 +82,31 @@ export function useAgentSession(
     },
     [],
   );
+
+  useEffect(() => {
+    if (!workspaceId || restoredWorkspaceIds.current.has(workspaceId)) return;
+    restoredWorkspaceIds.current.add(workspaceId);
+    const id = workspaceId;
+    void repositoryWorkspaceGateway
+      .getWorkspaceReviews(id)
+      .then((reviews) => {
+        const pending = newestPendingPatchReview(reviews);
+        if (!pending) return;
+        update(id, (state) => {
+          // A live session owns the panel; restoration only fills silence.
+          if (state.result || state.busy || state.conversation.length > 0) return state;
+          return {
+            ...state,
+            result: restoredResult(id, pending),
+            outcome: null,
+            restoredUserMessage: pending.user_message?.trim() || null,
+          };
+        });
+      })
+      // Restoration is best-effort; an error strip about a background probe
+      // would be noise.
+      .catch(() => undefined);
+  }, [update, workspaceId]);
 
   const send = useCallback(
     async (request: string) => {
@@ -103,7 +136,7 @@ export function useAgentSession(
           current.threadId,
         );
         const response =
-          next.final_response ||
+          meaningfulResponse(next.final_response) ||
           (next.status === "pending_review"
             ? "I have prepared a structural revision for your review."
             : "Analysis complete.");
@@ -111,6 +144,7 @@ export function useAgentSession(
           ...state,
           result: next,
           threadId: next.thread_id ?? state.threadId,
+          restoredUserMessage: null,
           // A failed run produced no answer. Reporting one would file a failure
           // as an assistant reply and leave it in the conversation history.
           conversation: agentRunFailed(next.status)
@@ -133,22 +167,33 @@ export function useAgentSession(
       const id = workspaceId;
       update(id, (state) => ({ ...state, busy: true, error: null }));
       try {
+        let outcome: ReviewOutcome;
         if (choice === "approve") {
-          await repositoryWorkspaceGateway.approveReview(id, reviewId);
+          const action = await repositoryWorkspaceGateway.approveReview(id, reviewId);
+          // Approving a rerun review starts a pipeline stage instead of
+          // applying a patch; the strip should say which happened.
+          outcome = action.pipeline_run ? "rerun_started" : "applied";
           await onWorkspaceChanged();
         } else {
           await repositoryWorkspaceGateway.rejectReview(id, reviewId);
+          outcome = "rejected";
         }
         update(id, (state) => ({
           ...state,
-          outcome: choice === "approve" ? "applied" : "rejected",
+          outcome,
           result: null,
+          restoredUserMessage: null,
         }));
       } catch (requestError) {
         if (isVersionConflict(requestError)) {
           // The review was written against a workspace version the server has
           // already moved past; reloading is what makes the next attempt valid.
-          update(id, (state) => ({ ...state, error: VERSION_CONFLICT_MESSAGE, result: null }));
+          update(id, (state) => ({
+            ...state,
+            error: VERSION_CONFLICT_MESSAGE,
+            result: null,
+            restoredUserMessage: null,
+          }));
           await onWorkspaceChanged();
         } else {
           update(id, (state) => ({ ...state, error: messageFrom(requestError) }));
@@ -177,6 +222,7 @@ export function useAgentSession(
     setModel: useCallback((model: string) => change("model", model), [change]),
     draft: session.draft,
     setDraft: useCallback((draft: string) => change("draft", draft), [change]),
+    restoredUserMessage: session.restoredUserMessage,
     send,
     decide,
     dismissError: useCallback(() => {
@@ -188,4 +234,42 @@ export function useAgentSession(
 /** Backend failures are `failed`, `failed_validation`, `failed_guardrail`, `failed_exception`. */
 export function agentRunFailed(status: string): boolean {
   return status.startsWith("failed");
+}
+
+/** Treats the backend's old placeholder the same as no reply at all. */
+function meaningfulResponse(finalResponse: string | null): string | null {
+  const trimmed = finalResponse?.trim() ?? "";
+  if (!trimmed || trimmed === "Assistant completed.") return null;
+  return trimmed;
+}
+
+function newestPendingPatchReview(reviews: WorkspaceReview[]): WorkspaceReview | null {
+  // A restored rerun approval would silently start a build this panel is not
+  // narrating, so only workspace patches are resurrected.
+  const pending = reviews.filter(
+    (review) =>
+      review.status === "pending" && (review.review_type ?? "workspace_patch") === "workspace_patch",
+  );
+  pending.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
+  return pending[0] ?? null;
+}
+
+/** A stored review, reshaped into the run result the review card renders. */
+function restoredResult(workspaceId: string, review: WorkspaceReview): AgentRunResult {
+  const interruptPayload =
+    review.interrupt_payload ??
+    (review.proposed_operations ? { proposed_operations: review.proposed_operations } : null);
+  return {
+    workspace_id: workspaceId,
+    status: "pending_review",
+    thread_id: null,
+    agent_run_id: review.agent_run_id ?? null,
+    review_id: review.review_id,
+    interrupt_payload: interruptPayload,
+    final_response: null,
+    diff_summary: review.diff_summary ?? review.interrupt_payload?.diff_summary ?? null,
+    validation_summary: review.validation_summary ?? null,
+    warnings: [],
+    errors: [],
+  };
 }

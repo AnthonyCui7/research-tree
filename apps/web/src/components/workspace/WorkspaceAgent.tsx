@@ -13,6 +13,7 @@ import { DROPDOWN_EXIT_MS, useExitAnimation } from "../../lib/animation";
 import { pluralize } from "../../lib/format";
 import { agentRunFailed, type AgentSession } from "../../data/useAgentSession";
 import { ArrowRightIcon, ChevronDownIcon, CheckIcon, CloseIcon, SendIcon } from "../ui/icons";
+import { ProposedRevision } from "./ProposedRevision";
 import type { AgentRunResult, BranchTreeNode, TreeViewModel } from "../../lib/types";
 
 type WorkspaceAgentProps = {
@@ -84,7 +85,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
 
   return (
     <>
-      <header className="flex h-11 flex-none items-center gap-2 border-b border-[#e9e8e4] px-4">
+      <header className="flex h-11 flex-none items-center gap-2 border-b border-[#e9e8e4] px-7">
         <h2 className="m-0 flex-1 text-[13.5px] font-bold text-text-primary">Assistant</h2>
         <button
           className="grid h-[26px] w-[26px] flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
@@ -99,7 +100,9 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
 
       <div
         className={cx(
-          "scrollbar-rt flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-4 pt-[18px] pb-2",
+          // Static 28px gutters: the panel stretches to half the screen and
+          // beyond, and the chat column should not ride its edges when it does.
+          "scrollbar-rt flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-7 pt-[18px] pb-2",
           // With nothing said yet the panel is mostly empty space, so the
           // opening prompts sit in the middle of it rather than clinging to the
           // top of a tall blank column.
@@ -138,13 +141,25 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
         ) : null}
 
         {result?.status === "pending_review" && result.review_id ? (
-          <ProposedRevision result={result} busy={busy} onDecide={session.decide} />
+          <ProposedRevision
+            result={result}
+            tree={tree}
+            busy={busy}
+            onDecide={session.decide}
+            restoredUserMessage={session.restoredUserMessage}
+          />
         ) : null}
 
         {outcome === "applied" ? (
           <div className="flex items-center gap-2 rounded-lg border border-accent-border bg-accent-subtle px-[13px] py-2.5 text-xs text-accent-deep">
             <CheckIcon className="h-3 w-3 flex-none" />
             Revision applied. It is the current version — see History.
+          </div>
+        ) : null}
+        {outcome === "rerun_started" ? (
+          <div className="flex items-center gap-2 rounded-lg border border-accent-border bg-accent-subtle px-[13px] py-2.5 text-xs text-accent-deep">
+            <CheckIcon className="h-3 w-3 flex-none" />
+            Approved — a pipeline re-run has started. Watch its progress in the sidebar.
           </div>
         ) : null}
         {outcome === "rejected" ? (
@@ -169,7 +184,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
         ) : null}
       </div>
 
-      <div className="flex-none px-4 pt-2.5 pb-3.5">
+      <div className="flex-none px-7 pt-2.5 pb-3.5">
         <form
           className="rounded-xl border border-border bg-surface pt-2.5 pr-2.5 pb-2 pl-3.5 transition-[border-color,box-shadow] duration-150 focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-subtle)]"
           onSubmit={(event) => {
@@ -335,133 +350,6 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
     });
   }
   return openers;
-}
-
-/* ---------------------------------------------------------- review card --- */
-
-function ProposedRevision({
-  result,
-  busy,
-  onDecide,
-}: {
-  result: AgentRunResult;
-  busy: boolean;
-  onDecide: (choice: "approve" | "reject") => Promise<void>;
-}) {
-  const operations = describeOperations(result.diff_summary);
-  const count = operationCount(result.diff_summary);
-  const paperDelta = paperCountDelta(result.diff_summary);
-
-  return (
-    <div className="overflow-hidden rounded-[11px] border border-border bg-surface">
-      <div className="flex items-center gap-[7px] border-b border-hairline-soft px-[13px] py-2.5">
-        <span className="h-[7px] w-[7px] flex-none rounded-full bg-accent" aria-hidden="true" />
-        <span className="flex-1 text-xs font-semibold text-text-primary">Proposed revision</span>
-        <span className="text-[10.5px] text-text-muted">
-          {count === null ? "needs your approval" : `${count} operation${count === 1 ? "" : "s"} · needs your approval`}
-        </span>
-      </div>
-      <div className="flex flex-col gap-2 px-[13px] py-[11px]">
-        {operations.length > 0 ? (
-          operations.map((operation) => (
-            <div className="flex gap-2 text-xs leading-[1.5]" key={operation.type}>
-              <span className={cx("mt-px flex-none rounded-[5px] px-[7px] text-[10px] font-semibold", badgeTone(operation.badge))}>
-                {operation.badge}
-              </span>
-              <span className="min-w-0 text-text-primary">{operation.label}</span>
-            </div>
-          ))
-        ) : (
-          <p className="m-0 text-xs leading-[1.5] text-text-secondary">
-            A structural revision is ready for your review.
-          </p>
-        )}
-        {paperDelta ? (
-          <p className="m-0 border-t border-dashed border-hairline pt-2 text-[11.5px] leading-[1.55] text-text-muted">
-            Visible papers: {paperDelta.before} → {paperDelta.after}
-          </p>
-        ) : null}
-      </div>
-      <div className="flex items-center gap-2 border-t border-hairline-soft bg-surface-muted px-[13px] py-2.5">
-        <button
-          className="rounded-[7px] border-0 bg-accent px-3.5 py-1.5 text-xs font-semibold text-white transition-[background-color] duration-150 enabled:hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-border-strong"
-          type="button"
-          disabled={busy}
-          onClick={() => void onDecide("approve")}
-        >
-          Approve &amp; apply
-        </button>
-        <button
-          className="rounded-[7px] border border-border bg-surface px-3.5 py-1.5 text-xs font-semibold text-text-secondary transition-[border-color,color] duration-150 enabled:hover:border-border-strong enabled:hover:text-text-primary disabled:cursor-not-allowed disabled:text-text-muted"
-          type="button"
-          disabled={busy}
-          onClick={() => void onDecide("reject")}
-        >
-          Reject
-        </button>
-      </div>
-    </div>
-  );
-}
-
-type OperationDescription = { type: string; badge: string; label: string };
-
-const OPERATION_LABELS: Record<string, { badge: string; label: string }> = {
-  promote_candidate_paper: { badge: "ADD", label: "Add papers to the workspace" },
-  create_paper_path: { badge: "ADD", label: "Add a reading path" },
-  split_branch: { badge: "ADD", label: "Add research branches" },
-  demote_visible_paper: { badge: "REMOVE", label: "Remove papers from the workspace" },
-  merge_branches: { badge: "MERGE", label: "Merge research branches" },
-  move_paper: { badge: "MOVE", label: "Move papers between branches" },
-  update_reading_order: { badge: "MOVE", label: "Reorder the reading order" },
-  rename_branch: { badge: "EDIT", label: "Rename a research branch" },
-  update_paper_card: { badge: "EDIT", label: "Update paper details" },
-  refresh_similar_papers: { badge: "EDIT", label: "Refresh similar-paper suggestions" },
-  update_root_overview: { badge: "EDIT", label: "Update the topic overview" },
-  update_workspace_subtree: { badge: "EDIT", label: "Restructure part of the tree" },
-};
-
-function describeOperations(diff: Record<string, unknown> | null): OperationDescription[] {
-  const types = diff?.operation_types;
-  if (!Array.isArray(types)) {
-    return [];
-  }
-  return types.flatMap((value) => {
-    const type = String(value);
-    const known = OPERATION_LABELS[type];
-    return [
-      known
-        ? { type, badge: known.badge, label: known.label }
-        : { type, badge: "EDIT", label: humanizeOperation(type) },
-    ];
-  });
-}
-
-function humanizeOperation(type: string): string {
-  const words = type.replace(/_/g, " ").trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-function badgeTone(badge: string): string {
-  if (badge === "ADD") return "bg-accent-subtle text-accent-deep";
-  if (badge === "REMOVE") return "bg-error-surface text-error";
-  return "bg-surface-subtle text-text-secondary";
-}
-
-function operationCount(diff: Record<string, unknown> | null): number | null {
-  const value = Number(diff?.operation_count ?? Number.NaN);
-  return Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function paperCountDelta(
-  diff: Record<string, unknown> | null,
-): { before: number; after: number } | null {
-  const before = Number(diff?.visible_paper_count_before ?? Number.NaN);
-  const after = Number(diff?.visible_paper_count_after ?? Number.NaN);
-  if (!Number.isFinite(before) || !Number.isFinite(after) || before === after) {
-    return null;
-  }
-  return { before, after };
 }
 
 /* -------------------------------------------------------------- notices --- */

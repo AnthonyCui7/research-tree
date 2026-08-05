@@ -28,9 +28,18 @@ type NodeInspectorProps = {
   updatedAt: string | null;
   onSelectNode: (nodeId: TreeNodeId) => void;
   onClose: () => void;
+  /** Opens the workspace assistant; the reader's Assistant button uses it. */
+  onOpenAssistant?: () => void;
 };
 
-export function NodeInspector({ node, tree, updatedAt, onSelectNode, onClose }: NodeInspectorProps) {
+export function NodeInspector({
+  node,
+  tree,
+  updatedAt,
+  onSelectNode,
+  onClose,
+  onOpenAssistant,
+}: NodeInspectorProps) {
   return (
     // Node details carry their own heading, so there is no panel title to show.
     // Rather than keep a bar that would sit empty, the close control rests over
@@ -51,7 +60,9 @@ export function NodeInspector({ node, tree, updatedAt, onSelectNode, onClose }: 
         {node.kind === "branch" ? (
           <BranchView node={node} tree={tree} onSelectNode={onSelectNode} />
         ) : null}
-        {node.kind === "paper" ? <PaperView node={node} workspaceId={tree.workspaceId} /> : null}
+        {node.kind === "paper" ? (
+          <PaperView node={node} workspaceId={tree.workspaceId} onOpenAssistant={onOpenAssistant} />
+        ) : null}
       </div>
     </>
   );
@@ -59,14 +70,22 @@ export function NodeInspector({ node, tree, updatedAt, onSelectNode, onClose }: 
 
 /* ---------------------------------------------------------------- paper --- */
 
-function PaperView({ node, workspaceId }: { node: PaperTreeNode; workspaceId: string }) {
+function PaperView({
+  node,
+  workspaceId,
+  onOpenAssistant,
+}: {
+  node: PaperTreeNode;
+  workspaceId: string;
+  onOpenAssistant?: () => void;
+}) {
   return (
     <>
       <h2 className="m-0 max-w-[40ch] text-[17px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]">
         {node.title}
       </h2>
       <p className="mt-[7px] mb-0 text-xs text-text-secondary">{paperMeta(node)}</p>
-      <SourceLinks paper={node} workspaceId={workspaceId} />
+      <SourceLinks paper={node} workspaceId={workspaceId} onOpenAssistant={onOpenAssistant} />
       <Section title="TLDR" body={node.tldr || "Unavailable"} />
       {node.importance ? <Section title="Why it matters" body={node.importance} /> : null}
       {node.abstract ? <Section title="Abstract" body={node.abstract} /> : null}
@@ -75,7 +94,15 @@ function PaperView({ node, workspaceId }: { node: PaperTreeNode; workspaceId: st
   );
 }
 
-function SourceLinks({ paper, workspaceId }: { paper: PaperDetails; workspaceId: string }) {
+function SourceLinks({
+  paper,
+  workspaceId,
+  onOpenAssistant,
+}: {
+  paper: PaperDetails;
+  workspaceId: string;
+  onOpenAssistant?: () => void;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [readerOpen, setReaderOpen] = useState(false);
   const menu = useExitAnimation(menuOpen, DROPDOWN_EXIT_MS);
@@ -152,6 +179,7 @@ function SourceLinks({ paper, workspaceId }: { paper: PaperDetails; workspaceId:
             workspaceId={workspaceId}
             paper={paper}
             onClose={() => setReaderOpen(false)}
+            onOpenAssistant={onOpenAssistant}
           />
         </Suspense>
       ) : null}

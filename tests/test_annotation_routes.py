@@ -27,9 +27,18 @@ class Annotator:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.modes: list[str] = []
 
-    def __call__(self, pdf_bytes: bytes, *, title: str, abstract: str = "") -> list[PaperAnnotation]:
+    def __call__(
+        self,
+        pdf_bytes: bytes,
+        *,
+        title: str,
+        abstract: str = "",
+        mode: str | None = None,
+    ) -> list[PaperAnnotation]:
         self.calls += 1
+        self.modes.append(mode or "fast")
         return [
             PaperAnnotation(
                 type="highlight",
@@ -126,6 +135,33 @@ class TestPaperAnnotations:
         stored = repository.get_paper_annotations("sampling", PAPER_ID)
         assert stored["schema_version"] == "research_tree.paper_annotations.v1"
         assert stored["pdf_sha256"]
+
+    def test_a_different_mode_regenerates_and_is_reported(
+        self, annotated_client: TestClient, annotator: Annotator
+    ) -> None:
+        first = annotated_client.get(annotations_url() + "&mode=fast")
+        again = annotated_client.get(annotations_url() + "&mode=fast")
+        dense = annotated_client.get(annotations_url() + "&mode=dense")
+
+        assert first.json()["retrieval_mode"] == "fast"
+        assert again.json()["retrieval_mode"] == "fast"
+        assert dense.json()["retrieval_mode"] == "dense"
+        assert annotator.calls == 2
+        assert annotator.modes == ["fast", "dense"]
+
+    def test_refresh_regenerates_despite_the_cache(
+        self, annotated_client: TestClient, annotator: Annotator
+    ) -> None:
+        annotated_client.get(annotations_url())
+        refreshed = annotated_client.get(annotations_url() + "&refresh=true")
+
+        assert refreshed.status_code == 200
+        assert annotator.calls == 2
+
+    def test_an_unknown_mode_is_a_bad_request(self, annotated_client: TestClient) -> None:
+        response = annotated_client.get(annotations_url() + "&mode=exhaustive")
+
+        assert response.status_code == 400
 
     def test_a_second_request_reuses_the_cache(
         self, annotated_client: TestClient, annotator: Annotator

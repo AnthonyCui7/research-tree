@@ -238,7 +238,9 @@ exists, and its `abstract` truncated to 250 words. For each, decide:
   another area that happens to share the topic's vocabulary.
 
 Papers:
-{json.dumps(listing, separators=(",", ":"))}"""
+{json.dumps(listing, separators=(",", ":"))}
+
+Return one verdict for every listed id."""
     return {
         "model": model,
         "instructions": (
@@ -294,8 +296,6 @@ def _content_tokens(value: str) -> list[str]:
 def _request_body(topic: str, *, model: str) -> dict[str, object]:
     prompt = f"""Name the search phrases that find the literature of one research topic.
 
-Topic: {json.dumps(topic)}
-
 Return 3 to 6 phrases covering the distinct vocabularies this field publishes
 under, including the names of its major methods and the older terminology its
 founding papers used. Each phrase is matched literally against paper titles and
@@ -307,7 +307,9 @@ Rules:
 - Every phrase must be specific to this topic, not to research in general.
 
 Also choose the one Semantic Scholar field of study that best contains this work,
-or null when the topic spans several. Allowed values: {sorted(S2_FIELDS_OF_STUDY)}"""
+or null when the topic spans several. Allowed values: {sorted(S2_FIELDS_OF_STUDY)}
+
+Topic: {json.dumps(topic)}"""
     return {
         "model": model,
         "instructions": (

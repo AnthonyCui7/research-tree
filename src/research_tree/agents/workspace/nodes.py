@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 from uuid import uuid4
@@ -10,8 +9,8 @@ from langgraph.types import Command
 
 from research_tree.agents.workspace.cache import needs_similar_paper_context
 from research_tree.agents.workspace.llm import (
-    AGENT_CHAT_PROFILE,
     AGENT_CRITIQUE_PROFILE,
+    AGENT_SKEPTIC_PROFILE,
     AGENT_TOOL_LOOP_PROFILE,
     AgentRequestProfile,
     OpenAIResponsesAgentClient,
@@ -21,12 +20,13 @@ from research_tree.agents.workspace.llm import (
 )
 from research_tree.agents.workspace.models import (
     PipelineRerunRequest,
+    ProposalSkepticNotes,
     WorkspaceCritique,
     WorkspaceValidationSummary,
 )
 from research_tree.agents.workspace.prompts import (
     build_agent_loop_prompt,
-    build_workspace_chat_prompt,
+    build_proposal_skeptic_prompt,
     build_workspace_critique_prompt,
 )
 from research_tree.agents.workspace.tools import (
@@ -38,13 +38,9 @@ from research_tree.agents.workspace.tools import (
 )
 from research_tree.agents.workspace.state import WorkspaceAgentState
 from research_tree.llm import DEFAULT_MODEL
-from research_tree.retrieval.candidate_preparation import (
-    run_workspace_candidate_preparation_pipeline,
-)
-from research_tree.retrieval.pipeline_args import (
-    pipeline_config_from_normalized_args,
-    validate_pipeline_rerun_request,
-)
+from research_tree.retrieval.pipeline_args import validate_pipeline_rerun_request
+from research_tree.retrieval.semantic_scholar import paper_from_semantic_scholar
+from research_tree.retrieval.text import looks_like_survey
 from research_tree.workspace.construction import (
     DERIVED_PAPER_CARD_FIELDS,
     construct_workspace,
@@ -63,7 +59,6 @@ from research_tree.workspace.operations import (
     WorkspacePatchError,
     operation_target_ids as _operation_target_ids,
     apply_structured_workspace_patch,
-    apply_workspace_patch_in_memory,
     remove_visible_paper_operation,
 )
 from research_tree.workspace.repository import WorkspaceRepository
@@ -84,8 +79,9 @@ from research_tree.workspace.validators import (
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 # Model turns per request. Each round is one LLM call plus its tools, so this
-# bounds both cost and latency for a single user message.
-MAX_TOOL_ROUNDS = 8
+# bounds both cost and latency for a single user message. Twelve rounds fit a
+# realistic search -> resolve -> read -> propose sequence; eight did not.
+MAX_TOOL_ROUNDS = 12
 
 # Editing and critique both need the heavy workspace context, so they route
 # through the node that builds it; a rerun does not.
@@ -102,13 +98,11 @@ class WorkspaceAgentNodes:
         *,
         llm_client: WorkspaceAgentLlmClient | None = None,
         workspace_constructor: Callable[..., dict[str, Any]] = construct_workspace,
-        retrieval_runner: Callable[[Any], dict[str, Any]] = run_workspace_candidate_preparation_pipeline,
         workspace_repository: WorkspaceRepository | None = None,
         repo_root: Path = REPO_ROOT,
     ) -> None:
         self.llm_client = llm_client or default_workspace_agent_llm_client()
         self.workspace_constructor = workspace_constructor
-        self.retrieval_runner = retrieval_runner
         self.workspace_repository = workspace_repository
         self.repo_root = repo_root
 
@@ -120,23 +114,46 @@ class WorkspaceAgentNodes:
             return {"request_profile": request_profile}
         return {}
 
+    def begin_turn(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        """Clear the previous turn's accumulated channels on a reused thread.
+
+        `None` resets each channel (see `state.reset_on_none`); everything else
+        turn-scoped is overwritten by `load_workspace`.
+        """
+
+        return {
+            "warnings": None,
+            "errors": None,
+            "node_trace": None,
+            "validation_results": None,
+            "persisted_event_ids": None,
+        }
+
     def load_workspace(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        """Load the workspace and start the turn from a clean run state.
+
+        A conversation thread reuses one checkpointed state across user turns,
+        so the workspace is refetched — an approval may have moved current.json
+        since the last turn — and every per-turn key is reset here.
+        `session_discovered_papers` survives on purpose: papers found in an
+        earlier turn stay proposable in later ones.
+        """
+
         workspace = state.get("workspace")
+        workspace_id = state.get("workspace_id")
         candidate_artifact = state.get("candidate_artifact")
         candidate_artifact_path = state.get("candidate_artifact_path")
         errors: list[str] = []
+        if workspace_id and self.workspace_repository is not None:
+            workspace = self.workspace_repository.get_current_workspace(
+                str(workspace_id)
+            )
+        elif workspace is None and workspace_id and Path(str(workspace_id)).is_file():
+            payload = load_json_artifact(Path(str(workspace_id)))
+            if isinstance(payload, dict):
+                workspace = payload
         if workspace is None:
-            workspace_id = state.get("workspace_id")
-            if workspace_id and self.workspace_repository is not None:
-                workspace = self.workspace_repository.get_current_workspace(
-                    str(workspace_id)
-                )
-            elif workspace_id and Path(str(workspace_id)).is_file():
-                payload = load_json_artifact(Path(str(workspace_id)))
-                if isinstance(payload, dict):
-                    workspace = payload
-            if workspace is None:
-                errors.append("workspace or local workspace JSON path is required.")
+            errors.append("workspace or local workspace JSON path is required.")
 
         if candidate_artifact is None and candidate_artifact_path:
             candidate_artifact = load_candidate_artifact(Path(candidate_artifact_path))
@@ -159,17 +176,36 @@ class WorkspaceAgentNodes:
             "candidate_artifact": candidate_artifact,
             "candidate_pool": candidate_pool_from_artifact(candidate_artifact),
             "status": "loaded" if not errors else "failed",
-            "agent_run_id": state.get("agent_run_id") or f"agent_run_{uuid4().hex}",
+            # One agent run per user message, even on a reused thread.
+            "agent_run_id": f"agent_run_{uuid4().hex}",
             "allow_pipeline_rerun": bool(state.get("allow_pipeline_rerun", False)),
-            "require_approval": bool(state.get("require_approval", True)),
             "agent_model": str(state.get("agent_model") or DEFAULT_MODEL),
             "approval_required": False,
-            "repair_attempts": int(state.get("repair_attempts", 0)),
+            "repair_attempts": 0,
             "max_repair_attempts": int(state.get("max_repair_attempts", 2)),
-            "validation_round": int(state.get("validation_round", 0)),
-            "action_iteration_count": int(state.get("action_iteration_count", 0)),
-            "max_action_iterations": int(state.get("max_action_iterations", 6)),
-            "warnings": [],
+            "validation_round": 0,
+            "transcript_items": [],
+            "tool_rounds": 0,
+            "pending_tool_call_id": None,
+            "next_action": None,
+            "semantic_scholar_calls": 0,
+            "chat_context": None,
+            "modification_context": None,
+            "similar_papers_context": {},
+            "off_path_papers": [],
+            "retrieval_request": None,
+            "retrieval_guardrail_result": None,
+            "proposed_workspace": None,
+            "proposed_operations": [],
+            "diff_summary": None,
+            "validation_summary": None,
+            "proposal_candidate_artifact": None,
+            "skeptic_notes": [],
+            "approval_payload": None,
+            "approval_decision": None,
+            "review_id": None,
+            "review_status": None,
+            "final_response": None,
             "errors": errors,
             "node_trace": [_trace("load_workspace")],
             "conversation_history": state.get("conversation_history") or [],
@@ -469,6 +505,9 @@ class WorkspaceAgentNodes:
         request = state.get("retrieval_request") or {}
         stage = str(request.get("stage") or "candidates")
         reason = str(request.get("reason") or "")
+        message_to_user = str(
+            (state.get("next_action") or {}).get("message_to_user") or ""
+        ).strip()
         review_id = state.get("review_id") or f"review_{uuid4().hex}"
         payload = {
             "type": "pipeline_rerun_approval",
@@ -516,7 +555,8 @@ class WorkspaceAgentNodes:
             "review_id": review_id,
             "review_status": "pending",
             "status": "awaiting_approval",
-            "final_response": (
+            "final_response": message_to_user
+            or (
                 f"Rerunning the {stage} stage would {reason or 'refresh this workspace'}. "
                 "Approve it and I will start the run."
             ),
@@ -524,58 +564,32 @@ class WorkspaceAgentNodes:
             "node_trace": [_trace("persist_rerun_review")],
         }
 
-    def rerun_candidate_pipeline(self, state: WorkspaceAgentState) -> dict[str, Any]:
-        guardrail = _required_mapping(
-            state.get("retrieval_guardrail_result"),
-            "retrieval_guardrail_result",
-        )
-        config = pipeline_config_from_normalized_args(guardrail.get("normalized_args") or {})
-        candidate_artifact = self.retrieval_runner(config)
-        result = {
-            "reason": (state.get("retrieval_request") or {}).get("reason"),
-            "normalized_args": guardrail.get("normalized_args") or {},
-            "warnings": guardrail.get("warnings") or [],
-            "run_dir": candidate_artifact.get("run_dir") if isinstance(candidate_artifact, Mapping) else None,
-        }
-        event_id = self._append_event(
-            state,
-            event_type="workspace_candidate_preparation_completed",
-            before_hash=state.get("workspace_version_hash"),
-            after_hash=state.get("workspace_version_hash"),
-            payload={"retrieval_result": result},
-            actor_type="system",
-        )
-        return {
-            "candidate_artifact": candidate_artifact,
-            "candidate_pool": candidate_pool_from_artifact(candidate_artifact),
-            "retrieval_result": result,
-            "status": "retrieving",
-            "persisted_event_ids": [event_id] if event_id else [],
-            "node_trace": [_trace("rerun_candidate_pipeline")],
-        }
-
     def construct_workspace_modification(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        """Build the proposed workspace for the edit kind the model declared.
+
+        Routing follows the tool call's explicit `edit_kind`, never message
+        wording: a removal deletes exactly the ids the model named, a
+        similar-paper refresh recomputes recommendations, and everything else
+        goes to the construction model.
+        """
+
         next_action = state.get("next_action") or {}
-        deterministic_removal = _deterministic_visible_paper_removal(
-            _required_mapping(state.get("workspace"), "workspace"),
-            user_message=str(state.get("user_message") or ""),
-            next_action=next_action,
+        edit_kind = str(next_action.get("edit_kind") or "structural")
+        workspace = _required_mapping(state.get("workspace"), "workspace")
+        candidate_artifact, artifact_warnings = self._modification_candidate_artifact(
+            state
         )
-        if deterministic_removal is not None:
-            return {
-                "proposed_workspace": deterministic_removal,
-                "status": "constructing",
-                "node_trace": [
-                    _trace("construct_workspace_modification:remove_visible_paper")
-                ],
-            }
-        if needs_similar_paper_context(state):
-            return self._adjust_similar_papers(state, next_action)
+        update: dict[str, Any] = {"proposal_candidate_artifact": candidate_artifact}
+        if artifact_warnings:
+            update["warnings"] = artifact_warnings
+
+        if edit_kind == "remove_papers":
+            return {**update, **_propose_paper_removal(workspace, next_action)}
+        if edit_kind == "refresh_similar_papers":
+            return {**update, **self._adjust_similar_papers(state, next_action)}
+
         proposed = self.workspace_constructor(
-            candidate_artifact=_workspace_only_candidate_artifact(
-                state.get("workspace"),
-                state.get("candidate_artifact"),
-            ),
+            candidate_artifact=candidate_artifact,
             base_workspace=state.get("workspace"),
             construction_mode="agent_modify_workspace",
             agent_instruction=next_action.get("modification_instruction")
@@ -587,10 +601,69 @@ class WorkspaceAgentNodes:
             model=str(state.get("agent_model") or DEFAULT_MODEL),
         )
         return {
+            **update,
             "proposed_workspace": proposed,
             "status": "constructing",
             "node_trace": [_trace("construct_workspace_modification")],
         }
+
+    def _modification_candidate_artifact(
+        self,
+        state: WorkspaceAgentState,
+    ) -> tuple[dict[str, Any] | None, list[str]]:
+        """The candidate set an edit may draw papers from.
+
+        Visible workspace papers, plus every Semantic Scholar paper the model
+        discovered this conversation — always the provider's recorded
+        payloads, never metadata the model wrote. All discoveries ride along,
+        not only the ones named in `add_paper_ids`: a terminal call that
+        forgot the field must not silently strip the paper the instruction
+        names from the proposal (observed live — the edit came back as pure
+        provenance churn). The same artifact goes to the constructor, the
+        repair call, and the validators, so a paper outside it can neither
+        enter nor survive a proposal.
+        """
+
+        artifact = _workspace_only_candidate_artifact(
+            state.get("workspace"),
+            state.get("candidate_artifact"),
+        )
+        next_action = state.get("next_action") or {}
+        add_ids = [str(pid) for pid in next_action.get("add_paper_ids") or []]
+        discovered = state.get("session_discovered_papers") or {}
+        if artifact is None or (not add_ids and not discovered):
+            return artifact, []
+        known_ids = {
+            str(paper.get("paper_id"))
+            for key in ("non_survey_papers", "survey_papers")
+            for paper in artifact.get(key) or []
+            if isinstance(paper, Mapping)
+        }
+        warnings: list[str] = []
+        for paper_id in add_ids:
+            if paper_id not in known_ids and not isinstance(
+                discovered.get(paper_id), Mapping
+            ):
+                warnings.append(
+                    f"Paper {paper_id!r} was not fetched from Semantic Scholar in "
+                    "this conversation, so the edit could not offer it."
+                )
+        for payload in discovered.values():
+            if not isinstance(payload, Mapping):
+                continue
+            candidate = paper_from_semantic_scholar(dict(payload)).to_json()
+            candidate_id = str(candidate.get("paper_id"))
+            if candidate_id in known_ids:
+                continue
+            known_ids.add(candidate_id)
+            # Survey-ness from the title alone. Semantic Scholar's 'Review'
+            # publication type is noisy on methods papers (FacTool carries it),
+            # and a false survey label makes materialization silently delete
+            # the very paper the user asked to add.
+            candidate["is_survey"] = looks_like_survey(str(candidate.get("title") or ""))
+            key = "survey_papers" if candidate.get("is_survey") else "non_survey_papers"
+            artifact.setdefault(key, []).append(candidate)
+        return artifact, warnings
 
     def _adjust_similar_papers(
         self,
@@ -699,9 +772,10 @@ class WorkspaceAgentNodes:
         state: WorkspaceAgentState,
     ) -> Command[
         Literal[
-            "persist_pending_review",
+            "skeptic_review_proposal",
             "repair_workspace_proposal",
             "finalize_validation_failure",
+            "finalize_response",
         ]
     ]:
         validation_round = int(state.get("validation_round", 0))
@@ -735,7 +809,7 @@ class WorkspaceAgentNodes:
         elif not errors and _proposal_has_no_changes(state):
             goto = "finalize_response"
         elif not errors:
-            goto = "persist_pending_review"
+            goto = "skeptic_review_proposal"
         elif int(state.get("repair_attempts", 0)) < int(state.get("max_repair_attempts", 2)):
             goto = "repair_workspace_proposal"
         else:
@@ -752,6 +826,45 @@ class WorkspaceAgentNodes:
             update=update,
             goto=goto,
         )
+
+    def skeptic_review_proposal(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        """One second-reader call that tries to refute the validated proposal.
+
+        Deterministic code chains it after validation; its objections ride on
+        the review card so the human decides with both sides in view. It is
+        enrichment, not a gate: a failed call never blocks the proposal.
+        """
+
+        prompt = build_proposal_skeptic_prompt(
+            user_message=state.get("user_message", ""),
+            instruction=str(
+                (state.get("next_action") or {}).get("modification_instruction") or ""
+            ),
+            diff_summary=state.get("diff_summary") or {},
+            proposed_operations=state.get("proposed_operations") or [],
+            workspace_summary=state.get("workspace_summary") or {},
+        )
+        try:
+            notes = self.llm_client.complete_structured(
+                prompt=prompt,
+                response_model=ProposalSkepticNotes,
+                model_name=state.get("agent_model"),
+                **self._request_profile_kwargs(AGENT_SKEPTIC_PROFILE),
+            )
+        except Exception:
+            return {
+                "skeptic_notes": [],
+                "node_trace": [_trace("skeptic_review_proposal:skipped")],
+            }
+        objections = [
+            str(objection).strip()
+            for objection in notes.objections
+            if str(objection).strip()
+        ][:2]
+        return {
+            "skeptic_notes": objections,
+            "node_trace": [_trace("skeptic_review_proposal")],
+        }
 
     def persist_pending_review(self, state: WorkspaceAgentState) -> dict[str, Any]:
         review_id = state.get("review_id")
@@ -787,12 +900,17 @@ class WorkspaceAgentNodes:
             )
             if run_event_id:
                 persisted_event_ids.append(run_event_id)
+        message_to_user = str(
+            (state.get("next_action") or {}).get("message_to_user") or ""
+        ).strip()
         return {
             "approval_payload": payload,
             "approval_required": True,
             "review_id": review_id,
             "review_status": "pending" if review_id else None,
             "status": "awaiting_approval",
+            "final_response": message_to_user
+            or "I prepared a workspace change for your review. Approve it to apply it.",
             "persisted_event_ids": persisted_event_ids,
             "node_trace": [_trace("persist_pending_review")],
         }
@@ -800,11 +918,11 @@ class WorkspaceAgentNodes:
     def repair_workspace_proposal(self, state: WorkspaceAgentState) -> dict[str, Any]:
         validation_summary = state.get("validation_summary") or {}
         next_action = state.get("next_action") or {}
+        candidate_artifact = state.get("proposal_candidate_artifact")
+        if candidate_artifact is None:
+            candidate_artifact, _ = self._modification_candidate_artifact(state)
         proposed = self.workspace_constructor(
-            candidate_artifact=_workspace_only_candidate_artifact(
-                state.get("workspace"),
-                state.get("candidate_artifact"),
-            ),
+            candidate_artifact=candidate_artifact,
             base_workspace=state.get("workspace"),
             construction_mode="workspace_repair",
             agent_instruction=next_action.get("modification_instruction")
@@ -816,7 +934,6 @@ class WorkspaceAgentNodes:
                 "user_message": state.get("user_message", ""),
                 "proposed_workspace": state.get("proposed_workspace") or {},
                 "validation_errors": validation_summary.get("errors") or [],
-                "operation_history": state.get("action_history") or [],
             },
             model=str(state.get("agent_model") or DEFAULT_MODEL),
         )
@@ -830,14 +947,11 @@ class WorkspaceAgentNodes:
     def finalize_response(self, state: WorkspaceAgentState) -> dict[str, Any]:
         final_response = state.get("final_response")
         if not final_response:
-            if state.get("updated_workspace"):
-                final_response = "Workspace update approved and applied in memory."
-            elif state.get("retrieval_result"):
-                final_response = "Candidate retrieval completed and workspace context was refreshed."
-            elif state.get("errors"):
-                final_response = "Assistant stopped with errors."
-            else:
-                final_response = "Assistant completed."
+            final_response = (
+                "Assistant stopped with errors."
+                if state.get("errors")
+                else "Assistant completed."
+            )
         return {
             "final_response": final_response,
             "status": "completed" if not state.get("errors") else state.get("status", "failed"),
@@ -958,6 +1072,7 @@ def _review_interrupt_payload(
         "diff_summary": state.get("diff_summary") or {},
         "proposed_operations": state.get("proposed_operations") or [],
         "validation_summary": state.get("validation_summary") or {},
+        "skeptic_notes": [str(note) for note in state.get("skeptic_notes") or []],
         "warnings": state.get("warnings") or [],
         "choices": ["approve", "edit", "reject"],
     }
@@ -977,6 +1092,7 @@ def _next_action_from_tool_call(
         return {
             "action_type": "prepare_retrieval_rerun",
             "reason": str(arguments.get("reason") or ""),
+            "message_to_user": str(arguments.get("message_to_user") or ""),
             "retrieval_request": {
                 # Anything the model supplied is forwarded, including keys the
                 # tool schema does not define, so the guardrail stays the single
@@ -997,6 +1113,7 @@ def _next_action_from_tool_call(
         "reason": str(arguments.get("instruction") or ""),
         "modification_instruction": arguments.get("instruction"),
         "edit_kind": arguments.get("edit_kind") or "structural",
+        "message_to_user": str(arguments.get("message_to_user") or ""),
         "target_branch_id": arguments.get("target_branch_id"),
         "target_paper_ids": [
             str(paper_id) for paper_id in arguments.get("target_paper_ids") or []
@@ -1254,127 +1371,125 @@ def _workspace_only_candidate_artifact(
             artifact["survey_papers"].append(payload)
         else:
             artifact["non_survey_papers"].append(payload)
+    # Survey anchors are referenced by the root and branches, sometimes without
+    # a paper card of their own. Validation treats an anchor outside the
+    # artifact as an error, so an anchor the workspace already carries must not
+    # invalidate every later edit.
+    included_ids = {
+        str(paper.get("paper_id"))
+        for key in ("non_survey_papers", "survey_papers")
+        for paper in artifact[key]
+    }
+    for anchor_id in _survey_anchor_ids(workspace):
+        if anchor_id in included_ids:
+            continue
+        source_paper = source_by_id.get(anchor_id)
+        payload = (
+            dict(source_paper)
+            if source_paper is not None
+            else {"paper_id": anchor_id, "title": anchor_id}
+        )
+        payload["paper_id"] = payload.get("paper_id") or anchor_id
+        payload["is_survey"] = True
+        for derived_field in DERIVED_PAPER_CARD_FIELDS:
+            payload.pop(derived_field, None)
+        artifact["survey_papers"].append(payload)
+        included_ids.add(anchor_id)
+    # Discarded candidates ride along too: the workspace document references
+    # them, validation requires every referenced id to be a candidate, and
+    # keeping them offerable lets an edit resurrect a discarded paper by id.
+    for item in workspace.get("discarded_candidates") or []:
+        if not isinstance(item, Mapping) or not item.get("paper_id"):
+            continue
+        paper_id = str(item["paper_id"])
+        if paper_id in included_ids:
+            continue
+        source_paper = source_by_id.get(paper_id)
+        payload = dict(source_paper) if source_paper is not None else dict(item)
+        payload["paper_id"] = paper_id
+        for derived_field in DERIVED_PAPER_CARD_FIELDS:
+            payload.pop(derived_field, None)
+        key = "survey_papers" if payload.get("is_survey") else "non_survey_papers"
+        artifact[key].append(payload)
+        included_ids.add(paper_id)
     return artifact
 
 
-def _deterministic_visible_paper_removal(
-    workspace: Mapping[str, Any],
-    *,
-    user_message: str,
-    next_action: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    target_paper_ids = _visible_removal_target_ids(
-        workspace,
-        user_message=user_message,
-        next_action=next_action,
-    )
-    if not target_paper_ids:
-        return None
+def _survey_anchor_ids(workspace: Mapping[str, Any]) -> list[str]:
+    anchors: list[str] = []
+    root = workspace.get("root")
+    if isinstance(root, Mapping):
+        anchors.extend(
+            str(paper_id)
+            for paper_id in root.get("survey_anchor_paper_ids") or []
+            if paper_id
+        )
+    tree = workspace.get("tree")
+    nodes = tree.get("nodes") if isinstance(tree, Mapping) else []
+    for node in nodes or []:
+        if isinstance(node, Mapping) and node.get("survey_anchor_paper_id"):
+            anchors.append(str(node["survey_anchor_paper_id"]))
+    seen: set[str] = set()
+    return [anchor for anchor in anchors if not (anchor in seen or seen.add(anchor))]
 
+
+def _propose_paper_removal(
+    workspace: Mapping[str, Any],
+    next_action: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Deterministically remove exactly the papers the model named.
+
+    All-or-nothing: removals are destructive, so an unresolvable id fails the
+    whole request with a clear message instead of guessing at a partial edit.
+    The model can retry with correct ids next turn.
+    """
+
+    cards = workspace.get("paper_cards")
+    visible = set(cards) if isinstance(cards, Mapping) else set()
+    requested = sorted(
+        {str(paper_id) for paper_id in next_action.get("target_paper_ids") or []}
+    )
+    unknown = [paper_id for paper_id in requested if paper_id not in visible]
+    if not requested or unknown:
+        detail = (
+            "no target_paper_ids were given"
+            if not requested
+            else "these ids are not visible workspace papers: " + ", ".join(unknown)
+        )
+        return {
+            "proposed_workspace": dict(workspace),
+            "status": "failed",
+            "final_response": f"I could not propose that removal: {detail}. "
+            "No change was proposed.",
+            "errors": [f"paper removal failed: {detail}"],
+            "node_trace": [
+                _trace("construct_workspace_modification:remove_papers_failed")
+            ],
+        }
     operations = [
-        remove_visible_paper_operation(paper_id=paper_id)
-        for paper_id in target_paper_ids
+        remove_visible_paper_operation(paper_id=paper_id) for paper_id in requested
     ]
     try:
-        return apply_structured_workspace_patch(
+        proposed = apply_structured_workspace_patch(
             base_workspace=workspace,
             operations=operations,
         )
-    except WorkspacePatchError:
-        return None
-
-
-def _visible_removal_target_ids(
-    workspace: Mapping[str, Any],
-    *,
-    user_message: str,
-    next_action: Mapping[str, Any],
-) -> list[str]:
-    message_tokens = _paper_query_tokens(user_message)
-    removal_requested = any(
-        token in message_tokens
-        for token in ("remove", "delete", "drop", "demote")
-    )
-    if not removal_requested:
-        return []
-
-    paper_cards = _required_mapping(workspace.get("paper_cards"), "paper_cards")
-    explicit_ids = [
-        str(paper_id)
-        for paper_id in next_action.get("target_paper_ids") or []
-        if str(paper_id) in paper_cards
-    ]
-    if explicit_ids:
-        return sorted(set(explicit_ids))
-
-    normalized_message = _normalized_phrase(user_message)
-    exact_title_ids: list[str] = []
-    for paper_id, card in paper_cards.items():
-        if not isinstance(card, Mapping):
-            continue
-        title = str(card.get("title") or "")
-        if title and _normalized_phrase(title) in normalized_message:
-            exact_title_ids.append(str(paper_id))
-    if exact_title_ids:
-        return sorted(set(exact_title_ids))
-
-    query_tokens = [
-        token
-        for token in message_tokens
-        if token
-        not in {
-            "remove",
-            "delete",
-            "drop",
-            "demote",
-            "paper",
-            "workspace",
-            "visible",
-            "from",
-            "the",
+    except WorkspacePatchError as error:
+        return {
+            "proposed_workspace": dict(workspace),
+            "status": "failed",
+            "final_response": "I could not apply that removal to the workspace. "
+            "No change was proposed.",
+            "errors": [f"paper removal failed: {error}"],
+            "node_trace": [
+                _trace("construct_workspace_modification:remove_papers_failed")
+            ],
         }
-    ]
-    if not query_tokens:
-        return []
-
-    scored: list[tuple[float, str]] = []
-    for paper_id, card in paper_cards.items():
-        if not isinstance(card, Mapping):
-            continue
-        title_tokens = set(_paper_query_tokens(str(card.get("title") or "")))
-        if not title_tokens:
-            continue
-        matches = sum(1 for token in query_tokens if token in title_tokens)
-        if matches:
-            scored.append((matches / len(query_tokens), str(paper_id)))
-
-    if not scored:
-        return []
-    scored.sort(reverse=True)
-    best_score, best_id = scored[0]
-    if best_score < 0.6:
-        return []
-    if len(scored) > 1 and scored[1][0] == best_score:
-        return []
-    return [best_id]
-
-
-def _paper_query_tokens(value: str) -> list[str]:
-    tokens = re.findall(r"[a-z0-9]+", value.casefold())
-    normalized: list[str] = []
-    for token in tokens:
-        if len(token) > 4 and token.endswith("ed"):
-            token = token[:-2]
-        elif len(token) > 5 and token.endswith("ing"):
-            token = token[:-3]
-        elif len(token) > 4 and token.endswith("s"):
-            token = token[:-1]
-        normalized.append(token)
-    return normalized
-
-
-def _normalized_phrase(value: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+    return {
+        "proposed_workspace": proposed,
+        "status": "constructing",
+        "node_trace": [_trace("construct_workspace_modification:remove_papers")],
+    }
 
 
 def _card_is_survey(card: Mapping[str, Any]) -> bool:
@@ -1512,24 +1627,6 @@ def _bounded_full_text_context(
             "full_text": text,
         }
     return result
-
-
-def _decision_choice(decision: Any) -> str:
-    if decision is True:
-        return "approve"
-    if decision is False or decision is None:
-        return "reject"
-    if isinstance(decision, str):
-        return decision.casefold()
-    if isinstance(decision, Mapping):
-        return str(decision.get("choice") or decision.get("decision") or "reject").casefold()
-    return "reject"
-
-
-def _decision_dict(decision: Any) -> dict[str, Any]:
-    if isinstance(decision, Mapping):
-        return dict(decision)
-    return {"choice": _decision_choice(decision)}
 
 
 def _required_mapping(value: Any, name: str) -> dict[str, Any]:

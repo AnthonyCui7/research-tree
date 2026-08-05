@@ -64,13 +64,35 @@ class PaperAnnotationService:
         card = self._paper_card(workspace_id, paper_id)
         return _pdf_filename(card), self._download(card)
 
-    def get_paper_annotations(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
+    def get_paper_annotations(
+        self,
+        workspace_id: str,
+        paper_id: str,
+        *,
+        mode: str | None = None,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """The paper's annotations, generated when the cache cannot serve them.
+
+        `mode` selects the retrieval depth (`fast` or `dense`); a cached result
+        built with a different mode is regenerated rather than passed off as
+        the requested one. `refresh` regenerates unconditionally.
+        """
+
+        if mode is not None and mode not in {"fast", "dense"}:
+            raise InvalidPayloadError("mode must be 'fast' or 'dense'.")
+        requested_mode = mode or retrieval_mode()
         safe_workspace_id, safe_paper_id, card = self._locate_paper(workspace_id, paper_id)
         pdf_bytes = self._download(card)
         pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
         cached = self._cached_annotations(safe_workspace_id, safe_paper_id)
-        if cached is not None and cached.get("pdf_sha256") == pdf_sha256:
+        if (
+            not refresh
+            and cached is not None
+            and cached.get("pdf_sha256") == pdf_sha256
+            and (mode is None or cached.get("retrieval_mode") == requested_mode)
+        ):
             return _response(safe_workspace_id, safe_paper_id, cached)
 
         title = str(card.get("title") or safe_paper_id)
@@ -79,6 +101,7 @@ class PaperAnnotationService:
                 pdf_bytes,
                 title=title,
                 abstract=str(card.get("abstract") or ""),
+                mode=requested_mode,
             )
         except WorkspaceServiceError:
             raise
@@ -92,7 +115,7 @@ class PaperAnnotationService:
             "title": title,
             "pdf_sha256": pdf_sha256,
             "model": annotation_model(),
-            "retrieval_mode": retrieval_mode(),
+            "retrieval_mode": requested_mode,
             "generated_at": datetime.now(UTC).isoformat(),
             "annotations": [annotation.model_dump() for annotation in annotations],
         }
@@ -170,6 +193,7 @@ def _response(workspace_id: str, paper_id: str, payload: dict[str, Any]) -> dict
         "paper_id": paper_id,
         "generated_at": payload.get("generated_at"),
         "model": payload.get("model"),
+        "retrieval_mode": payload.get("retrieval_mode"),
         "annotations": annotations if isinstance(annotations, list) else [],
     }
 

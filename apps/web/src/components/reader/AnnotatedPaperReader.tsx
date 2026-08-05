@@ -1,11 +1,16 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { messageFrom } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
 import { DIALOG_EXIT_MS, useDismissAnimation } from "../../lib/animation";
 import { paperPdfUrl, repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { CloseIcon } from "../ui/icons";
-import type { AnnotationType, PaperAnnotation, PaperDetails } from "../../lib/types";
+import type {
+  AnnotationRetrievalMode,
+  AnnotationType,
+  PaperAnnotation,
+  PaperDetails,
+} from "../../lib/types";
 
 // react-pdf parses PDFs in a worker. Resolving it through the bundler keeps the
 // worker on this origin, which the strict-origin worker policy requires.
@@ -30,6 +35,8 @@ type ReaderProps = {
   workspaceId: string;
   paper: PaperDetails;
   onClose: () => void;
+  /** Hands the reader off to the workspace assistant panel. */
+  onOpenAssistant?: () => void;
 };
 
 /**
@@ -39,46 +46,74 @@ type ReaderProps = {
  * mark is positioned in percentages over the rendered page and stays correct at
  * whatever width the page is drawn.
  */
-export function AnnotatedPaperReader({ workspaceId, paper, onClose }: ReaderProps) {
+export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssistant }: ReaderProps) {
   const { closing, dismiss } = useDismissAnimation(onClose, DIALOG_EXIT_MS);
   const [annotations, setAnnotations] = useState<PaperAnnotation[] | null>(null);
+  const [mode, setMode] = useState<AnnotationRetrievalMode | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [pageCount, setPageCount] = useState(0);
   const [selected, setSelected] = useState<PaperAnnotation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
+  const requestSequence = useRef(0);
 
   const file = useMemo(
     () => ({ url: paperPdfUrl(workspaceId, paper.paperId) }),
     [workspaceId, paper.paperId],
   );
 
+  const fetchAnnotations = useCallback(
+    (options?: { mode?: AnnotationRetrievalMode; refresh?: boolean }) => {
+      const sequence = ++requestSequence.current;
+      setAnnotations(null);
+      setError(null);
+      repositoryWorkspaceGateway
+        .getPaperAnnotations(workspaceId, paper.paperId, options)
+        .then((result) => {
+          if (sequence !== requestSequence.current) return;
+          setAnnotations(result.annotations);
+          if (result.retrieval_mode === "fast" || result.retrieval_mode === "dense") {
+            setMode(result.retrieval_mode);
+          }
+        })
+        .catch((requestError) => {
+          if (sequence !== requestSequence.current) return;
+          setError(messageFrom(requestError));
+        });
+    },
+    [workspaceId, paper.paperId],
+  );
+
   useEffect(() => {
-    let cancelled = false;
-    repositoryWorkspaceGateway
-      .getPaperAnnotations(workspaceId, paper.paperId)
-      .then((result) => {
-        if (!cancelled) setAnnotations(result);
-      })
-      .catch((requestError) => {
-        if (!cancelled) setError(messageFrom(requestError));
-      });
+    fetchAnnotations();
     return () => {
-      cancelled = true;
+      // Late responses for a previous paper must not land on this one.
+      requestSequence.current += 1;
     };
-  }, [workspaceId, paper.paperId]);
+  }, [fetchAnnotations]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       event.stopPropagation();
-      if (selected) setSelected(null);
+      // One Escape closes one layer, innermost first.
+      if (modeMenuOpen) setModeMenuOpen(false);
+      else if (helpOpen) setHelpOpen(false);
+      else if (selected) setSelected(null);
       else dismiss();
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [dismiss, selected]);
+  }, [dismiss, helpOpen, modeMenuOpen, selected]);
 
   const byPage = useMemo(() => groupByPage(annotations ?? []), [annotations]);
+  const generating = annotations === null && !error;
+  const byline = [
+    authorsLine(paper.authors),
+    dateLine(paper.publicationDate, paper.year),
+    arxivIdFrom(paper.arxivLink),
+  ].filter(Boolean);
 
   return (
     <div
@@ -90,16 +125,69 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose }: ReaderProp
       aria-modal="true"
       aria-label={`${paper.title}, annotated`}
     >
-      <header className="flex flex-none items-center gap-3 border-b border-hairline bg-surface px-5 py-3">
+      <header className="relative flex flex-none items-center gap-2.5 border-b border-hairline bg-surface px-4 py-2">
         <div className="min-w-0 flex-1">
-          <h2 className="m-0 truncate text-[14px] font-semibold tracking-[-0.01em] text-text-primary">
+          <h2 className="m-0 truncate text-[12.5px] font-semibold tracking-[-0.01em] text-text-primary">
             {paper.title}
           </h2>
-          <p className="mt-0.5 mb-0 text-[12px] text-text-secondary">
+          <p className="mt-px mb-0 truncate text-[10.5px] text-text-muted">
+            {byline.join(" · ")}
+            {byline.length ? " · " : null}
             <ReaderStatus annotations={annotations} error={error} />
           </p>
         </div>
-        <Legend />
+        <ModeControl
+          mode={mode}
+          disabled={generating}
+          open={modeMenuOpen}
+          onOpenChange={setModeMenuOpen}
+          onSelect={(next) => {
+            if (next !== mode) fetchAnnotations({ mode: next });
+          }}
+        />
+        <button
+          className="flex flex-none items-center rounded-[6px] border border-border bg-transparent px-2.5 py-1 text-[11px] font-semibold text-text-primary transition-[background-color] duration-150 hover:bg-surface-subtle disabled:cursor-default disabled:opacity-50"
+          type="button"
+          disabled={generating}
+          onClick={() => fetchAnnotations({ ...(mode ? { mode } : {}), refresh: true })}
+          title="Regenerate the annotations from scratch. This takes a few minutes."
+        >
+          Reprocess
+        </button>
+        <button
+          className="grid h-5 w-5 flex-none place-items-center rounded-full border border-border bg-surface-subtle text-[10.5px] font-semibold text-text-secondary transition-[background-color] duration-150 hover:bg-surface aria-expanded:bg-surface"
+          type="button"
+          onClick={() => setHelpOpen((open) => !open)}
+          aria-expanded={helpOpen}
+          aria-label="About this viewer"
+        >
+          ?
+        </button>
+        {onOpenAssistant ? (
+          <button
+            className="flex flex-none items-center gap-1.5 rounded-[7px] border border-accent-border bg-accent-subtle px-3 py-[5px] text-[11.5px] font-semibold text-accent-deep transition-[filter] duration-150 hover:brightness-95"
+            type="button"
+            onClick={() => {
+              dismiss();
+              onOpenAssistant();
+            }}
+            title="Chat with the workspace assistant, which can read this paper"
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 4.5 A1.5 1.5 0 0 1 4.5 3 H15.5 A1.5 1.5 0 0 1 17 4.5 V12 A1.5 1.5 0 0 1 15.5 13.5 H8 L4.5 17 V13.5 A1.5 1.5 0 0 1 3 12 Z" />
+            </svg>
+            Assistant
+          </button>
+        ) : null}
         <button
           className="grid h-[26px] w-[26px] flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
           type="button"
@@ -109,6 +197,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose }: ReaderProp
         >
           <CloseIcon className="h-3 w-3" />
         </button>
+        {helpOpen ? <ViewerHelp /> : null}
       </header>
 
       <div
@@ -262,6 +351,141 @@ function AnnotationNote({
   );
 }
 
+function ModeControl({
+  mode,
+  disabled,
+  open,
+  onOpenChange,
+  onSelect,
+}: {
+  mode: AnnotationRetrievalMode | null;
+  disabled: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (mode: AnnotationRetrievalMode) => void;
+}) {
+  return (
+    <div className="relative flex-none">
+      <button
+        className="flex items-center gap-1 rounded-[6px] border border-border bg-transparent px-2.5 py-1 text-[11px] text-text-secondary transition-[background-color] duration-150 hover:bg-surface-subtle disabled:cursor-default disabled:opacity-50 aria-expanded:bg-surface-subtle"
+        type="button"
+        disabled={disabled}
+        onClick={() => onOpenChange(!open)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title="How thoroughly annotagent reads the paper"
+      >
+        Mode: <span className="font-semibold text-text-primary">{modeLabel(mode)}</span>
+      </button>
+      {open ? (
+        <div
+          className="fixed inset-0 z-dropdown"
+          role="presentation"
+          onClick={() => onOpenChange(false)}
+        />
+      ) : null}
+      {open ? (
+        <div
+          className="absolute top-[calc(100%+4px)] right-0 z-dropdown w-[210px] rounded-[9px] border border-border bg-surface p-1 shadow-menu"
+          role="menu"
+        >
+          {(
+            [
+              { value: "fast", label: "Fast", detail: "Sections as context" },
+              { value: "dense", label: "Dense", detail: "More annotations, slower" },
+            ] as const
+          ).map((option) => (
+            <button
+              className="grid w-full gap-px rounded-[6px] border-0 bg-transparent px-2.5 py-1.5 text-left transition-[background-color] duration-150 hover:bg-surface-subtle aria-selected:bg-surface-subtle"
+              key={option.value}
+              type="button"
+              role="menuitem"
+              aria-selected={mode === option.value}
+              onClick={() => {
+                onOpenChange(false);
+                onSelect(option.value);
+              }}
+            >
+              <span className="text-[12px] font-semibold text-text-primary">{option.label}</span>
+              <span className="text-[10.5px] text-text-muted">{option.detail}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function modeLabel(mode: AnnotationRetrievalMode | null): string {
+  if (mode === "dense") return "Dense";
+  if (mode === "fast") return "Fast";
+  return "…";
+}
+
+/** The design's "About this viewer" popup, describing what each control does. */
+function ViewerHelp() {
+  return (
+    <div className="absolute top-[calc(100%+4px)] right-[44px] z-dropdown w-[300px] rounded-[10px] border border-border bg-surface px-4 py-3 shadow-menu">
+      <div className="text-[12px] font-bold text-text-primary">About this viewer</div>
+      <p className="mt-1.5 mb-0 text-[11.5px] leading-[1.6] text-text-secondary">
+        Annotations are generated by <b className="font-semibold text-text-primary">annotagent</b>.
+        It extracts the PDF text, then writes highlights, notes, and jargon definitions anchored to
+        the page layout.
+      </p>
+      <div className="mt-2 text-[11.5px] leading-[1.7] text-text-secondary">
+        <div>
+          <b className="font-semibold text-text-primary">Mode</b> · Fast, or Dense for more
+          annotations
+        </div>
+        <div>
+          <b className="font-semibold text-text-primary">Reprocess</b> · regenerate the annotations
+          from scratch
+        </div>
+        <div>
+          <b className="font-semibold text-text-primary">Assistant</b> · chat with the workspace
+          agent, which can read this paper
+        </div>
+      </div>
+      <ul className="mt-2.5 mb-0 flex list-none gap-3 border-t border-hairline p-0 pt-2.5">
+        {LEGEND.map(({ type, label }) => (
+          <li className="flex items-center gap-1.5 text-[11px] text-text-secondary" key={type}>
+            <span className={cx("h-2.5 w-2.5 rounded-[3px] border-b-2", MARK_STYLES[type])} />
+            {label}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function authorsLine(authors: string[]): string | null {
+  const first = (authors[0] ?? "").trim();
+  if (!first) return null;
+  if (authors.length === 1) return first;
+  const surname = first.split(/\s+/).pop() ?? first;
+  return `${surname} et al.`;
+}
+
+function dateLine(publicationDate: string | null, year: number | null): string | null {
+  if (publicationDate) {
+    const parsed = new Date(publicationDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        timeZone: "UTC",
+      });
+    }
+  }
+  return year !== null ? String(year) : null;
+}
+
+function arxivIdFrom(arxivLink: string | null): string | null {
+  const match = arxivLink?.match(/arxiv\.org\/(?:abs|pdf)\/([0-9]{4}\.[0-9]{4,5})/i);
+  return match?.[1] ? `arXiv:${match[1]}` : null;
+}
+
 function ReaderStatus({
   annotations,
   error,
@@ -271,23 +495,10 @@ function ReaderStatus({
 }) {
   if (error) return <span className="text-error">{error}</span>;
   if (annotations === null) {
-    return <>Reading the paper and writing annotations. This takes a few minutes the first time.</>;
+    return <>writing annotations — a few minutes the first time</>;
   }
-  if (annotations.length === 0) return <>No annotations were found in this paper.</>;
+  if (annotations.length === 0) return <>no annotations found</>;
   return <>{annotations.length} annotations</>;
-}
-
-function Legend() {
-  return (
-    <ul className="m-0 hidden list-none gap-3 p-0 md:flex">
-      {LEGEND.map(({ type, label }) => (
-        <li className="flex items-center gap-1.5 text-[11.5px] text-text-secondary" key={type}>
-          <span className={cx("h-2.5 w-2.5 rounded-[3px] border-b-2", MARK_STYLES[type])} />
-          {label}
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 function ReaderMessage({ children }: { children: ReactNode }) {

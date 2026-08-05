@@ -97,7 +97,10 @@ export function AppShell({
   >(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
   const [accountScreen, setAccountScreen] = useState<AccountScreen | null>(null);
-  const [panelWidth, setPanelWidth] = useState(RIGHT_PANEL_DEFAULT_WIDTH);
+  // The assistant opens at half the screen and remembers its own drag width;
+  // the narrower inspector/history column keeps a separate one.
+  const [agentPanelWidth, setAgentPanelWidth] = useState<number | null>(null);
+  const [utilityPanelWidth, setUtilityPanelWidth] = useState(RIGHT_PANEL_DEFAULT_WIDTH);
   // A failed background refresh keeps the workspaces already on screen, so the
   // failure has nowhere else to appear. Dismissal is tracked by message, so a
   // later — different — failure still speaks up.
@@ -279,8 +282,12 @@ export function AppShell({
               }
               tone={shownPanel === "agent" ? "agent" : "surface"}
               closing={panelPresence.closing}
-              width={panelWidth}
-              onWidth={setPanelWidth}
+              width={
+                shownPanel === "agent"
+                  ? (agentPanelWidth ?? Math.round(window.innerWidth / 2))
+                  : utilityPanelWidth
+              }
+              onWidth={shownPanel === "agent" ? setAgentPanelWidth : setUtilityPanelWidth}
               sidebarCollapsed={sidebarCollapsed}
             >
               {shownPanel === "inspector" && selectedNode && tree ? (
@@ -290,6 +297,7 @@ export function AppShell({
                   updatedAt={activeSummary?.updated_at ?? null}
                   onSelectNode={onSelectNode}
                   onClose={onClosePanel}
+                  onOpenAssistant={() => onOpenPanel("agent")}
                 />
               ) : null}
               {shownPanel === "agent" && activeWorkspace ? (

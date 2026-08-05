@@ -84,6 +84,15 @@ def build_workspace_chat_context(
 
 
 def build_workspace_summary(workspace: Mapping[str, Any]) -> dict[str, Any]:
+    """The agent loop's opening picture of the workspace.
+
+    Shape plus a one-line gist per paper: branches with their tree structure,
+    and each paper's title, leading authors, year, citation count, and TLDR.
+    That answers shape, authorship, and recency questions without a tool
+    round; abstracts, importance text, and full text stay behind the read
+    tools because the loop replays this summary every round.
+    """
+
     paper_cards = workspace.get("paper_cards") or {}
     tree = workspace.get("tree") or {}
     nodes = tree.get("nodes") or []
@@ -97,19 +106,43 @@ def build_workspace_summary(workspace: Mapping[str, Any]) -> dict[str, Any]:
             {
                 "node_id": node.get("node_id"),
                 "label": node.get("label"),
+                "parent_id": node.get("parent_id"),
+                "is_leaf": node.get("is_leaf"),
             }
             for node in nodes
             if isinstance(node, Mapping)
         ],
         "papers": [
-            {
-                "paper_id": str(paper_id),
-                "title": card.get("title"),
-            }
+            _paper_summary_line(str(paper_id), card)
             for paper_id, card in paper_cards.items()
             if isinstance(card, Mapping)
         ] if isinstance(paper_cards, Mapping) else [],
     }
+
+
+def _paper_summary_line(paper_id: str, card: Mapping[str, Any]) -> dict[str, Any]:
+    """One summary row per paper; sparse cards simply omit the missing keys."""
+
+    line: dict[str, Any] = {"paper_id": paper_id, "title": card.get("title")}
+    authors = [
+        str(author).strip()
+        for author in (card.get("authors") or [])
+        if str(author).strip()
+    ]
+    if authors:
+        # Complete, not truncated: "which papers here are by X" must see a
+        # fourth author too, and a wrong-but-confident answer costs more than
+        # the tokens (measured live: truncating to three hid two Jason Wei
+        # papers and the summary-grounded answer was flatly incomplete).
+        line["authors"] = authors
+    if card.get("year") is not None:
+        line["year"] = card.get("year")
+    if card.get("citation_count") is not None:
+        line["citation_count"] = card.get("citation_count")
+    tldr = card.get("tldr")
+    if isinstance(tldr, str) and tldr.strip():
+        line["tldr"] = tldr.strip()[:270]
+    return line
 
 
 def candidate_pool_from_artifact(
@@ -241,14 +274,6 @@ def _reading_order(
             }
         )
     return order
-
-
-def _off_path_papers(workspace: Mapping[str, Any]) -> list[dict[str, Any]]:
-    off_path: list[dict[str, Any]] = []
-    for item in workspace.get("discarded_candidates") or []:
-        if isinstance(item, Mapping):
-            off_path.append(dict(item))
-    return off_path
 
 
 def _source_candidate_artifact_reference(

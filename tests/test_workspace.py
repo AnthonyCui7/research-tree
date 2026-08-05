@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from research_tree.cli.construct_workspace import main as construct_main
 from research_tree.cli.enrich_workspace_similar_papers import main as similar_main
-from research_tree.agents.workspace.prompts import _workspace_mutation_rules
+from research_tree.agents.workspace.prompts import _workspace_delta_rules
 from research_tree.agents.workspace.nodes import _similar_paper_context_item
 from research_tree.workspace.schemas import (
     CandidatePaperMetadata,
@@ -316,7 +316,7 @@ class WorkspaceBackendTest(unittest.TestCase):
             self.assertIn("Output contract", prompt)
 
     def test_workspace_editorial_rules_reach_agent_revisions(self) -> None:
-        mutation_rules = _workspace_mutation_rules()
+        mutation_rules = _workspace_delta_rules()
 
         for rule in [*workspace_description_rules(), *workspace_importance_rules()]:
             self.assertIn(rule, mutation_rules)
