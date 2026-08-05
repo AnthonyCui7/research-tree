@@ -215,7 +215,8 @@ class WorkspaceBackendTest(unittest.TestCase):
 
     def test_workspace_prompt_uses_only_structural_candidate_fields(self) -> None:
         artifact = _candidate_artifact()
-        artifact["non_survey_papers"][0]["abstract"] = "a" * 400  # type: ignore[index]
+        artifact["non_survey_papers"][0]["abstract"] = "word " * 400  # type: ignore[index]
+        artifact["non_survey_papers"][0]["tldr"] = "  A   generated summary.  "  # type: ignore[index]
 
         prompt = build_workspace_prompt(artifact)
         payload = json.loads(
@@ -229,6 +230,7 @@ class WorkspaceBackendTest(unittest.TestCase):
         self.assertEqual(set(paper), {
             "paper_id",
             "title",
+            "tldr",
             "abstract",
             "publication_date",
             "citation_count",
@@ -236,8 +238,19 @@ class WorkspaceBackendTest(unittest.TestCase):
             "in_degree",
             "is_survey",
         })
-        self.assertEqual(len(paper["abstract"]), 243)
+        # Abstracts are budgeted in words, not characters.
+        self.assertEqual(len(paper["abstract"].removesuffix("...").split()), 250)
+        self.assertEqual(paper["tldr"], "A generated summary.")
         self.assertIn("llm_handoff", payload)
+
+    def test_workspace_prompt_keeps_a_short_abstract_whole(self) -> None:
+        artifact = _candidate_artifact()
+        artifact["non_survey_papers"][0]["abstract"] = "Ten words is well under the budget for one abstract."  # type: ignore[index]
+
+        prompt = build_workspace_prompt(artifact)
+
+        self.assertIn("Ten words is well under the budget for one abstract.", prompt)
+        self.assertNotIn("budget for one abstract....", prompt)
 
     def test_workspace_prompt_marks_only_flagged_papers(self) -> None:
         """flagged_off_topic reaches the model when true and costs nothing when false."""

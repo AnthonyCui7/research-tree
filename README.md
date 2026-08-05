@@ -13,6 +13,13 @@ A four-stage pipeline runs per topic:
 
 A workspace agent (LangGraph) answers questions about the workspace and proposes reviewed, validated modifications.
 
+## Reading a paper
+
+Any paper card opens its PDF with inline annotations: a model reads the paper a
+passage at a time, marks the claims, implications, and terms worth a reader's
+attention, and each annotation is placed on the exact words it quotes. A paper
+is annotated once and cached, so only the first open waits for it.
+
 ## Running
 
 Backend (FastAPI, Python ≥ 3.11, [uv](https://docs.astral.sh/uv/)):
@@ -45,3 +52,4 @@ npm run typecheck
 
 - Semantic Scholar allows ~1 request/second across all endpoints; the retrieval code is built around few, dense requests and a shared file cache. Treat every external API as unreliable — stages degrade with warnings instead of failing the run.
 - All LLM calls go through the OpenAI Responses API with reasoning models; requests never set `temperature` (the models reject it) — behavior is tuned via `reasoning.effort`.
+- Hosting, a job queue, and deploys from CI are planned rather than built; `DEPLOYMENT.md` records the shape they will take.

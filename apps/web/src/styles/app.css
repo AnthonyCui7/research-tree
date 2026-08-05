@@ -33,6 +33,13 @@
   --color-node-border: #c8ced3;
   --color-track: #e7ebee;
 
+  /* Marks drawn over a paper's own page, so they read against printed black on
+     white rather than against the app's surfaces. One hue per annotation kind:
+     a claim, an implication, a term. */
+  --color-annotation-highlight: #dc6d57;
+  --color-annotation-note: #3a628f;
+  --color-annotation-definition: #c78a24;
+
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 10px;

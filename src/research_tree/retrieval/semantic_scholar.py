@@ -336,6 +336,7 @@ def paper_from_semantic_scholar(item: dict[str, Any]) -> Paper:
     paper = Paper(
         title=(item.get("title") or "").strip(),
         abstract=(item.get("abstract") or "").strip(),
+        tldr=_tldr_text(item),
         year=item.get("year"),
         publication_date=parse_iso_date(item.get("publicationDate")),
         venue=_normalized_venue(item.get("venue")),
@@ -350,6 +351,17 @@ def paper_from_semantic_scholar(item: dict[str, Any]) -> Paper:
     )
     paper.is_survey = looks_like_survey(paper.title, paper.publication_types)
     return paper
+
+
+def _tldr_text(item: dict[str, Any]) -> str:
+    """Semantic Scholar's own one-sentence summary, when the response has one.
+
+    Only the paper-detail endpoint returns `tldr`; bulk search never does, so
+    papers straight out of a search carry an empty string here.
+    """
+
+    text = (item.get("tldr") or {}).get("text") if isinstance(item.get("tldr"), dict) else None
+    return " ".join(str(text).split()) if text else ""
 
 
 def semantic_scholar_metadata(item: dict[str, Any]) -> dict[str, Any]:

@@ -9,6 +9,9 @@ from typing import Any
 class Paper:
     title: str
     abstract: str = ""
+    # Semantic Scholar's own one-sentence summary. Bulk search does not return
+    # it, so it stays empty until `attach_semantic_scholar_tldrs` fills it in.
+    tldr: str = ""
     year: int | None = None
     publication_date: date | None = None
     venue: str = ""
@@ -47,6 +50,7 @@ class Paper:
             "paper_id": self.display_id(),
             "title": self.title,
             "abstract": self.abstract,
+            "tldr": self.tldr,
             "year": self.year,
             "publication_date": (
                 self.publication_date.isoformat() if self.publication_date else None

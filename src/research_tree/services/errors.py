@@ -25,6 +25,13 @@ class WorkspaceNotFoundError(WorkspaceServiceError):
     error_code = "workspace_not_found"
 
 
+class PaperUnavailableError(WorkspaceServiceError):
+    """A paper's PDF could not be fetched, or annotating it failed."""
+
+    status_code = 502
+    error_code = "paper_unavailable"
+
+
 class ReviewNotFoundError(WorkspaceServiceError):
     status_code = 404
     error_code = "review_not_found"

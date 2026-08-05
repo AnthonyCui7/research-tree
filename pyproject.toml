@@ -10,6 +10,12 @@ requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",
   "langgraph>=1.0",
+  # Ranking a paper's chunks against each other is a few hundred dot products
+  # over 3072-dimensional embeddings — fast in numpy, slow written by hand.
+  "numpy>=2.0.0",
+  # Annotation needs the coordinates of every text block and the rectangles a
+  # phrase occupies on the page; pypdf reads text but not its geometry.
+  "pymupdf>=1.25.0",
   "pypdf>=5.0.0",
   "pydantic>=2.0.0",
   "uvicorn>=0.30.0",

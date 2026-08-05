@@ -1,8 +1,8 @@
-"""One place where this project talks to the OpenAI Responses API.
+"""One place where this project talks to OpenAI.
 
-Every LLM call in the backend goes through `call_responses_api`, which owns the
-two things each call site would otherwise duplicate: the HTTP request and usage
-logging.
+Every LLM call in the backend goes through `call_responses_api`, and every
+embedding through `call_embeddings_api`. They own the two things each call site
+would otherwise duplicate: the HTTP request and usage logging.
 """
 
 from __future__ import annotations
@@ -19,7 +19,9 @@ from typing import Any
 logger = logging.getLogger("uvicorn.error")
 
 DEFAULT_MODEL = "gpt-5.6-luna"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"
 
 # Rate limits and gateway errors are routine on a shared key; only these are
 # worth a second attempt, since a 4xx will fail identically however long we
@@ -53,10 +55,80 @@ def call_responses_api(
     """
 
     started_at = time.monotonic()
+    raw_response = _request_with_retries(
+        OPENAI_RESPONSES_URL,
+        body,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        label=label,
+        timeout_hint=timeout_hint,
+    )
+    log_llm_usage(
+        label=label,
+        model=str(body.get("model") or ""),
+        raw_response=raw_response,
+        elapsed_seconds=time.monotonic() - started_at,
+    )
+    return raw_response
+
+
+def call_embeddings_api(
+    texts: list[str],
+    *,
+    api_key: str,
+    timeout_seconds: float,
+    label: str,
+    model: str = DEFAULT_EMBEDDING_MODEL,
+) -> list[list[float]]:
+    """Embed one batch of texts and return the vectors in the order given.
+
+    Batching across several requests belongs to the caller, which knows how big
+    its corpus is; this stays a single request, like `call_responses_api`.
+    """
+
+    started_at = time.monotonic()
+    raw_response = _request_with_retries(
+        OPENAI_EMBEDDINGS_URL,
+        {"model": model, "input": texts},
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        label=label,
+        timeout_hint="",
+    )
+    usage = raw_response.get("usage")
+    logger.info(
+        "%s embeddings model=%s elapsed_seconds=%.3f count=%s input_tokens=%s",
+        label,
+        model,
+        time.monotonic() - started_at,
+        len(texts),
+        usage.get("prompt_tokens") if isinstance(usage, dict) else None,
+    )
+
+    data = raw_response.get("data")
+    if not isinstance(data, list) or len(data) != len(texts):
+        raise LlmRequestError(f"OpenAI {label} call returned {len(texts)} texts unmatched by vectors.")
+    vectors: list[list[float]] = []
+    for item in sorted(data, key=lambda entry: entry.get("index", 0)):
+        embedding = item.get("embedding")
+        if not isinstance(embedding, list):
+            raise LlmRequestError(f"OpenAI {label} call returned an entry without an embedding.")
+        vectors.append([float(value) for value in embedding])
+    return vectors
+
+
+def _request_with_retries(
+    url: str,
+    body: dict[str, Any],
+    *,
+    api_key: str,
+    timeout_seconds: float,
+    label: str,
+    timeout_hint: str,
+) -> dict[str, Any]:
     for attempt in range(len(RETRY_BACKOFF_SECONDS) + 1):
         try:
-            raw_response = _post(body, api_key=api_key, timeout_seconds=timeout_seconds)
-            break
+            return _post(body, url=url, api_key=api_key, timeout_seconds=timeout_seconds)
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
             if error.code in RETRYABLE_HTTP_STATUS and attempt < len(RETRY_BACKOFF_SECONDS):
@@ -75,14 +147,7 @@ def call_responses_api(
         except (TimeoutError, socket.timeout) as error:
             message = f"OpenAI {label} call timed out after {timeout_seconds:g}s."
             raise LlmRequestError(f"{message}{timeout_hint}") from error
-
-    log_llm_usage(
-        label=label,
-        model=str(body.get("model") or ""),
-        raw_response=raw_response,
-        elapsed_seconds=time.monotonic() - started_at,
-    )
-    return raw_response
+    raise LlmRequestError(f"OpenAI {label} call exhausted its retries.")
 
 
 def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
@@ -128,11 +193,12 @@ def log_llm_usage(
 def _post(
     body: dict[str, Any],
     *,
+    url: str,
     api_key: str,
     timeout_seconds: float,
 ) -> dict[str, Any]:
     request = urllib.request.Request(
-        OPENAI_RESPONSES_URL,
+        url,
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",

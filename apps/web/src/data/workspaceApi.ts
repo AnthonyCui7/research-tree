@@ -3,6 +3,7 @@ import type {
   AgentRunResult,
   ApiKeyStatus,
   BugReportResult,
+  PaperAnnotation,
   PipelineRun,
   TopicReview,
   WorkspaceDocument,
@@ -36,6 +37,17 @@ export function pipelineRunEventsUrl(runId: string): string {
   return `${API_BASE_URL}/workspaces/pipeline-runs/${encodeURIComponent(runId)}/events`;
 }
 
+/**
+ * The paper's PDF, served by this API rather than by the publisher: a viewer
+ * running in the page cannot read bytes from another origin.
+ */
+export function paperPdfUrl(workspaceId: string, paperId: string): string {
+  return (
+    `${API_BASE_URL}/workspaces/${encodeURIComponent(workspaceId)}/paper-pdf` +
+    `?paper_id=${encodeURIComponent(paperId)}`
+  );
+}
+
 export type WorkspaceGateway = {
   listWorkspaceSummaries: () => Promise<WorkspaceSummary[]>;
   getWorkspace: (workspaceId: string) => Promise<WorkspaceResponse>;
@@ -60,6 +72,7 @@ export type WorkspaceGateway = {
   rejectReview: (workspaceId: string, reviewId: string) => Promise<void>;
   getApiKeys: () => Promise<{ openai: ApiKeyStatus }>;
   reportBug: (summary: string, details: string, area: string) => Promise<BugReportResult>;
+  getPaperAnnotations: (workspaceId: string, paperId: string) => Promise<PaperAnnotation[]>;
 };
 
 export const repositoryWorkspaceGateway: WorkspaceGateway = {
@@ -155,6 +168,20 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
   async reportBug(summary, details, area) {
     return postJson<BugReportResult>("/account/bug-reports", { summary, details, area });
   },
+
+  async getPaperAnnotations(workspaceId, paperId) {
+    const payload = await requestJson<{ annotations: PaperAnnotation[] }>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/paper-annotations` +
+        `?paper_id=${encodeURIComponent(paperId)}`,
+      {
+        method: "GET",
+        // Annotating a paper the server has not seen before is a model call per
+        // passage. The ordinary read timeout would abandon work it completes.
+        signal: AbortSignal.timeout(ANNOTATION_REQUEST_TIMEOUT_MS),
+      },
+    );
+    return Array.isArray(payload.annotations) ? payload.annotations : [];
+  },
 };
 
 async function getJson<T>(path: string): Promise<T> {
@@ -167,6 +194,7 @@ async function postJson<T = unknown>(path: string, body: unknown): Promise<T> {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const AGENT_REQUEST_TIMEOUT_MS = 300_000;
+const ANNOTATION_REQUEST_TIMEOUT_MS = 900_000;
 
 async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;

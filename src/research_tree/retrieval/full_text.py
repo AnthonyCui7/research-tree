@@ -35,8 +35,7 @@ def retrieve_open_access_paper_content(
     if not source_url:
         return _unavailable(paper_id, title, "No open-access PDF URL was supplied.")
     try:
-        _validate_public_https_url(source_url)
-        pdf_bytes = _download_pdf(source_url, timeout_seconds=timeout_seconds)
+        pdf_bytes = download_open_access_pdf(source_url, timeout_seconds=timeout_seconds)
         extracted = _extract_pdf(pdf_bytes)
     except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
         return _unavailable(paper_id, title, str(error), source_url=source_url)
@@ -60,6 +59,13 @@ def retrieve_open_access_paper_content(
     if content["truncated"]:
         warning = f"Full text for {title} exceeded safe extraction limits and is marked truncated."
     return PaperContentResult(content=content, warning=warning)
+
+
+def download_open_access_pdf(url: str, *, timeout_seconds: float = 30.0) -> bytes:
+    """Fetch a paper's PDF, refusing anything that is not a public HTTPS PDF."""
+
+    _validate_public_https_url(url)
+    return _download_pdf(url, timeout_seconds=timeout_seconds)
 
 
 def _download_pdf(url: str, *, timeout_seconds: float) -> bytes:

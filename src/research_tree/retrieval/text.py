@@ -15,6 +15,20 @@ SURVEY_TITLE_PATTERNS = (
 )
 
 
+def truncate_words(value: str, max_words: int) -> str:
+    """Cut text to a word budget, the unit prompts are actually reasoned about.
+
+    Characters were the old unit and they cut mid-sentence at a length nobody
+    could picture. Words survive the round trip: 250 words is roughly a full
+    abstract, and the ellipsis says the rest was dropped rather than absent.
+    """
+
+    words = value.split()
+    if len(words) <= max_words:
+        return " ".join(words)
+    return " ".join(words[:max_words]) + "..."
+
+
 def normalize_title(title: str) -> str:
     normalized = title.casefold()
     normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)

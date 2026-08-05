@@ -236,6 +236,30 @@ export type PaperContentSummary = {
   truncated: boolean;
 };
 
+export type AnnotationType = "highlight" | "note" | "definition";
+
+/** One rectangle of a highlight, as a fraction of the page it sits on. */
+export type HighlightFragment = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+/**
+ * An annotation the reader draws over the PDF: the quote it marks, the note
+ * explaining why the quote matters, and where the quote sits on its page. A
+ * quote that wraps across lines occupies one fragment per line.
+ */
+export type PaperAnnotation = {
+  type: AnnotationType;
+  text_ref: string;
+  note: string;
+  importance: 1 | 2 | 3;
+  page_number: number;
+  bbox: HighlightFragment & { fragments: HighlightFragment[] };
+};
+
 export type PaperDetails = {
   paperId: string;
   title: string;

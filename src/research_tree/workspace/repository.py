@@ -226,6 +226,14 @@ class WorkspaceRepository(Protocol):
     def get_paper_content(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
         ...
 
+    def save_paper_annotations(
+        self, workspace_id: str, paper_id: str, annotations: Mapping[str, Any]
+    ) -> str:
+        ...
+
+    def get_paper_annotations(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
+        ...
+
     def append_agent_run_event(
         self,
         workspace_id: str,
@@ -1223,6 +1231,30 @@ class LocalJsonWorkspaceRepository:
         payload = _read_json(path)
         if not isinstance(payload, dict) or payload.get("paper_id") != paper_id:
             raise ValueError(f"invalid paper content artifact: {path}")
+        return payload
+
+    def save_paper_annotations(
+        self, workspace_id: str, paper_id: str, annotations: Mapping[str, Any]
+    ) -> str:
+        content_key = _paper_content_key(paper_id)
+        path = self._workspace_dir(workspace_id) / "annotations" / f"{content_key}.json"
+        payload = dict(annotations)
+        payload["paper_id"] = paper_id
+        with self._lock:
+            _write_json_atomic(path, payload)
+        return content_key
+
+    def get_paper_annotations(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
+        path = (
+            self._workspace_dir(workspace_id)
+            / "annotations"
+            / f"{_paper_content_key(paper_id)}.json"
+        )
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        payload = _read_json(path)
+        if not isinstance(payload, dict) or payload.get("paper_id") != paper_id:
+            raise ValueError(f"invalid paper annotations artifact: {path}")
         return payload
 
     def _workspace_dir(self, workspace_id: str) -> Path:

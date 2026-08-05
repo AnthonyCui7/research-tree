@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
+from research_tree.retrieval.text import truncate_words
 
-WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v11"
-PROMPT_ABSTRACT_MAX_CHARS = 240
+
+WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v12"
+# Budgeted in words, the unit abstracts are written in. 250 words is a full
+# abstract for almost every paper: the model curating a field should read the
+# argument, not the first two sentences of it.
+PROMPT_ABSTRACT_MAX_WORDS = 250
 
 
 def workspace_description_rules() -> list[str]:
@@ -98,6 +103,7 @@ def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
     fields = (
         "paper_id",
         "title",
+        "tldr",
         "abstract",
         "publication_date",
         "citation_count",
@@ -106,9 +112,10 @@ def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
         "is_survey",
     )
     payload = {field: paper.get(field) for field in fields}
-    payload["abstract"] = _truncate_text(
+    payload["tldr"] = " ".join(str(payload.get("tldr") or "").split())
+    payload["abstract"] = truncate_words(
         str(payload.get("abstract") or ""),
-        PROMPT_ABSTRACT_MAX_CHARS,
+        PROMPT_ABSTRACT_MAX_WORDS,
     )
     if paper.get("flagged_off_topic"):
         payload["flagged_off_topic"] = True
@@ -117,17 +124,13 @@ def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _truncate_text(value: str, max_chars: int) -> str:
-    if len(value) <= max_chars:
-        return value
-    return value[:max_chars].rsplit(" ", 1)[0].rstrip() + "..."
-
-
 _WORKSPACE_PROMPT = """You must construct Research Tree workspaces: compact, editable maps of an academic field.
 
 The workspace gives a reader a durable model of the field: central questions, distinct lines of work, and a reading route that makes later papers intelligible. The candidate artifact is a high-recall library, not a bibliography to reproduce. Return only JSON matching the supplied schema. Do not invent papers or metadata.
 
 Identify the field's conceptual backbone. A visible paper earns a non-interchangeable role by introducing a mechanism, establishing a benchmark, redirecting a research question, making a consequential critique, or connecting historical steps. Build the smallest teaching set that reconstructs those moves. Ten to twenty-five visible papers is an editorial calibration, not a quota: include as many papers as a coherent account needs, then stop when another paper no longer sharpens the reader's model. Do not pad sparse fields or omit necessary distinctions to meet a count.
+
+Every candidate carries its title, Semantic Scholar's one-sentence `tldr` where one exists, and its `abstract` truncated to 250 words. The TLDR is a compression of the abstract, not evidence independent of it; where they disagree the abstract governs.
 
 Use citation count, publication date, and age-adjusted citation score as historical signals for establishment, momentum, and representative work; they do not replace conceptual judgment.
 

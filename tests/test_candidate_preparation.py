@@ -354,13 +354,16 @@ class CandidatePreparationTest(unittest.TestCase):
 
         self.assertEqual(select_root_set(pool, size=10), ["known"])
 
-    def test_root_set_reserves_slots_for_surveys_the_blend_missed(self) -> None:
+    def test_root_set_adds_surveys_on_top_of_the_blend(self) -> None:
         """Surveys need fetched bibliographies or their hub score is fake.
 
         Only root-set papers have their references fetched, so only they can
         have a nonzero hub score — and the survey block is ranked by hub score.
         Measured on the live prompting run: 770 of 787 surveys scored exactly
         0.0 and the block silently fell back to raw citation count.
+
+        The reserve is additive: taking the slots out of the blend's tail cost
+        7.5% of the root set's in-pool edges on that same run.
         """
 
         surveys = [
@@ -376,15 +379,14 @@ class CandidatePreparationTest(unittest.TestCase):
 
         selected = select_root_set([*others, *surveys], size=10, survey_reserve=3)
 
-        self.assertEqual(len(selected), 10)
-        # The blend alone would have taken ten non-survey papers: every survey
-        # is out-cited by every other paper in the pool.
+        # Ten blend slots, all of them still non-survey, plus three surveys.
+        self.assertEqual(len(selected), 13)
+        self.assertEqual(selected[:10], [f"paper-{index}" for index in range(10)])
+        self.assertEqual(selected[10:], ["survey-0", "survey-1", "survey-2"])
         self.assertEqual(
             select_root_set([*others, *surveys], size=10, survey_reserve=0),
             [f"paper-{index}" for index in range(10)],
         )
-        self.assertEqual(selected[-3:], ["survey-0", "survey-1", "survey-2"])
-        self.assertEqual(selected[:7], [f"paper-{index}" for index in range(7)])
 
     def test_root_set_reserve_only_admits_surveys_about_the_topic(self) -> None:
         """A broad boolean-OR pool is full of other fields' surveys.
@@ -422,10 +424,12 @@ class CandidatePreparationTest(unittest.TestCase):
 
         self.assertIn("survey-on-topic", selected)
         self.assertNotIn("survey-off-topic", selected)
-        # The slot the off-topic survey did not get returns to the blend.
-        self.assertEqual(len(selected), 10)
+        # The blend keeps all ten of its slots; only the on-topic survey is
+        # added, so the rejected one costs a slot nobody else wanted.
+        self.assertEqual(len(selected), 11)
+        self.assertEqual(selected[:10], [f"paper-{index}" for index in range(10)])
 
-    def test_root_set_reserve_falls_back_to_the_blend_when_surveys_run_out(self) -> None:
+    def test_root_set_takes_only_the_surveys_that_exist(self) -> None:
         pool = [
             _paper(f"Paper {index}", paper_id=f"paper-{index}",
                    citations=100 - index, days_old=900)
@@ -434,11 +438,11 @@ class CandidatePreparationTest(unittest.TestCase):
 
         selected = select_root_set(pool, size=6, survey_reserve=3)
 
-        self.assertEqual(len(selected), 6)
-        self.assertIn("survey", selected)
-        # Two unused survey slots go back to the blend rather than shrinking
-        # the root set.
-        self.assertEqual(len(set(selected)), 6)
+        # Six blend slots plus the one survey that exists: a field with few
+        # surveys gets a smaller root set, not a padded one.
+        self.assertEqual(len(selected), 7)
+        self.assertEqual(selected[-1], "survey")
+        self.assertEqual(len(set(selected)), 7)
 
     def test_root_set_orderings_break_ties_explicitly(self) -> None:
         """Equal citation counts must not resolve by S2 search-result order."""

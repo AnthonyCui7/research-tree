@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from research_tree.annotation.models import PaperAnnotation
 from research_tree.llm import DEFAULT_MODEL
 
 
@@ -147,6 +148,14 @@ class PaperContentResponse(BaseModel):
     truncated: bool = False
     retrieved_at: str | None = None
     full_text: str
+
+
+class PaperAnnotationsResponse(BaseModel):
+    workspace_id: str
+    paper_id: str
+    generated_at: str | None = None
+    model: str | None = None
+    annotations: list[PaperAnnotation]
 
 
 class WorkspaceReviewResponse(BaseModel):

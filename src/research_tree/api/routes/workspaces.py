@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 
 from research_tree.api.dependencies import (
+    get_paper_annotation_service,
     get_topic_review_service,
     get_workspace_pipeline_service,
     get_workspace_query_service,
@@ -14,6 +15,7 @@ from research_tree.api.dependencies import (
 from research_tree.api.schemas import (
     CreateWorkspaceRequest,
     DeleteWorkspaceRequest,
+    PaperAnnotationsResponse,
     PaperContentResponse,
     PipelineRerunApiRequest,
     PipelineRunResponse,
@@ -28,6 +30,7 @@ from research_tree.api.schemas import (
     WorkspaceVersionsResponse,
     WorkspacesResponse,
 )
+from research_tree.services.annotations import PaperAnnotationService
 from research_tree.services.pipeline import WorkspacePipelineService
 from research_tree.services.topics import TopicReviewService
 from research_tree.services.workspaces import WorkspaceQueryService
@@ -213,6 +216,32 @@ def get_paper_content(
     service: WorkspaceQueryService = Depends(get_workspace_query_service),
 ) -> dict[str, object]:
     return service.get_paper_content(workspace_id, paper_id)
+
+
+@router.get("/{workspace_id}/paper-pdf")
+def get_paper_pdf(
+    workspace_id: str,
+    paper_id: str,
+    service: PaperAnnotationService = Depends(get_paper_annotation_service),
+) -> Response:
+    filename, pdf_bytes = service.get_paper_pdf(workspace_id, paper_id)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+# Annotating a paper for the first time is minutes of model calls, so this is
+# written as a plain request the reader waits on rather than a run to poll.
+# Handled off the event loop by FastAPI, since the work is blocking.
+@router.get("/{workspace_id}/paper-annotations", response_model=PaperAnnotationsResponse)
+def get_paper_annotations(
+    workspace_id: str,
+    paper_id: str,
+    service: PaperAnnotationService = Depends(get_paper_annotation_service),
+) -> dict[str, object]:
+    return service.get_paper_annotations(workspace_id, paper_id)
 
 
 @router.get("/{workspace_id}/versions", response_model=WorkspaceVersionsResponse)

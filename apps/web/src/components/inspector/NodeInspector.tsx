@@ -1,9 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { cx } from "../../lib/cx";
 import { DROPDOWN_EXIT_MS, useExitAnimation } from "../../lib/animation";
 import { longDateLabel } from "../../lib/format";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import { PanelClose } from "../panel/RightPanel";
+
+// The reader carries a PDF engine, which is most of what the app would ship.
+// Loading it when a paper is opened keeps it out of the first page load.
+const AnnotatedPaperReader = lazy(() =>
+  import("../reader/AnnotatedPaperReader").then((module) => ({
+    default: module.AnnotatedPaperReader,
+  })),
+);
 import type {
   BranchTreeNode,
   PaperDetails,
@@ -43,7 +51,7 @@ export function NodeInspector({ node, tree, updatedAt, onSelectNode, onClose }: 
         {node.kind === "branch" ? (
           <BranchView node={node} tree={tree} onSelectNode={onSelectNode} />
         ) : null}
-        {node.kind === "paper" ? <PaperView node={node} /> : null}
+        {node.kind === "paper" ? <PaperView node={node} workspaceId={tree.workspaceId} /> : null}
       </div>
     </>
   );
@@ -51,14 +59,14 @@ export function NodeInspector({ node, tree, updatedAt, onSelectNode, onClose }: 
 
 /* ---------------------------------------------------------------- paper --- */
 
-function PaperView({ node }: { node: PaperTreeNode }) {
+function PaperView({ node, workspaceId }: { node: PaperTreeNode; workspaceId: string }) {
   return (
     <>
       <h2 className="m-0 max-w-[40ch] text-[17px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]">
         {node.title}
       </h2>
       <p className="mt-[7px] mb-0 text-xs text-text-secondary">{paperMeta(node)}</p>
-      <SourceLinks paper={node} />
+      <SourceLinks paper={node} workspaceId={workspaceId} />
       <Section title="TLDR" body={node.tldr || "Unavailable"} />
       {node.importance ? <Section title="Why it matters" body={node.importance} /> : null}
       {node.abstract ? <Section title="Abstract" body={node.abstract} /> : null}
@@ -67,8 +75,9 @@ function PaperView({ node }: { node: PaperTreeNode }) {
   );
 }
 
-function SourceLinks({ paper }: { paper: PaperDetails }) {
+function SourceLinks({ paper, workspaceId }: { paper: PaperDetails; workspaceId: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [readerOpen, setReaderOpen] = useState(false);
   const menu = useExitAnimation(menuOpen, DROPDOWN_EXIT_MS);
   const pdfUrl = paperPdfUrl(paper);
 
@@ -125,13 +134,26 @@ function SourceLinks({ paper }: { paper: PaperDetails }) {
             <PdfMenuItem href={pdfUrl} onClick={() => setMenuOpen(false)}>
               Download PDF
             </PdfMenuItem>
-            {/* Inline annotations need a backend that resolves and anchors every
-                reference; until it lands the entry is shown but inert. */}
-            <PdfMenuItem disabled title="Inline annotations are not available yet">
-              Download PDF <span className="text-text-muted">· inline annotations</span>
+            <PdfMenuItem
+              onClick={() => {
+                setMenuOpen(false);
+                setReaderOpen(true);
+              }}
+              title="Read the paper with generated highlights and margin notes"
+            >
+              Open PDF <span className="text-text-muted">· inline annotations</span>
             </PdfMenuItem>
           </div>
         </>
+      ) : null}
+      {readerOpen ? (
+        <Suspense fallback={null}>
+          <AnnotatedPaperReader
+            workspaceId={workspaceId}
+            paper={paper}
+            onClose={() => setReaderOpen(false)}
+          />
+        </Suspense>
       ) : null}
     </div>
   );

@@ -91,6 +91,8 @@ class PipelineConfig:
     survey_baseline_count: int = 5
     pool_target: int = 5_000
     recency_years: int = 3
+    # Blend slots only; `ROOT_SET_SURVEY_RESERVE` surveys are added on top, so
+    # the root set actually fetched is up to 270 bibliographies.
     root_set_size: int = 250
     snowball_min_in_degree: int = 3
     snowball_cap: int = 100
@@ -262,6 +264,13 @@ def run_workspace_candidate_preparation_pipeline(
         for paper in ranked_papers
         if not paper.is_survey and not paper.flagged_off_topic
     ][:10]
+    # The judge reads abstracts and TLDRs, and neither reaches it from bulk
+    # search. Topping up the papers it will actually see costs one request.
+    _fill_missing_details(
+        semantic_scholar=semantic_scholar,
+        papers=[*(paper for paper in pool if paper.flagged_off_topic), *frontier],
+        warnings=warnings,
+    )
     frontier_belongs = adjudicate_flags(
         topic=config.topic,
         phrases=query_plan.phrases,
@@ -381,10 +390,10 @@ def build_pool(
     return dedupe_papers(papers)
 
 
-# Root-set slots held back for surveys the blend did not reach. Sized so the
-# survey block (5 slots) is ranked by real hub scores with margin, at no extra
-# request cost: the reserved ids ride in the same 250-id reference batch.
-ROOT_SET_SURVEY_RESERVE = 16
+# Root-set slots for surveys the blend did not reach. Additive: the blend keeps
+# its full `size`, and these ride on top of it, so the root set is `size +
+# ROOT_SET_SURVEY_RESERVE` ids at most.
+ROOT_SET_SURVEY_RESERVE = 20
 
 
 def select_root_set(
@@ -396,37 +405,35 @@ def select_root_set(
 ) -> list[str]:
     """Choose the papers whose bibliographies define the citation graph.
 
-    The blend of the raw-citation and age-adjusted orderings gets all but
-    `survey_reserve` of the slots; those are held for the highest-cited surveys
-    the blend missed.
+    The blend of the raw-citation and age-adjusted orderings gets `size` slots.
+    Up to `survey_reserve` more go to the highest-cited on-topic surveys the
+    blend missed — added to the root set, not taken out of it.
 
     Only root-set papers have their bibliographies fetched, so only they can
     have a nonzero hub score — and `select_candidates` ranks the survey block
     by hub score. Without the reservation almost every survey scores exactly
     0.0 and the block silently falls back to raw citation count: on the live
     prompting run 770 of 787 surveys had hub 0.0, because only 30 were in the
-    root set at all. It costs no extra Semantic Scholar requests — the root set
-    is one batch of `size` ids either way.
+    root set at all.
 
     The reserve is gated on `topic_phrases` because an ungated one picks the
     wrong surveys. Replayed offline on the saved Prompting run (5,090 papers,
-    787 surveys), reserving 16 slots by citation count alone admitted
-    ColorBrewer, a discrete-data econometrics book review, remote sensing for
-    precision agriculture, and data stream management: "highest-cited survey"
-    over a pool built from a broad boolean OR is not "this field's survey", and
-    an off-topic survey is a near-inert hub anyway because
-    `build_citation_graph` drops the edges that leave the pool. Requiring the
-    same token match that gates snowballed papers swaps those for surveys of
-    in-context learning, LLM explainability, and pretrained foundation models.
-    Slots no on-topic survey claims go back to the blend, so a field with few
-    surveys loses nothing.
+    787 surveys), reserving slots by citation count alone admitted ColorBrewer,
+    a discrete-data econometrics book review, remote sensing for precision
+    agriculture, and data stream management: "highest-cited survey" over a pool
+    built from a broad boolean OR is not "this field's survey", and an off-topic
+    survey is a near-inert hub anyway because `build_citation_graph` drops the
+    edges that leave the pool. Requiring the same token match that gates
+    snowballed papers swaps those for surveys of in-context learning, LLM
+    explainability, and pretrained foundation models.
 
-    The trade is real: those 16 slots come from the blend's tail (positions
-    ~234-250), which on that run carried 197 of the root set's 2,641 in-pool
-    edges (7.5%), including P-tuning. What cannot be measured offline is the
-    other side — the admitted surveys' own bibliographies were never fetched,
-    and a field survey citing 100+ in-pool papers plausibly returns more edges
-    than the tail gave up. Widen the reserve only with a live run to check.
+    Reserving additively rather than out of the blend's tail was the Aug 2026
+    correction. Carving the slots out cost real edges — on that run the tail it
+    displaced (blend positions ~234-250) carried 197 of the root set's 2,641
+    in-pool edges (7.5%), including P-tuning. The surveys are worth having and
+    the tail is worth keeping, and the only thing the two were actually
+    competing for was a request budget that chunks anyway: the reference batch
+    is already split into chunks, so 20 more ids buys both.
     """
 
     with_ids = [paper for paper in pool if paper.semantic_scholar_id]
@@ -454,11 +461,12 @@ def select_root_set(
         size=size,
     )
 
-    reserve = min(max(survey_reserve, 0), size)
-    selected = blended[: size - reserve]
+    selected = list(blended)
     seen = set(selected)
+    reserve = max(survey_reserve, 0)
+    admitted = 0
     for paper in by_citations:
-        if len(selected) >= size:
+        if admitted >= reserve:
             break
         paper_id = str(paper.semantic_scholar_id)
         if not paper.is_survey or paper_id in seen:
@@ -469,14 +477,10 @@ def select_root_set(
             continue
         seen.add(paper_id)
         selected.append(paper_id)
-    # A pool with fewer unseen surveys than the reserve leaves slots unused;
-    # the blend's own tail takes them back rather than shrinking the root set.
-    for paper_id in blended[size - reserve :]:
-        if len(selected) >= size:
-            break
-        if paper_id not in seen:
-            seen.add(paper_id)
-            selected.append(paper_id)
+        admitted += 1
+    # A field with fewer on-topic surveys than the reserve simply gets a smaller
+    # root set; there is nothing to backfill it with that the blend did not
+    # already rank below `size`.
     return selected
 
 
@@ -581,9 +585,10 @@ def graph_blind_cutoff(
     walk so a degraded graph cannot declare the whole pool blind.
 
     The threshold is calibrated to this pipeline's two sizes, not absolute.
-    Votes can only come from the `root_set_size` (250) bibliographies that were
-    actually fetched, while `counts[year]` counts every pool paper in that year
-    and so scales with `pool_target` (5,000). The measured ratio is therefore
+    Votes can only come from the root-set bibliographies that were actually
+    fetched (`root_set_size` 250, plus up to `ROOT_SET_SURVEY_RESERVE` surveys),
+    while `counts[year]` counts every pool paper in that year and so scales with
+    `pool_target` (5,000). The measured ratio is therefore
     votes-per-250-hubs over papers-per-5,000-pool: raising `pool_target`
     dilutes it and declares more years blind, raising `root_set_size`
     concentrates it and declares fewer. Re-measure the threshold if either
@@ -849,10 +854,13 @@ def _fill_missing_details(
     papers: list[Paper],
     warnings: list[str],
 ) -> None:
-    """Top up selected papers that bulk search could not describe fully.
+    """Top up papers that bulk search could not describe fully.
 
-    Bulk search omits Semantic Scholar's own TLDRs. Fetching them here, for the
-    selected papers only, means the hydrate stage rarely has to call out again.
+    Bulk search omits Semantic Scholar's own TLDRs — only the paper-detail
+    endpoint returns them. They are worth a request of their own because both
+    prompts that reason about these papers carry the TLDR next to the abstract:
+    one is the authors' own one-sentence claim, the other is the evidence for
+    it. One batch covers 500 ids, so a whole candidate set costs one request.
     """
 
     missing = [
@@ -870,6 +878,7 @@ def _fill_missing_details(
         enriched = paper_from_semantic_scholar(item)
         paper.semantic_scholar_metadata = enriched.semantic_scholar_metadata
         paper.abstract = paper.abstract or enriched.abstract
+        paper.tldr = paper.tldr or enriched.tldr
 
 
 def _score_age_adjusted_citations(
