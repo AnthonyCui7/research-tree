@@ -851,6 +851,35 @@ def test_dead_pipeline_owner_is_reclaimed_before_a_new_run_is_reserved() -> None
     assert repository.get_pipeline_run("pipeline_new")["status"] == "queued"
 
 
+def test_pipeline_run_from_another_host_is_never_reclaimed() -> None:
+    """A PID probe only means anything on the machine that owns the PID.
+
+    On a shared volume, a run written by another host must be left alone even
+    when its PID happens to be dead (or alive) here — otherwise a PID
+    collision fails a healthy run.
+    """
+
+    repository = LocalJsonWorkspaceRepository(_temp_dir())
+    repository.save_pipeline_run(
+        {
+            "run_id": "pipeline_remote",
+            "workspace_id": "workspace-1",
+            "status": "running",
+            "runner_pid": 12345,
+            "runner_host": "some-other-container",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+
+    with patch(
+        "research_tree.workspace.repository.os.kill",
+        side_effect=ProcessLookupError,
+    ):
+        run = repository.get_pipeline_run("pipeline_remote")
+
+    assert run["status"] == "running"
+
+
 def _client_with_repository() -> tuple[TestClient, LocalJsonWorkspaceRepository]:
     repository = LocalJsonWorkspaceRepository(_temp_dir())
     app = create_app()

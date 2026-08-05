@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import socket
 from concurrent.futures import Future
 from datetime import UTC, datetime
 from pathlib import Path
@@ -182,6 +183,9 @@ class WorkspacePipelineService:
             "source_run_id": source_run.get("run_id") if source_run else None,
             "source_workspace_version_hash": source_version_hash,
             "runner_pid": os.getpid(),
+            # PID liveness only means anything on the machine that owns the
+            # PID, so the reclaimer checks the host before trusting the probe.
+            "runner_host": socket.gethostname(),
             "created_at": _now(),
             "updated_at": _now(),
             "stages": {},

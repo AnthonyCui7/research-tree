@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import re
+import socket
 import tempfile
 import uuid
 from datetime import UTC, datetime
@@ -1547,6 +1548,12 @@ def _reclaim_dead_pipeline_run(path: Path, run: dict[str, Any]) -> bool:
         return False
     runner_pid = run.get("runner_pid")
     if not isinstance(runner_pid, int) or runner_pid <= 0:
+        return False
+    # A PID from another machine is meaningless here: probing it would either
+    # wedge the run forever or fail a healthy one on a PID collision. Records
+    # without a host predate the field and were written by this machine.
+    runner_host = run.get("runner_host")
+    if isinstance(runner_host, str) and runner_host and runner_host != socket.gethostname():
         return False
     try:
         os.kill(runner_pid, 0)

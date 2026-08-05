@@ -17,7 +17,7 @@ DEFAULT_DATA_ROOT = Path("data")
 
 
 def data_root() -> Path:
-    return Path(os.environ.get(DATA_ROOT_ENV, str(DEFAULT_DATA_ROOT)))
+    return Path(os.environ.get(DATA_ROOT_ENV, str(DEFAULT_DATA_ROOT))).expanduser()
 
 
 def workspaces_dir() -> Path:

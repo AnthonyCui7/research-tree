@@ -12,6 +12,11 @@ from urllib.parse import quote, urlparse
 from typing import Any
 
 from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
+from research_tree.retrieval.semantic_scholar import (
+    SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SEMANTIC_SCHOLAR_RATE_LIMITER,
+    s2_api_key,
+)
 from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.serialization import extract_response_output_text
 
@@ -239,11 +244,18 @@ def _linked_paper_metadata(topic: str) -> dict[str, str] | None:
     if not identifier:
         return None
     fields = "title,abstract"
+    headers = {"User-Agent": "research-tree/0.1"}
+    api_key = s2_api_key()
+    if api_key:
+        headers["x-api-key"] = api_key
     request = urllib.request.Request(
         "https://api.semanticscholar.org/graph/v1/paper/"
         f"{quote(identifier, safe=':')}?fields={fields}",
-        headers={"User-Agent": "research-tree/0.1"},
+        headers=headers,
     )
+    # Semantic Scholar's request budget belongs to the key, not the caller, so
+    # even this one-off lookup waits its turn in the shared lane.
+    SEMANTIC_SCHOLAR_RATE_LIMITER.acquire(SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS)
     try:
         with urllib.request.urlopen(request, timeout=12.0) as response:
             payload = json.loads(response.read().decode("utf-8"))

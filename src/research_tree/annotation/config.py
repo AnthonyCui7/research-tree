@@ -45,7 +45,11 @@ def annotation_concurrency() -> int:
     the account's tokens-per-minute limit is the real ceiling.
     """
 
-    return max(1, int(os.environ.get("RESEARCH_TREE_ANNOTATION_CONCURRENCY", "3")))
+    raw = os.environ.get("RESEARCH_TREE_ANNOTATION_CONCURRENCY", "3")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 3
 
 
 def openai_api_key() -> str:
