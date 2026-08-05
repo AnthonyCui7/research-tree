@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { repositoryWorkspaceGateway } from "./workspaceApi";
 import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../lib/apiError";
 import type { AgentRunResult } from "../lib/types";
@@ -31,123 +31,157 @@ export type AgentSession = {
   dismissError: () => void;
 };
 
+/** Everything one workspace's conversation is made of. */
+type SessionState = {
+  conversation: ConversationItem[];
+  result: AgentRunResult | null;
+  outcome: ReviewOutcome;
+  busy: boolean;
+  error: string | null;
+  model: string;
+  draft: string;
+  threadId: string | null;
+};
+
+const NEW_SESSION: SessionState = {
+  conversation: [],
+  result: null,
+  outcome: null,
+  busy: false,
+  error: null,
+  model: "gpt-5.6-luna",
+  draft: "",
+  threadId: null,
+};
+
 /**
  * The assistant conversation outlives the panel that shows it: switching to
- * history and back must not discard a thread or a pending review. Keeping it
- * here — above the panel — is what makes that true, and keying it on the
- * workspace is what stops one workspace's thread leaking into another's.
+ * history and back, or to another workspace and back, must not discard a thread
+ * or a pending review. Keeping one entry per workspace is what makes both true —
+ * and it is also what files a reply that lands after a switch under the
+ * workspace it was asked of rather than the one now on screen.
  */
 export function useAgentSession(
   workspaceId: string | null,
   onWorkspaceChanged: () => Promise<void>,
 ): AgentSession {
-  const [conversation, setConversation] = useState<ConversationItem[]>([]);
-  const [result, setResult] = useState<AgentRunResult | null>(null);
-  const [outcome, setOutcome] = useState<ReviewOutcome>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [model, setModel] = useState("gpt-5.6-luna");
-  const [draft, setDraft] = useState("");
-  const threadIdRef = useRef<string | null>(null);
+  const [sessions, setSessions] = useState<Record<string, SessionState>>({});
+  const session = (workspaceId ? sessions[workspaceId] : null) ?? NEW_SESSION;
 
-  useEffect(() => {
-    setConversation([]);
-    setResult(null);
-    setOutcome(null);
-    setBusy(false);
-    setError(null);
-    setDraft("");
-    threadIdRef.current = null;
-  }, [workspaceId]);
+  const update = useCallback(
+    (id: string, change: (state: SessionState) => SessionState) => {
+      setSessions((all) => ({ ...all, [id]: change(all[id] ?? NEW_SESSION) }));
+    },
+    [],
+  );
 
   const send = useCallback(
     async (request: string) => {
       const trimmed = request.trim();
       if (!trimmed || !workspaceId) return;
-      setBusy(true);
-      setError(null);
-      setOutcome(null);
-      const history = conversation.slice(-MAX_HISTORY_ITEMS).map((item) => ({
+      const id = workspaceId;
+      const current = sessions[id] ?? NEW_SESSION;
+      const history = current.conversation.slice(-MAX_HISTORY_ITEMS).map((item) => ({
         role: item.role === "agent" ? ("assistant" as const) : ("user" as const),
         text: item.text.slice(0, MAX_HISTORY_CHARACTERS),
       }));
-      // A previous failure is answered by this request; a pending review is not.
-      setResult((current) => (current && agentRunFailed(current.status) ? null : current));
-      setConversation((items) => [...items, { role: "user", text: trimmed }]);
+      update(id, (state) => ({
+        ...state,
+        busy: true,
+        error: null,
+        outcome: null,
+        // A previous failure is answered by this request; a pending review is not.
+        result: state.result && agentRunFailed(state.result.status) ? null : state.result,
+        conversation: [...state.conversation, { role: "user", text: trimmed }],
+      }));
       try {
         const next = await repositoryWorkspaceGateway.runAgent(
-          workspaceId,
+          id,
           trimmed,
-          model,
+          current.model,
           history,
-          threadIdRef.current,
+          current.threadId,
         );
-        setResult(next);
-        threadIdRef.current = next.thread_id ?? threadIdRef.current;
-        if (agentRunFailed(next.status)) {
-          // A failed run produced no answer. Reporting one would file a failure
-          // as an assistant reply and leave it in the conversation history.
-          return;
-        }
         const response =
           next.final_response ||
           (next.status === "pending_review"
             ? "I have prepared a structural revision for your review."
             : "Analysis complete.");
-        setConversation((items) => [...items, { role: "agent", text: response }]);
+        update(id, (state) => ({
+          ...state,
+          result: next,
+          threadId: next.thread_id ?? state.threadId,
+          // A failed run produced no answer. Reporting one would file a failure
+          // as an assistant reply and leave it in the conversation history.
+          conversation: agentRunFailed(next.status)
+            ? state.conversation
+            : [...state.conversation, { role: "agent", text: response }],
+        }));
       } catch (requestError) {
-        setError(messageFrom(requestError));
+        update(id, (state) => ({ ...state, error: messageFrom(requestError) }));
       } finally {
-        setBusy(false);
+        update(id, (state) => ({ ...state, busy: false }));
       }
     },
-    [conversation, model, workspaceId],
+    [sessions, update, workspaceId],
   );
 
   const decide = useCallback(
     async (choice: "approve" | "reject") => {
-      if (!workspaceId || !result?.review_id) return;
-      setBusy(true);
-      setError(null);
+      const reviewId = workspaceId ? sessions[workspaceId]?.result?.review_id : null;
+      if (!workspaceId || !reviewId) return;
+      const id = workspaceId;
+      update(id, (state) => ({ ...state, busy: true, error: null }));
       try {
         if (choice === "approve") {
-          await repositoryWorkspaceGateway.approveReview(workspaceId, result.review_id);
+          await repositoryWorkspaceGateway.approveReview(id, reviewId);
           await onWorkspaceChanged();
         } else {
-          await repositoryWorkspaceGateway.rejectReview(workspaceId, result.review_id);
+          await repositoryWorkspaceGateway.rejectReview(id, reviewId);
         }
-        setOutcome(choice === "approve" ? "applied" : "rejected");
-        setResult(null);
+        update(id, (state) => ({
+          ...state,
+          outcome: choice === "approve" ? "applied" : "rejected",
+          result: null,
+        }));
       } catch (requestError) {
         if (isVersionConflict(requestError)) {
           // The review was written against a workspace version the server has
           // already moved past; reloading is what makes the next attempt valid.
-          setError(VERSION_CONFLICT_MESSAGE);
-          setResult(null);
+          update(id, (state) => ({ ...state, error: VERSION_CONFLICT_MESSAGE, result: null }));
           await onWorkspaceChanged();
         } else {
-          setError(messageFrom(requestError));
+          update(id, (state) => ({ ...state, error: messageFrom(requestError) }));
         }
       } finally {
-        setBusy(false);
+        update(id, (state) => ({ ...state, busy: false }));
       }
     },
-    [onWorkspaceChanged, result?.review_id, workspaceId],
+    [onWorkspaceChanged, sessions, update, workspaceId],
+  );
+
+  const change = useCallback(
+    (key: "model" | "draft", value: string) => {
+      if (workspaceId) update(workspaceId, (state) => ({ ...state, [key]: value }));
+    },
+    [update, workspaceId],
   );
 
   return {
-    conversation,
-    result,
-    outcome,
-    busy,
-    error,
-    model,
-    setModel,
-    draft,
-    setDraft,
+    conversation: session.conversation,
+    result: session.result,
+    outcome: session.outcome,
+    busy: session.busy,
+    error: session.error,
+    model: session.model,
+    setModel: useCallback((model: string) => change("model", model), [change]),
+    draft: session.draft,
+    setDraft: useCallback((draft: string) => change("draft", draft), [change]),
     send,
     decide,
-    dismissError: useCallback(() => setError(null), []),
+    dismissError: useCallback(() => {
+      if (workspaceId) update(workspaceId, (state) => ({ ...state, error: null }));
+    }, [update, workspaceId]),
   };
 }
 

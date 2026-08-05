@@ -16,6 +16,25 @@ def workspace_version_hash(workspace: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def atomic_branch_count(tree_nodes: Any) -> int:
+    """Count the atomic branches — the leaves that actually carry reading paths.
+
+    A parent branch is a grouping of its children, so counting it alongside them
+    reports the same work twice. Nodes written before `is_leaf` was required fall
+    back to having no children of their own.
+    """
+
+    nodes = [node for node in tree_nodes if isinstance(node, Mapping)] if isinstance(tree_nodes, list) else []
+    parent_ids = {str(node.get("parent_id")) for node in nodes if node.get("parent_id")}
+    count = 0
+    for node in nodes:
+        is_leaf = node.get("is_leaf")
+        if is_leaf is None:
+            is_leaf = str(node.get("node_id")) not in parent_ids
+        count += 1 if is_leaf else 0
+    return count
+
+
 def build_workspace_chat_context(
     *,
     workspace: Mapping[str, Any],
@@ -72,7 +91,7 @@ def build_workspace_summary(workspace: Mapping[str, Any]) -> dict[str, Any]:
         "workspace_id": workspace.get("workspace_id"),
         "topic": workspace.get("topic"),
         "title": workspace.get("title"),
-        "branch_count": len(nodes) if isinstance(nodes, list) else 0,
+        "branch_count": atomic_branch_count(nodes),
         "visible_paper_count": len(paper_cards) if isinstance(paper_cards, Mapping) else 0,
         "branches": [
             {

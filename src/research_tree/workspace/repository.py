@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Mapping, Protocol
 
-from research_tree.workspace.context import workspace_version_hash
+from research_tree.workspace.context import atomic_branch_count, workspace_version_hash
 
 
 ALLOWED_ACTOR_TYPES = {"user", "agent", "system"}
@@ -278,7 +278,7 @@ class LocalJsonWorkspaceRepository:
                     "title": str(workspace.get("title") or workspace_id),
                     "topic": str(workspace.get("topic") or ""),
                     "paper_count": len(_mapping(workspace.get("paper_cards"))),
-                    "branch_count": len(_list(tree_nodes)),
+                    "branch_count": atomic_branch_count(tree_nodes),
                     "paper_path_count": len(_list(workspace.get("paper_paths"))),
                     "updated_at": _workspace_updated_at(workspace),
                 }

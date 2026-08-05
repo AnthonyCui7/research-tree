@@ -293,6 +293,7 @@ def construct_workspace_from_candidates(
     response_format: str = DEFAULT_WORKSPACE_LLM_RESPONSE_FORMAT,
     workspace_id_override: str | None = None,
     semantic_scholar_client: SemanticScholarClient | None = None,
+    instructions: str | None = None,
 ) -> WorkspaceConstructionResult:
     candidate_json_path = candidate_json_path.resolve()
     output_dir = output_dir.resolve() if output_dir else candidate_json_path.parent
@@ -300,6 +301,7 @@ def construct_workspace_from_candidates(
     prompt_text = build_workspace_prompt(
         candidate_artifact,
         prompt_version=prompt_version,
+        instructions=instructions,
     )
     run_label = _run_label(candidate_json_path.parent)
     write_text_file(

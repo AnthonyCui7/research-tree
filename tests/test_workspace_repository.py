@@ -9,8 +9,34 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from research_tree.workspace.context import workspace_version_hash
+from research_tree.workspace.context import atomic_branch_count, workspace_version_hash
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
+
+
+class AtomicBranchCountTest(unittest.TestCase):
+    """A parent branch groups its children; counting both counts the same work twice."""
+
+    def test_counts_only_leaves(self) -> None:
+        nodes = [
+            {"node_id": "a", "parent_id": "root", "is_leaf": False},
+            {"node_id": "a1", "parent_id": "a", "is_leaf": True},
+            {"node_id": "a2", "parent_id": "a", "is_leaf": True},
+            {"node_id": "b", "parent_id": "root", "is_leaf": True},
+        ]
+
+        self.assertEqual(atomic_branch_count(nodes), 3)
+
+    def test_falls_back_to_the_tree_when_is_leaf_is_absent(self) -> None:
+        nodes = [
+            {"node_id": "a", "parent_id": "root"},
+            {"node_id": "a1", "parent_id": "a"},
+        ]
+
+        self.assertEqual(atomic_branch_count(nodes), 1)
+
+    def test_tolerates_a_missing_or_malformed_tree(self) -> None:
+        self.assertEqual(atomic_branch_count(None), 0)
+        self.assertEqual(atomic_branch_count([{"node_id": "a"}, "not-a-node"]), 1)
 
 
 class LocalJsonWorkspaceRepositoryTest(unittest.TestCase):

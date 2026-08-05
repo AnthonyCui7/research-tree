@@ -52,6 +52,10 @@ export function normalizeWorkspaceForTree(
 ): TreeViewModel {
   const branches = workspace.tree.nodes.filter((node) => Boolean(node.node_id));
   const branchesById = new Map(branches.map((branch) => [branch.node_id, branch]));
+  // "Branches" means the atomic ones: a parent branch is a grouping of its
+  // children, and only leaves carry reading paths. Counting both reports the
+  // same work twice.
+  const atomicBranchCount = branches.filter((branch) => branch.is_leaf).length;
   const childrenByParent = childBranches(branches, workspace.tree.root_node_id);
   const pathsByBranch = pathsGroupedByBranch(workspace, branches, childrenByParent);
   const familyByBranch = new Map(
@@ -104,7 +108,7 @@ export function normalizeWorkspaceForTree(
     suggestedReadingDirection: workspace.root.suggested_reading_direction,
     keyTerms: workspace.root.key_terms,
     openQuestions: workspace.root.open_questions,
-    branchCount: branches.length,
+    branchCount: atomicBranchCount,
     anchorPaper: anchorPaper(workspace, workspace.root.survey_anchor_paper_ids),
     position: {
       x: ROOT_POSITION_X,
@@ -151,7 +155,7 @@ export function normalizeWorkspaceForTree(
     workspaceId: workspace.workspace_id,
     title: workspace.title,
     paperCount: Object.keys(workspace.paper_cards).length,
-    branchCount: branches.length,
+    branchCount: atomicBranchCount,
     currentVersionHash: currentVersion,
     canvas: {
       width: Math.max(1040, state.maxRight + 48),

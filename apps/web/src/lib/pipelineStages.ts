@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { PipelineRun } from "./types";
 
 /**
@@ -26,7 +27,25 @@ export type BuildProgress = {
   currentLabel: string | null;
 };
 
-export function buildProgress(run: PipelineRun): BuildProgress {
+/**
+ * How much of the bar the clock alone can fill, and how quickly it gets there.
+ *
+ * A build has four stages but no way to know how far into one it is, so a bar
+ * driven by stage transitions alone sits still for minutes and then jumps. The
+ * clock fills the gaps: `1 - e^(-t/τ)` moves quickly at the start and keeps
+ * decelerating, so it never has to guess a finish time it cannot know. τ is set
+ * near a typical run — the curve reaches ~63% of its ceiling at τ, ~86% at 2τ.
+ */
+const CLOCK_CEILING = 0.9;
+const CLOCK_TIME_CONSTANT_MS = 180_000;
+/** Real progress is honest but coarse; nothing pretends the run is over. */
+const STAGE_CEILING = 0.97;
+
+/**
+ * `elapsedMs` is how long the run has been going. Pass 0 for a run whose
+ * progress should be read off its stages alone.
+ */
+export function buildProgress(run: PipelineRun, elapsedMs = 0): BuildProgress {
   const requested = STAGE_LABELS.filter(
     ([id]) => run.requested_stages.includes(id) || run.stages[id] !== undefined,
   );
@@ -50,19 +69,51 @@ export function buildProgress(run: PipelineRun): BuildProgress {
   });
 
   const done = stages.filter((stage) => stage.state === "done").length;
-  const running = stages.some((stage) => stage.state === "current") ? 0.5 : 0;
-  const finished = ["completed", "completed_with_warnings"].includes(run.status);
-  const percent = finished
-    ? 100
-    : Math.min(97, Math.round(((done + running) / stages.length) * 100));
 
   return {
     stages,
-    percent,
+    percent: percentComplete(run, done / stages.length, elapsedMs),
     openable: isOpenable(run),
     currentLabel: stages.find((stage) => stage.state === "current")?.label ?? null,
   };
 }
+
+/**
+ * The bar is whichever is further along: the stages actually finished, or the
+ * clock. Both only ever rise, so their maximum never steps backwards.
+ */
+function percentComplete(run: PipelineRun, stagesDone: number, elapsedMs: number): number {
+  if (["completed", "completed_with_warnings"].includes(run.status)) {
+    return 100;
+  }
+  const settled = run.status === "failed" || run.status === "cancelled";
+  // A stopped build's bar should stay where the work stopped rather than drift
+  // on toward a finish that is not coming.
+  const clock = settled
+    ? 0
+    : CLOCK_CEILING * (1 - Math.exp(-Math.max(0, elapsedMs) / CLOCK_TIME_CONSTANT_MS));
+  return Math.round(Math.min(STAGE_CEILING, Math.max(stagesDone * STAGE_CEILING, clock)) * 100);
+}
+
+/**
+ * Progress that advances between stage transitions, for the components that
+ * show a bar. The tick is what animates the clock; it stops with the run.
+ */
+export function useBuildProgress(run: PipelineRun): BuildProgress {
+  const startedAt = Date.parse(run.created_at);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isRunActive(run)) return;
+    const timer = window.setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [run]);
+
+  return buildProgress(run, Number.isNaN(startedAt) ? 0 : now - startedAt);
+}
+
+/** Matches the bar's width transition, so the fill reads as continuous. */
+const CLOCK_TICK_MS = 500;
 
 /** Structure plus paper details have landed; later stages only enrich it. */
 export function isOpenable(run: PipelineRun): boolean {

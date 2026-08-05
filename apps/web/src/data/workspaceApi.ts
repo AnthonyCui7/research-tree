@@ -1,6 +1,8 @@
 import { ApiError } from "../lib/apiError";
 import type {
   AgentRunResult,
+  ApiKeyStatus,
+  BugReportResult,
   PipelineRun,
   TopicReview,
   WorkspaceDocument,
@@ -39,7 +41,11 @@ export type WorkspaceGateway = {
   getWorkspace: (workspaceId: string) => Promise<WorkspaceResponse>;
   getWorkspaceVersions: (workspaceId: string) => Promise<WorkspaceVersion[]>;
   reviewTopic: (topic: string) => Promise<TopicReview>;
-  createWorkspace: (topic: string, topicReviewToken: string) => Promise<PipelineRun>;
+  createWorkspace: (
+    topic: string,
+    topicReviewToken: string,
+    instructions: string,
+  ) => Promise<PipelineRun>;
   cancelPipelineRun: (runId: string) => Promise<PipelineRun>;
   restoreWorkspace: (workspaceId: string, versionHash: string, expectedHash: string) => Promise<void>;
   deleteWorkspace: (workspaceId: string, expectedHash: string) => Promise<void>;
@@ -52,6 +58,8 @@ export type WorkspaceGateway = {
   ) => Promise<AgentRunResult>;
   approveReview: (workspaceId: string, reviewId: string) => Promise<void>;
   rejectReview: (workspaceId: string, reviewId: string) => Promise<void>;
+  getApiKeys: () => Promise<{ openai: ApiKeyStatus }>;
+  reportBug: (summary: string, details: string, area: string) => Promise<BugReportResult>;
 };
 
 export const repositoryWorkspaceGateway: WorkspaceGateway = {
@@ -82,11 +90,11 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     });
   },
 
-  async createWorkspace(topic, topicReviewToken) {
+  async createWorkspace(topic, topicReviewToken, instructions) {
     const payload = await postJson<{ pipeline_run: PipelineRun }>("/workspaces", {
       topic,
       topic_review_token: topicReviewToken,
-      model: "gpt-5.6-luna",
+      instructions,
     });
     return payload.pipeline_run;
   },
@@ -138,6 +146,14 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
 
   async rejectReview(workspaceId, reviewId) {
     await postJson(`/workspaces/${encodeURIComponent(workspaceId)}/reviews/${encodeURIComponent(reviewId)}/reject`, {});
+  },
+
+  async getApiKeys() {
+    return getJson<{ openai: ApiKeyStatus }>("/account/api-keys");
+  },
+
+  async reportBug(summary, details, area) {
+    return postJson<BugReportResult>("/account/bug-reports", { summary, details, area });
   },
 };
 

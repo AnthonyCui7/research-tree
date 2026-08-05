@@ -67,6 +67,17 @@ export type TopicReview = {
   topic_review_token: string | null;
 };
 
+/** What the server will say about a provider key: never the key itself. */
+export type ApiKeyStatus = {
+  configured: boolean;
+  masked: string | null;
+  source: string | null;
+};
+
+/** Both write paths answer with `stored: false` until there is a database. */
+export type SaveApiKeyResult = { stored: boolean; detail: string };
+export type BugReportResult = { received: boolean; stored: boolean; detail: string };
+
 export type PipelineRun = {
   run_id: string;
   workspace_id: string;

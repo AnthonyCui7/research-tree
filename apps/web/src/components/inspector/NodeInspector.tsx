@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { branchTint } from "../../lib/familyTint";
 import { cx } from "../../lib/cx";
 import { DROPDOWN_EXIT_MS, useExitAnimation } from "../../lib/animation";
-import { longDateLabel, pluralize } from "../../lib/format";
+import { longDateLabel } from "../../lib/format";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import { PanelClose } from "../panel/RightPanel";
 import type {
@@ -40,9 +39,7 @@ export function NodeInspector({ node, tree, updatedAt, onSelectNode, onClose }: 
         className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pr-11 pb-7"
         key={node.id}
       >
-        {node.kind === "root" ? (
-          <RootView node={node} tree={tree} updatedAt={updatedAt} onSelectNode={onSelectNode} />
-        ) : null}
+        {node.kind === "root" ? <RootView node={node} tree={tree} updatedAt={updatedAt} /> : null}
         {node.kind === "branch" ? (
           <BranchView node={node} tree={tree} onSelectNode={onSelectNode} />
         ) : null}
@@ -216,8 +213,7 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? papers : papers.slice(0, 3);
   return (
-    <section className="mt-5 border-t border-hairline pt-4">
-      <h3 className="m-0 text-[13px] font-bold text-text-primary">Similar papers</h3>
+    <SectionShell title="Similar papers">
       <div className="mt-0.5 flex flex-col">
         {visible.map((paper) => (
           <article className="border-b border-hairline-soft py-[11px]" key={paper.paper_id}>
@@ -241,7 +237,7 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
       </div>
       {papers.length > 3 ? (
         <button
-          className="mt-3 rounded-[6px] border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-text-primary transition-[border-color,color] duration-150 hover:border-accent hover:text-accent-deep"
+          className="mt-3 w-full rounded-[7px] border border-border bg-surface px-3 py-2 text-center text-[11.5px] font-semibold text-text-primary transition-[background-color,border-color,color] duration-150 hover:border-accent hover:bg-surface-subtle hover:text-accent-deep"
           type="button"
           onClick={() => setShowAll((current) => !current)}
           aria-expanded={showAll}
@@ -249,7 +245,7 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
           {showAll ? "Show fewer" : `Show all ${papers.length}`}
         </button>
       ) : null}
-    </section>
+    </SectionShell>
   );
 }
 
@@ -279,14 +275,14 @@ function BranchView({
         {node.title}
       </h2>
       <p className="mt-1.5 mb-0 text-xs text-text-secondary">
-        {pluralize(readingPath.length, "paper")} in reading path
+        <b className="font-semibold text-text-primary">{readingPath.length}</b>{" "}
+        {readingPath.length === 1 ? "paper" : "papers"} in reading path
       </p>
-      <LabelledSection label="Overview" body={node.description} />
-      {node.whyItMatters ? <LabelledSection label="Why it matters" body={node.whyItMatters} /> : null}
-      {node.anchorPaper ? <AnchorCard label="Branch survey" paper={node.anchorPaper} /> : null}
+      <Section title="Overview" body={node.description} />
+      {node.whyItMatters ? <Section title="Why it matters" body={node.whyItMatters} /> : null}
+      {node.anchorPaper ? <SurveyAnchor label="Branch survey" paper={node.anchorPaper} /> : null}
       {readingPath.length > 0 ? (
-        <section className="mt-5">
-          <SmallCaps>Reading path</SmallCaps>
+        <SectionShell title="Reading path">
           <ol className="m-0 mt-2 flex list-none flex-col p-0">
             {readingPath.map((paper, index) => (
               <li key={paper.id}>
@@ -313,7 +309,7 @@ function BranchView({
               </li>
             ))}
           </ol>
-        </section>
+        </SectionShell>
       ) : null}
       <Chips label="Tags" values={node.tags} />
       <Questions questions={node.openQuestions} />
@@ -327,17 +323,11 @@ function RootView({
   node,
   tree,
   updatedAt,
-  onSelectNode,
 }: {
   node: Extract<TreeNodeViewModel, { kind: "root" }>;
   tree: TreeViewModel;
   updatedAt: string | null;
-  onSelectNode: (nodeId: TreeNodeId) => void;
 }) {
-  const branches = useMemo(
-    () => tree.nodes.filter((entry): entry is BranchTreeNode => entry.kind === "branch"),
-    [tree],
-  );
   const updated = longDateLabel(updatedAt);
   return (
     <>
@@ -353,38 +343,15 @@ function RootView({
         </span>
         {updated ? <span>updated {updated}</span> : null}
       </p>
-      <LabelledSection label="Overview" body={node.overview} />
+      <Section title="Overview" body={node.overview} />
       {node.whyItMatters && node.whyItMatters !== node.overview ? (
-        <LabelledSection label="Why it matters" body={node.whyItMatters} />
+        <Section title="Why it matters" body={node.whyItMatters} />
       ) : null}
-      {node.anchorPaper ? <AnchorCard label="Field survey" paper={node.anchorPaper} /> : null}
-      {branches.length > 0 ? (
-        <section className="mt-5">
-          <SmallCaps>Branches</SmallCaps>
-          <div className="mt-1.5 flex flex-col">
-            {branches.map((branch) => (
-              <button
-                className="-mx-2.5 flex w-[calc(100%+20px)] items-center gap-2.5 rounded-md border-0 bg-transparent px-2.5 py-[9px] text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
-                key={branch.id}
-                type="button"
-                onClick={() => onSelectNode(branch.id)}
-              >
-                <span
-                  className="h-2.5 w-2.5 flex-none rounded-[3px] border border-node-border"
-                  style={{ background: branchTint(branch.family) }}
-                  aria-hidden="true"
-                />
-                <span className="min-w-0 flex-1 text-[12.5px] font-semibold leading-[1.4] text-text-primary">
-                  {branch.title}
-                </span>
-                <span className="flex-none text-[11px] text-text-muted">{branch.paperCount}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      {/* The branches are the tree itself, a click away on the canvas; listing
+          them again here only duplicates what is already on screen. */}
+      {node.anchorPaper ? <SurveyAnchor label="Root survey" paper={node.anchorPaper} /> : null}
       {node.suggestedReadingDirection ? (
-        <LabelledSection label="Where to start" body={node.suggestedReadingDirection} />
+        <Section title="Where to start" body={node.suggestedReadingDirection} />
       ) : null}
       <Chips label="Key terms" values={node.keyTerms} />
       <Questions questions={node.openQuestions} />
@@ -394,49 +361,49 @@ function RootView({
 
 /* -------------------------------------------------------------- shared --- */
 
+/** Every panel — root, branch and paper — reads as the same run of sections. */
 function Section({ title, body }: { title: string; body: string }) {
   return (
-    <section className="mt-[18px] first-of-type:mt-5">
-      <h3 className="m-0 text-[13px] font-bold text-text-primary">{title}</h3>
+    <SectionShell title={title}>
       <p className="mt-[7px] mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.62] text-text-primary">
         {body}
       </p>
-    </section>
+    </SectionShell>
   );
 }
 
-function LabelledSection({ label, body }: { label: string; body: string }) {
+function SectionShell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mt-[18px]">
-      <SmallCaps>{label}</SmallCaps>
-      <p className="mt-[7px] mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.62] text-text-primary">
-        {body}
-      </p>
+      <h3 className="m-0 text-[13px] font-bold text-text-primary">{title}</h3>
+      {children}
     </section>
   );
 }
 
-function AnchorCard({ label, paper }: { label: string; paper: PaperDetails }) {
+/**
+ * The survey that orients the topic or the branch. It is one more section of the
+ * panel, written the same way as the reading path and similar papers, rather
+ * than a boxed aside floating in the middle of them.
+ */
+function SurveyAnchor({ label, paper }: { label: string; paper: PaperDetails }) {
   return (
-    <div className="mt-[18px] rounded-lg border border-border bg-surface px-3.5 py-3">
-      <span className="text-[10px] font-semibold tracking-[0.06em] text-text-muted uppercase">
-        {label}
-      </span>
-      <p className="mt-1 mb-0 text-[12.5px] font-semibold leading-[1.4] text-text-primary [overflow-wrap:anywhere]">
+    <SectionShell title={label}>
+      <p className="mt-[7px] mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.5] font-semibold text-text-primary [overflow-wrap:anywhere]">
         {paper.title}
       </p>
-      <p className="mt-0.5 mb-0 text-[11px] text-text-muted">
-        {authorLine(paper.authors)} · {paper.year ?? "n.d."}
+      <p className="mt-[3px] mb-0 text-[11.5px] text-text-muted">
+        {authorLine(paper.authors)} · {publicationDate(paper)}
       </p>
       {paper.arxivLink || paper.semanticScholarLink ? (
-        <div className="mt-2 flex flex-wrap gap-3">
+        <div className="mt-[7px] flex flex-wrap gap-3">
           {paper.arxivLink ? <InlineLink href={paper.arxivLink}>arXiv ↗</InlineLink> : null}
           {paper.semanticScholarLink ? (
             <InlineLink href={paper.semanticScholarLink}>Semantic Scholar ↗</InlineLink>
           ) : null}
         </div>
       ) : null}
-    </div>
+    </SectionShell>
   );
 }
 
@@ -445,8 +412,7 @@ function Chips({ label, values }: { label: string; values: string[] }) {
     return null;
   }
   return (
-    <section className="mt-5" aria-label={label}>
-      <SmallCaps>{label}</SmallCaps>
+    <SectionShell title={label}>
       <div className="mt-2 flex flex-wrap gap-1.5">
         {values.map((value) => (
           <span
@@ -457,7 +423,7 @@ function Chips({ label, values }: { label: string; values: string[] }) {
           </span>
         ))}
       </div>
-    </section>
+    </SectionShell>
   );
 }
 
@@ -466,8 +432,7 @@ function Questions({ questions }: { questions: string[] }) {
     return null;
   }
   return (
-    <section className="mt-5">
-      <SmallCaps>Open questions</SmallCaps>
+    <SectionShell title="Open questions">
       <ul className="m-0 mt-2 w-[min(100%,62ch)] list-disc pl-[18px] text-[13px] leading-[1.62] text-text-secondary marker:text-border-strong">
         {questions.map((question) => (
           <li className="mb-2 pl-1 last:mb-0" key={question}>
@@ -475,15 +440,7 @@ function Questions({ questions }: { questions: string[] }) {
           </li>
         ))}
       </ul>
-    </section>
-  );
-}
-
-function SmallCaps({ children }: { children: string }) {
-  return (
-    <span className="block text-[10.5px] font-semibold tracking-[0.06em] text-text-muted uppercase">
-      {children}
-    </span>
+    </SectionShell>
   );
 }
 

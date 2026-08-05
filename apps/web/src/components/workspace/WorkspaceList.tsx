@@ -1,6 +1,6 @@
 import { cx } from "../../lib/cx";
 import { relativeTimestamp, pluralize } from "../../lib/format";
-import { buildProgress, isRunActive } from "../../lib/pipelineStages";
+import { isRunActive, useBuildProgress } from "../../lib/pipelineStages";
 import { EllipsisIcon } from "../ui/icons";
 import type { PipelineRun, WorkspaceSummary } from "../../lib/types";
 
@@ -103,7 +103,7 @@ export function WorkspaceList({
 }
 
 function BuildingCaption({ run, selected }: { run: PipelineRun; selected: boolean }) {
-  const progress = buildProgress(run);
+  const progress = useBuildProgress(run);
   return (
     <>
       <span
@@ -121,7 +121,7 @@ function BuildingCaption({ run, selected }: { run: PipelineRun; selected: boolea
 
 function BuildPlaceholderRow({ run, onResume }: { run: PipelineRun; onResume: () => void }) {
   const failed = run.status === "failed";
-  const progress = buildProgress(run);
+  const progress = useBuildProgress(run);
   return (
     <button
       className="rounded-md px-2.5 py-2 text-left transition-[background-color] duration-150 hover:bg-[#e9ebed]"
@@ -150,7 +150,7 @@ function ProgressBar({ percent }: { percent: number }) {
   return (
     <span className="block h-[3px] overflow-hidden rounded-[2px] bg-[#dde0e3]" aria-hidden="true">
       <span
-        className="block h-full rounded-[2px] bg-accent transition-[width] duration-500 ease-research"
+        className="block h-full rounded-[2px] bg-accent transition-[width] duration-500 ease-linear"
         style={{ width: `${percent}%` }}
       />
     </span>

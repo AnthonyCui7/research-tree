@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
-import { ProfileMenu } from "./ProfileMenu";
+import { ProfileMenu, type AccountScreen } from "./ProfileMenu";
+import { AccountScreens, useApiKeyLabel } from "../account/AccountScreens";
 import { TreeCanvas } from "../tree/TreeCanvas";
 import { SearchOverlay } from "../search/SearchOverlay";
 import { NodeInspector, inspectorLabel } from "../inspector/NodeInspector";
@@ -95,6 +96,7 @@ export function AppShell({
     { workspace: WorkspaceSummary; anchor: MenuAnchor } | null
   >(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
+  const [accountScreen, setAccountScreen] = useState<AccountScreen | null>(null);
   const [panelWidth, setPanelWidth] = useState(RIGHT_PANEL_DEFAULT_WIDTH);
   // A failed background refresh keeps the workspaces already on screen, so the
   // failure has nowhere else to appear. Dismissal is tracked by message, so a
@@ -107,6 +109,7 @@ export function AppShell({
     buildingRun?.workspace_id === activeWorkspaceId && isRunActive(buildingRun);
   const refreshError = status !== "error" && error && error !== dismissedError ? error : null;
   const session = useAgentSession(activeWorkspace?.workspace_id ?? null, onWorkspaceChanged);
+  const apiKeyLabel = useApiKeyLabel();
 
   // A refresh that succeeds re-arms the strip, so the same failure returning
   // after a good refresh is reported again rather than silently swallowed.
@@ -322,12 +325,19 @@ export function AppShell({
         <ProfileMenu
           anchor={profileAnchor}
           onClose={() => setProfileAnchor(null)}
-          onRefresh={onRefresh}
-          onToggleSidebar={onToggleSidebar}
-          sidebarCollapsed={sidebarCollapsed}
-          live={live}
+          onOpenScreen={setAccountScreen}
+          apiKeyLabel={apiKeyLabel}
         />
       ) : null}
+
+      <AccountScreens
+        screen={accountScreen}
+        onClose={() => setAccountScreen(null)}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={onToggleSidebar}
+        live={live}
+        onRefresh={onRefresh}
+      />
 
       {optionsMenu ? (
         <PopoverMenu

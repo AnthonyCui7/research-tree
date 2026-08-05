@@ -60,6 +60,7 @@ def create_workspace(
         "pipeline_run": service.start_approved_new_workspace(
             topic=request.topic,
             topic_review_token=request.topic_review_token,
+            instructions=request.instructions,
         )
     }
 

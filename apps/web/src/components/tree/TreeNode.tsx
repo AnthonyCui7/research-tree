@@ -17,7 +17,7 @@ export function TreeNode({ node, selected = false, onSelectNode, measure = false
     <button
       type="button"
       className={cx(
-        "absolute z-[1] flex flex-col items-start rounded-md border text-left text-text-primary transition-[background-color,border-color,transform] duration-150 enabled:hover:-translate-y-px enabled:hover:border-accent aria-pressed:border-accent aria-pressed:bg-node-selected",
+        "absolute z-[1] flex flex-col items-start rounded-md border text-left text-text-primary transition-[border-color,box-shadow,transform] duration-150 enabled:hover:-translate-y-px enabled:hover:border-accent aria-pressed:border-accent aria-pressed:shadow-[0_0_0_2.5px_var(--color-accent-border)]",
         nodePadding[node.kind],
         node.kind === "root" ? rootTone.border : family?.border,
         node.kind === "root" ? rootTone.root : node.kind === "branch" ? family?.branch : family?.paper,
@@ -54,7 +54,7 @@ function RootNodeContent({
       <span className={kickerClass}>Research topic</span>
       <strong className="mt-[5px] [overflow-wrap:anywhere] text-[21px] font-bold leading-[1.12] tracking-normal">{node.title}</strong>
       <span className="mt-[7px] text-xs leading-[1.5] text-text-secondary">{node.overview}</span>
-      <AnchorSummary paper={node.anchorPaper} label="Survey" />
+      <AnchorSummary paper={node.anchorPaper} label="Root survey" />
     </>
   );
 }
@@ -99,7 +99,7 @@ function AnchorSummary({ paper, label }: { paper: PaperDetails | null; label: st
     <span className="mt-2.5 grid w-full gap-[3px] border-t border-[color-mix(in_srgb,var(--color-border)_80%,transparent)] pt-[9px] text-[11px] leading-[1.35] text-text-secondary">
       <span className={kickerClass}>{label}</span>
       <b className="font-semibold text-text-primary">{paper.title}</b>
-      <em className="text-[10.5px] not-italic text-text-muted">{anchorMetaLine(paper)}</em>
+      <em className="text-[10.5px] not-italic text-text-muted">{paperMetaLine(paper)}</em>
     </span>
   );
 }
@@ -121,9 +121,14 @@ const nodePadding = {
  */
 const clampThreeLines = "line-clamp-3";
 
+/**
+ * The root is the one card that is not a branch or a paper, so it carries the
+ * accent rather than a branch family colour — a lighter wash than the selected
+ * state, which still has to read as a change on top of it.
+ */
 const rootTone = {
-  border: "border-node-border",
-  root: "bg-surface",
+  border: "border-accent-border",
+  root: "bg-accent-wash",
 };
 
 const familyTones = [
@@ -148,14 +153,9 @@ function familyTone(family: number | "group" | null | undefined) {
   return familyTones[8];
 }
 
-/** The design's card meta line: `Radford et al. · 2019`. */
+/** The design's card meta line: `Radford et al. · 12 Feb 2019`. Surveys use it too. */
 function paperMetaLine(paper: Pick<PaperDetails, "authors" | "publicationDate" | "year">): string {
   return joinMeta(authorLine(paper.authors), publicationDate(paper));
-}
-
-/** Surveys carry the same line, dated by year alone. */
-function anchorMetaLine(paper: PaperDetails): string {
-  return joinMeta(authorLine(paper.authors), paper.year ? `${paper.year}` : "n.d.");
 }
 
 function joinMeta(authors: string, date: string): string {

@@ -67,10 +67,11 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
     void session.send(request);
   }
 
-  function ask(prompt: string) {
-    if (busy) return;
-    setMessage("");
-    void session.send(prompt);
+  // An opener is a starting point, not a question already asked: it lands in the
+  // composer so it can be edited or added to before it is sent.
+  function fillComposer(prompt: string) {
+    setMessage(prompt);
+    composerRef.current?.focus();
   }
 
   const showIntro = conversation.length === 0 && !busy && !result && !error;
@@ -107,7 +108,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
         ref={conversationRef}
         aria-live="polite"
       >
-        {showIntro ? <AgentIntro tree={tree} onAsk={ask} /> : null}
+        {showIntro ? <AgentIntro tree={tree} onUse={fillComposer} /> : null}
 
         {conversation.map((item, index) =>
           item.role === "user" ? (
@@ -245,15 +246,15 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
 
 /**
  * The opening screen: what the assistant is looking at, and three things worth
- * asking it about that tree. Each one sends its prompt straight away — the
- * point of an opening prompt is that it needs no editing.
+ * asking it about that tree. Choosing one writes it into the composer, where it
+ * can be sharpened before it is sent.
  */
 function AgentIntro({
   tree,
-  onAsk,
+  onUse,
 }: {
   tree: TreeViewModel | null;
-  onAsk: (prompt: string) => void;
+  onUse: (prompt: string) => void;
 }) {
   const openers = introPrompts(tree);
   return (
@@ -273,7 +274,7 @@ function AgentIntro({
             className="group flex w-full items-center gap-3 rounded-[7px] border-0 border-b border-hairline bg-transparent px-1.5 py-[13px] text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
             key={opener.title}
             type="button"
-            onClick={() => onAsk(opener.prompt)}
+            onClick={() => onUse(opener.prompt)}
           >
             <span className="min-w-0 flex-1">
               <span className="block text-[13.5px] font-bold text-text-primary">

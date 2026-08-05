@@ -160,19 +160,48 @@ export function WarningIcon({ className }: IconProps) {
   );
 }
 
-export function RefreshIcon({ className }: IconProps) {
+export function GearIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 14 14" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
-      <path d="M12 7a5 5 0 1 1-1.6-3.7" />
-      <path d="M12.2 1.6v2.9H9.3" />
+    <svg viewBox="0 0 16 16" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <circle cx="8" cy="8" r="2.1" />
+      <path d="M8 1.4v1.8M8 12.8v1.8M1.4 8h1.8M12.8 8h1.8M3.3 3.3l1.3 1.3M11.4 11.4l1.3 1.3M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3" />
     </svg>
   );
 }
 
-export function SparkIcon({ className }: IconProps) {
+export function KeyIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true" className={className}>
-      <path d="M7 0.8 8.5 5.5 13.2 7 8.5 8.5 7 13.2 5.5 8.5 0.8 7 5.5 5.5Z" />
+    <svg viewBox="0 0 16 16" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <circle cx="5" cy="5" r="3" />
+      <path d="M7.2 7.2 13.5 13.5M11.4 11.4l-1.3 1.3M13 13l-1.3 1.3" />
+    </svg>
+  );
+}
+
+export function HelpIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M6.3 6.2a1.75 1.75 0 1 1 2.1 2.1c-.3.1-.4.4-.4.7v.4" />
+      <circle cx="8" cy="11.5" r="0.55" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function BugIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <rect x="5" y="5" width="6" height="8" rx="3" />
+      <path d="M6.3 3.6 5.2 2.5M9.7 3.6l1.1-1.1M5 7.5H2.4M11 7.5h2.6M5.2 10.7 3 12M10.8 10.7 13 12" />
+    </svg>
+  );
+}
+
+export function SignOutIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <path d="M6.5 2.5H3.6A1.1 1.1 0 0 0 2.5 3.6v8.8a1.1 1.1 0 0 0 1.1 1.1h2.9" />
+      <path d="M10.5 5.5 13.5 8l-3 2.5M13.5 8H6.2" />
     </svg>
   );
 }

@@ -68,6 +68,7 @@ class WorkspacePipelineService:
         *,
         topic: str,
         topic_review_token: str,
+        instructions: str | None = None,
     ) -> dict[str, Any]:
         normalized_topic = TopicReviewService(self.repository).consume_approved_topic(
             token=topic_review_token,
@@ -85,6 +86,7 @@ class WorkspacePipelineService:
             source_run=None,
             source_version_hash=None,
             reserve_topic=True,
+            instructions=instructions,
         )
 
     def rerun(
@@ -118,6 +120,16 @@ class WorkspacePipelineService:
             start_stage=start_stage,
             source_run=source_run,
             source_version_hash=current_hash,
+            # Rebuilding a workspace should rebuild the one that was asked for,
+            # so the steer from the run that created it comes along.
+            instructions=next(
+                (
+                    str(prior["instructions"])
+                    for prior in prior_runs
+                    if prior.get("instructions")
+                ),
+                None,
+            ),
         )
 
     def get_run(self, run_id: str) -> dict[str, Any]:
@@ -148,6 +160,7 @@ class WorkspacePipelineService:
         source_run: dict[str, Any] | None,
         source_version_hash: str | None,
         reserve_topic: bool = False,
+        instructions: str | None = None,
     ) -> dict[str, Any]:
         run_id = f"pipeline_{uuid4().hex}"
         start_index = PIPELINE_STAGES.index(start_stage)
@@ -156,6 +169,9 @@ class WorkspacePipelineService:
             "run_id": run_id,
             "workspace_id": workspace_id,
             "topic": topic,
+            # The reader's optional steer for the construction prompt. It lives
+            # on the run so a rerun of the same workspace builds it the same way.
+            "instructions": _clean_instructions(instructions),
             # Construction is locked to one model: the prompt and its structured
             # output schema are tuned against it, and a workspace's quality
             # should not vary with whatever the caller asked for.
@@ -240,6 +256,7 @@ class WorkspacePipelineService:
                     model=run["model"],
                     output_dir=run_dir,
                     workspace_id_override=run["workspace_id"],
+                    instructions=run.get("instructions"),
                 )
                 workspace = result.workspace
                 artifacts["workspace_json"] = str(result.output_paths["workspace"])
@@ -615,6 +632,14 @@ class _ConstructPrefetch:
             # only costs the time it would have saved.
             logger.warning("construct %s failed: %s", label, error)
             return None
+
+
+MAX_INSTRUCTIONS_CHARS = 2_000
+
+
+def _clean_instructions(instructions: str | None) -> str | None:
+    text = " ".join((instructions or "").split()).strip()
+    return text[:MAX_INSTRUCTIONS_CHARS] or None
 
 
 def _now() -> str:

@@ -84,13 +84,24 @@ type MenuItemProps = {
   tone?: "default" | "danger";
   icon?: ReactNode;
   disabled?: boolean;
+  title?: string;
+  /** Quiet value shown at the end of the row — a state, not a second action. */
+  trailing?: ReactNode;
 };
 
-export function MenuItem({ children, onClick, tone = "default", icon, disabled }: MenuItemProps) {
+export function MenuItem({
+  children,
+  onClick,
+  tone = "default",
+  icon,
+  disabled,
+  title,
+  trailing,
+}: MenuItemProps) {
   return (
     <button
       className={cx(
-        "flex w-full items-center gap-[9px] border-0 bg-transparent px-[9px] py-[7px] text-left text-[12.5px] transition-[background-color] duration-150 disabled:cursor-not-allowed disabled:text-text-muted",
+        "flex w-full items-center gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[7px] text-left text-[13px] transition-[background-color] duration-150 disabled:cursor-not-allowed disabled:text-text-muted",
         tone === "danger"
           ? "text-error enabled:hover:bg-error-surface"
           : "text-text-primary enabled:hover:bg-surface-subtle",
@@ -99,9 +110,13 @@ export function MenuItem({ children, onClick, tone = "default", icon, disabled }
       role="menuitem"
       onClick={onClick}
       disabled={disabled}
+      title={title}
     >
       {icon ? <span className="flex-none text-text-muted">{icon}</span> : null}
       <span className="min-w-0 flex-1 truncate">{children}</span>
+      {trailing ? (
+        <span className="flex-none font-mono text-[11.5px] text-text-muted">{trailing}</span>
+      ) : null}
     </button>
   );
 }

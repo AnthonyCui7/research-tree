@@ -1,78 +1,81 @@
 import { MenuItem, MenuSection, PopoverMenu, type MenuAnchor } from "../ui/PopoverMenu";
-import { RefreshIcon, SidebarIcon } from "../ui/icons";
+import { BugIcon, GearIcon, HelpIcon, KeyIcon, SignOutIcon } from "../ui/icons";
+
+/** The screens this menu opens; the shell owns which one is showing. */
+export type AccountScreen = "settings" | "api-keys" | "help" | "report-bug";
 
 type ProfileMenuProps = {
   anchor: MenuAnchor;
   onClose: () => void;
-  onRefresh: () => void;
-  onToggleSidebar: () => void;
-  sidebarCollapsed: boolean;
-  live: boolean;
+  onOpenScreen: (screen: AccountScreen) => void;
+  /** Last four characters of the configured key, or null when there is none. */
+  apiKeyLabel: string | null;
 };
 
 /**
- * The design's account menu, carrying what this build actually has: a local
- * profile, the state of the live workspace stream, and the shortcuts.
+ * The account menu. There are no accounts in this build — no auth, no database —
+ * so the identity is the local one and signing out is shown but inert rather
+ * than invented; see PROJECT.md "Next Steps".
  */
-export function ProfileMenu({
-  anchor,
-  onClose,
-  onRefresh,
-  onToggleSidebar,
-  sidebarCollapsed,
-  live,
-}: ProfileMenuProps) {
+export function ProfileMenu({ anchor, onClose, onOpenScreen, apiKeyLabel }: ProfileMenuProps) {
   return (
-    <PopoverMenu anchor={anchor} onClose={onClose} label="Account" width={244}>
+    <PopoverMenu anchor={anchor} onClose={onClose} label="Account" width={256}>
       <div className="flex items-center gap-2.5 border-b border-hairline-soft px-3.5 py-3">
         <span
-          className="grid h-8 w-8 flex-none place-items-center rounded-full bg-accent-subtle text-xs font-semibold text-accent-deep"
+          className="grid h-9 w-9 flex-none place-items-center rounded-full bg-accent-subtle text-[13px] font-bold text-accent-deep"
           aria-hidden="true"
         >
           RT
         </span>
         <span className="min-w-0">
-          <span className="block text-[13px] font-semibold text-text-primary">Local profile</span>
-          <span className="block truncate text-[11px] text-text-muted">
-            Accounts are not part of the local build
+          <span className="block truncate text-[13.5px] font-bold text-text-primary">
+            Local profile
+          </span>
+          <span className="block truncate text-[12px] text-text-muted">
+            Signed in on this device
           </span>
         </span>
       </div>
 
       <MenuSection>
-        <MenuItem icon={<RefreshIcon className="h-[13px] w-[13px]" />} onClick={onRefresh}>
-          Reload workspaces
+        <MenuItem
+          icon={<GearIcon className="h-[15px] w-[15px]" />}
+          onClick={() => onOpenScreen("settings")}
+        >
+          Settings
         </MenuItem>
-        <MenuItem icon={<SidebarIcon className="h-[13px] w-[13px]" />} onClick={onToggleSidebar}>
-          {sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        <MenuItem
+          icon={<KeyIcon className="h-[15px] w-[15px]" />}
+          onClick={() => onOpenScreen("api-keys")}
+          trailing={apiKeyLabel}
+        >
+          API keys
+        </MenuItem>
+        <MenuItem
+          icon={<HelpIcon className="h-[15px] w-[15px]" />}
+          onClick={() => onOpenScreen("help")}
+        >
+          Help &amp; docs
+        </MenuItem>
+        <MenuItem
+          icon={<BugIcon className="h-[15px] w-[15px]" />}
+          onClick={() => onOpenScreen("report-bug")}
+        >
+          Report a bug
         </MenuItem>
       </MenuSection>
 
-      <div className="grid gap-1.5 px-3.5 py-3">
-        <span className="text-[10px] font-semibold tracking-[0.06em] text-text-muted uppercase">
-          Shortcuts
-        </span>
-        <ShortcutRow keys="⌘K" label="Search this workspace" />
-        <ShortcutRow keys="esc" label="Close the open panel" />
-        <span className="mt-1 flex items-center gap-1.5 text-[11px] text-text-muted">
-          <span
-            className={live ? "h-1.5 w-1.5 rounded-full bg-accent" : "h-1.5 w-1.5 rounded-full bg-text-muted"}
-            aria-hidden="true"
-          />
-          {live ? "Live updates on" : "Live updates paused"}
-        </span>
-      </div>
+      <MenuSection>
+        <MenuItem
+          tone="danger"
+          icon={<SignOutIcon className="h-[15px] w-[15px]" />}
+          disabled
+          title="There is no account to sign out of in this build"
+          onClick={() => {}}
+        >
+          Sign out
+        </MenuItem>
+      </MenuSection>
     </PopoverMenu>
-  );
-}
-
-function ShortcutRow({ keys, label }: { keys: string; label: string }) {
-  return (
-    <span className="flex items-center gap-2 text-[11.5px] text-text-secondary">
-      <kbd className="rounded-sm border border-border bg-surface px-[5px] py-px font-sans text-[10.5px] text-text-muted">
-        {keys}
-      </kbd>
-      {label}
-    </span>
   );
 }

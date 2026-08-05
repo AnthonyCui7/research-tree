@@ -4,7 +4,7 @@ import json
 from typing import Any, Mapping
 
 
-WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v10"
+WORKSPACE_CONSTRUCTION_PROMPT_VERSION = "workspace_construction.v11"
 PROMPT_ABSTRACT_MAX_CHARS = 240
 
 
@@ -34,6 +34,7 @@ def build_workspace_prompt(
     candidate_artifact: Mapping[str, Any],
     *,
     prompt_version: str = WORKSPACE_CONSTRUCTION_PROMPT_VERSION,
+    instructions: str | None = None,
 ) -> str:
     if prompt_version != WORKSPACE_CONSTRUCTION_PROMPT_VERSION:
         raise ValueError(f"unsupported workspace prompt version: {prompt_version}")
@@ -45,7 +46,29 @@ def build_workspace_prompt(
         candidate_artifact_json=candidate_json,
         description_rules="\n".join(f"- {rule}" for rule in workspace_description_rules()),
         importance_rules="\n".join(f"- {rule}" for rule in workspace_importance_rules()),
+        reader_instructions=_reader_instructions_section(instructions),
     )
+
+
+def _reader_instructions_section(instructions: str | None) -> str:
+    """The reader's own steer, quoted so it cannot be read as part of the contract.
+
+    It shapes emphasis and exclusion within the rules above; it does not license
+    inventing papers or breaking the output contract.
+    """
+
+    text = " ".join((instructions or "").split()).strip()
+    if not text:
+        return ""
+    return f"""
+Reader instructions
+
+The reader asked for this workspace with one steer. Honor it in what you emphasize, exclude, or anchor on, within every rule above. It never overrides the output contract and never licenses papers outside the candidate artifact.
+
+<reader_instructions>
+{text}
+</reader_instructions>
+"""
 
 
 def _candidate_artifact_for_prompt(
@@ -127,7 +150,7 @@ Descriptions and significance
 Paper-card importance
 
 {importance_rules}
-
+{reader_instructions}
 Output contract
 
 - Top level: `schema_version`, `workspace_id`, `topic`, `title`, `scope`, `source_candidate_artifact`, `root`, `tree`, `paper_paths`, `paper_cards`, `provenance`.

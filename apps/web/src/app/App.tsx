@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell, type UtilityPanel } from "../components/layout/AppShell";
 import { useWorkspaceCollection } from "../data/useWorkspaceCollection";
 import { useActiveWorkspace } from "../data/useActiveWorkspace";
@@ -6,6 +6,9 @@ import { normalizeWorkspaceForTree } from "../lib/workspaceAdapter";
 import type { PipelineRun, TreeNodeId } from "../lib/types";
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "research-tree.sidebar-collapsed";
+
+/** What a workspace was left showing, so returning to it resumes rather than resets. */
+type WorkspaceView = { panel: UtilityPanel | null; selectedNodeId: TreeNodeId | null };
 
 export function App() {
   const { status, workspaces, error, live, refresh } = useWorkspaceCollection();
@@ -43,10 +46,29 @@ export function App() {
     return normalizeWorkspaceForTree(activeWorkspace);
   }, [activeWorkspace]);
 
+  const activeWorkspaceId = activeSummary?.workspace_id ?? null;
+
+  // The panel and the selected card belong to the workspace they were opened
+  // from, so stepping away and back resumes the reading rather than restarting
+  // it. The render that switches workspaces is skipped: what is on screen at
+  // that moment still belongs to the workspace being left.
+  const viewsRef = useRef(new Map<string, WorkspaceView>());
+  const shownWorkspaceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (shownWorkspaceRef.current !== activeWorkspaceId) {
+      shownWorkspaceRef.current = activeWorkspaceId;
+      return;
+    }
+    if (activeWorkspaceId) {
+      viewsRef.current.set(activeWorkspaceId, { panel, selectedNodeId });
+    }
+  }, [activeWorkspaceId, panel, selectedNodeId]);
+
   function selectWorkspace(workspaceId: string) {
+    const view = viewsRef.current.get(workspaceId);
     setSelectedWorkspaceId(workspaceId);
-    setSelectedNodeId(null);
-    setPanel(null);
+    setPanel(view?.panel ?? null);
+    setSelectedNodeId(view?.selectedNodeId ?? null);
   }
 
   // Selecting a node is what opens the inspector; the selection outlives the
@@ -76,6 +98,8 @@ export function App() {
     async (workspaceId: string, run: PipelineRun) => {
       await refresh();
       setSelectedWorkspaceId(workspaceId);
+      setPanel(null);
+      setSelectedNodeId(null);
       setCreatorOpen(false);
       setCreatorTopic("");
       setBuildingRun(run.status === "queued" || run.status === "running" ? run : null);
@@ -84,11 +108,14 @@ export function App() {
   );
 
   const handleDeleted = useCallback(async () => {
+    if (activeWorkspaceId) {
+      viewsRef.current.delete(activeWorkspaceId);
+    }
     setSelectedWorkspaceId(null);
-    setSelectedNodeId(null);
     setPanel(null);
+    setSelectedNodeId(null);
     await refresh();
-  }, [refresh]);
+  }, [activeWorkspaceId, refresh]);
 
   const handlePipelineFinished = useCallback((runId: string) => {
     setBuildingRun((current) => (current?.run_id === runId ? null : current));

@@ -18,6 +18,7 @@ from conftest import read_sse_events
 from research_tree.api.app import create_app
 from research_tree.api.dependencies import get_repository
 from research_tree.services.errors import InvalidPayloadError
+from research_tree.services.topics import _issue_topic_review_approval
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 
 
@@ -113,6 +114,39 @@ def test_rerun_starts_a_run(client, repository, seed_workspace) -> None:
 
     assert response.status_code == 202
     assert response.json()["pipeline_run"]["run_id"] == "pipeline_new"
+
+
+def test_create_workspace_records_reader_instructions_on_the_run(client, repository) -> None:
+    token = _issue_topic_review_approval("Prompting")
+
+    # The run is reserved for real; only the worker that would execute it is
+    # stubbed, so the stored run is exactly what the pipeline would read.
+    with patch("research_tree.services.pipeline._dispatch_local_thread"):
+        response = client.post(
+            "/workspaces",
+            json={
+                "topic": "Prompting",
+                "topic_review_token": token,
+                "instructions": "  Emphasize\n benchmarks ",
+            },
+        )
+
+    assert response.status_code == 202
+    run_id = response.json()["pipeline_run"]["run_id"]
+    assert repository.get_pipeline_run(run_id)["instructions"] == "Emphasize benchmarks"
+
+
+def test_create_workspace_without_instructions_stores_none(client, repository) -> None:
+    token = _issue_topic_review_approval("Prompting")
+
+    with patch("research_tree.services.pipeline._dispatch_local_thread"):
+        response = client.post(
+            "/workspaces",
+            json={"topic": "Prompting", "topic_review_token": token},
+        )
+
+    run_id = response.json()["pipeline_run"]["run_id"]
+    assert repository.get_pipeline_run(run_id)["instructions"] is None
 
 
 def test_create_workspace_requires_a_valid_topic_token(client) -> None:
@@ -247,6 +281,58 @@ def test_service_errors_do_not_leak_internal_detail() -> None:
     assert "start_stage" in public.json()["detail"]
     assert "secret" not in internal.json()["detail"]
     assert internal.json()["detail"] == "We could not complete that request. Please try again."
+
+
+class TestAccountRoutes:
+    """Read is real; both writes are built but deliberately not storing yet."""
+
+    def test_api_key_status_reports_only_the_last_four_characters(self, client) -> None:
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-live-abcdef9f2a"}, clear=False):
+            response = client.get("/account/api-keys")
+
+        assert response.status_code == 200
+        openai = response.json()["openai"]
+        assert openai == {"configured": True, "masked": "sk-…9f2a", "source": "environment"}
+
+    def test_api_key_status_without_a_key(self, client) -> None:
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            response = client.get("/account/api-keys")
+
+        assert response.json()["openai"] == {
+            "configured": False,
+            "masked": None,
+            "source": None,
+        }
+
+    def test_saving_a_key_reports_that_it_was_not_stored(self, client) -> None:
+        response = client.put(
+            "/account/api-keys",
+            json={"provider": "openai", "api_key": "sk-would-be-stored"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["stored"] is False
+
+    def test_saving_a_key_for_another_provider_is_rejected(self, client) -> None:
+        response = client.put(
+            "/account/api-keys",
+            json={"provider": "anthropic", "api_key": "sk-something"},
+        )
+
+        assert response.status_code == 422
+
+    def test_a_bug_report_is_accepted_but_not_stored(self, client) -> None:
+        response = client.post(
+            "/account/bug-reports",
+            json={"summary": "Tree scrolled to the wrong place", "area": "tree"},
+        )
+
+        assert response.status_code == 202
+        assert response.json()["received"] is True
+        assert response.json()["stored"] is False
+
+    def test_a_bug_report_needs_a_summary(self, client) -> None:
+        assert client.post("/account/bug-reports", json={"summary": ""}).status_code == 422
 
 
 def _has_cors(app: Any) -> bool:

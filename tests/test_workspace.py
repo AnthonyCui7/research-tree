@@ -286,6 +286,22 @@ class WorkspaceBackendTest(unittest.TestCase):
         for rule in workspace_importance_rules():
             self.assertIn(rule, prompt)
 
+    def test_reader_instructions_are_quoted_into_the_prompt(self) -> None:
+        prompt = build_workspace_prompt(
+            _candidate_artifact(),
+            instructions="  Emphasize\n benchmarks  ",
+        )
+
+        self.assertIn("<reader_instructions>\nEmphasize benchmarks\n</reader_instructions>", prompt)
+        self.assertIn("never licenses papers outside the candidate artifact", prompt)
+
+    def test_prompt_without_instructions_carries_no_instructions_section(self) -> None:
+        for instructions in (None, "", "   "):
+            prompt = build_workspace_prompt(_candidate_artifact(), instructions=instructions)
+
+            self.assertNotIn("reader_instructions", prompt)
+            self.assertIn("Output contract", prompt)
+
     def test_workspace_editorial_rules_reach_agent_revisions(self) -> None:
         mutation_rules = _workspace_mutation_rules()
 

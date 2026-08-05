@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
-from research_tree.api.routes import agent, health, reviews, workspaces
+from research_tree.api.routes import account, agent, health, reviews, workspaces
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.services.agent import WorkspaceAgentService
 from research_tree.services.errors import WorkspaceServiceError
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(health.router)
+    app.include_router(account.router)
     app.include_router(workspaces.router)
     app.include_router(agent.router)
     app.include_router(reviews.router)

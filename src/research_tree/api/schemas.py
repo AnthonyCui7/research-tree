@@ -11,6 +11,40 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class ApiKeyStatus(BaseModel):
+    configured: bool
+    """Last four characters only — a whole key never leaves the server."""
+    masked: str | None = None
+    """Where the key came from: `environment` today, an account store later."""
+    source: str | None = None
+
+
+class ApiKeysResponse(BaseModel):
+    openai: ApiKeyStatus
+
+
+class SaveApiKeyRequest(BaseModel):
+    provider: str = Field(pattern=r"^openai$")
+    api_key: str = Field(min_length=8, max_length=400)
+
+
+class SaveApiKeyResponse(BaseModel):
+    stored: bool
+    detail: str
+
+
+class BugReportRequest(BaseModel):
+    summary: str = Field(min_length=1, max_length=200)
+    details: str = Field(default="", max_length=8_000)
+    area: str = Field(default="general", max_length=40, pattern=r"^[a-z-]+$")
+
+
+class BugReportResponse(BaseModel):
+    received: bool
+    stored: bool
+    detail: str
+
+
 class WorkspaceResponse(BaseModel):
     workspace_id: str
     workspace_version_hash: str
@@ -58,6 +92,9 @@ class TopicReviewResponse(BaseModel):
 class CreateWorkspaceRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=240)
     topic_review_token: str = Field(min_length=1, max_length=128)
+    # The reader's optional steer for construction — what to emphasize, exclude,
+    # or anchor on. Empty is the same as absent.
+    instructions: str = Field(default="", max_length=2_000)
 
 
 class PipelineRerunApiRequest(BaseModel):

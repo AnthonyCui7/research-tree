@@ -3,7 +3,7 @@ import { messageFrom } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
 import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { pipelineRunEventsUrl, repositoryWorkspaceGateway } from "../../data/workspaceApi";
-import { buildProgress, isOpenable } from "../../lib/pipelineStages";
+import { isOpenable, useBuildProgress } from "../../lib/pipelineStages";
 import {
   exampleChipClass,
   ghostActionClass,
@@ -39,6 +39,8 @@ export function WorkspaceCreator({
   onRunFinished,
 }: WorkspaceCreatorProps) {
   const [topic, setTopic] = useState(initialTopic);
+  /** The reader's optional steer, carried into the construction prompt. */
+  const [instructions, setInstructions] = useState("");
   const [review, setReview] = useState<TopicReview | null>(null);
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [busy, setBusy] = useState(false);
@@ -184,6 +186,7 @@ export function WorkspaceCreator({
       const next = await repositoryWorkspaceGateway.createWorkspace(
         review.normalized_topic,
         review.topic_review_token,
+        instructions,
       );
       readyRunIdRef.current = null;
       setRun(next);
@@ -237,6 +240,7 @@ export function WorkspaceCreator({
       onRunFinished(run.run_id);
     }
     setTopic("");
+    setInstructions("");
     setReview(null);
     setRun(null);
     setError(null);
@@ -268,7 +272,7 @@ export function WorkspaceCreator({
         )}
       >
         <header className="flex flex-none items-center gap-2 border-b border-hairline px-5 py-3.5">
-          <h2 className="m-0 flex-1 text-[13.5px] font-semibold text-text-primary" id="creator-title">
+          <h2 className="m-0 flex-1 text-[15px] font-bold tracking-[-0.01em] text-text-primary" id="creator-title">
             New workspace
           </h2>
           <button
@@ -294,14 +298,10 @@ export function WorkspaceCreator({
                 void checkTopic();
               }}
             >
-              <h3 className="m-0 text-[17px] font-bold tracking-[-0.01em] text-text-primary">
+              <h3 className="m-0 text-[22px] font-bold tracking-[-0.02em] text-text-primary">
                 What field do you want to map?
               </h3>
-              <p className="mt-2 mb-0 text-[13px] leading-[1.6] text-text-secondary">
-                One topic becomes a durable map: branches, key papers, and reading paths. You confirm
-                it before anything runs.
-              </p>
-              <label className="mt-[18px] block text-[13px] font-bold text-text-primary" htmlFor="creator-topic">
+              <label className="mt-[18px] block text-[13.5px] font-bold text-text-primary" htmlFor="creator-topic">
                 Topic
               </label>
               <input
@@ -330,6 +330,26 @@ export function WorkspaceCreator({
                   </button>
                 ))}
               </div>
+
+              <label
+                className="mt-[22px] flex items-baseline gap-1.5 text-[13.5px] font-bold text-text-primary"
+                htmlFor="creator-instructions"
+              >
+                Instructions
+                <span className="text-[12.5px] font-normal text-text-muted">optional</span>
+              </label>
+              <p className="mt-[3px] mb-0 text-[12.5px] leading-[1.55] text-text-secondary">
+                Steer construction: what to emphasize, exclude, or anchor on.
+              </p>
+              <textarea
+                className={cx(textInputClass, "mt-2 min-h-[92px] resize-y")}
+                id="creator-instructions"
+                value={instructions}
+                onChange={(event) => setInstructions(event.target.value)}
+                placeholder="e.g. Emphasize evaluation methods. Exclude hardware-specific serving papers."
+                maxLength={2000}
+                rows={3}
+              />
               {error ? <InlineError message={error} /> : null}
             </form>
             <Footer>
@@ -349,7 +369,7 @@ export function WorkspaceCreator({
         {step === 1 && review ? (
           <>
             <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pb-5">
-              <ReviewBody review={review} />
+              <ReviewBody review={review} instructions={instructions} />
               {error ? <InlineError message={error} /> : null}
             </div>
             <Footer>
@@ -423,23 +443,28 @@ export function WorkspaceCreator({
 
 const STEP_LABELS = ["Topic", "Confirm", "Build"];
 
+/**
+ * The three steps span the dialog, connectors taking whatever width is left, so
+ * the run of steps reads as one bar across the top rather than a cluster on the
+ * left. The first and last steps sit on the content margins.
+ */
 function Stepper({ step }: { step: number }) {
   return (
-    <div className="flex flex-none items-center px-5 pt-3.5 pb-0.5" aria-hidden="true">
+    <div className="flex flex-none items-center px-5 pt-4 pb-1" aria-hidden="true">
       {STEP_LABELS.map((label, index) => (
-        <div className="flex min-w-0 items-center" key={label}>
+        <div className="flex min-w-0 flex-1 items-center first:flex-none" key={label}>
           {index > 0 ? (
             <span
               className={cx(
-                "mx-2 h-[1.5px] w-[clamp(16px,6vw,54px)] flex-none",
+                "mx-3 h-px min-w-3 flex-1",
                 step >= index ? "bg-accent-border" : "bg-hairline",
               )}
             />
           ) : null}
-          <span className="flex items-center gap-[7px]">
+          <span className="flex flex-none items-center gap-2">
             <span
               className={cx(
-                "grid h-[18px] w-[18px] flex-none place-items-center rounded-full border-[1.5px] text-[9.5px] font-bold",
+                "grid h-[21px] w-[21px] flex-none place-items-center rounded-full border-[1.5px] text-[10.5px] font-bold",
                 step > index
                   ? "border-accent-border bg-accent-subtle text-accent-deep"
                   : step === index
@@ -447,11 +472,11 @@ function Stepper({ step }: { step: number }) {
                     : "border-border bg-surface text-text-muted",
               )}
             >
-              {step > index ? <CheckIcon className="h-2 w-2" /> : index + 1}
+              {step > index ? <CheckIcon className="h-2.5 w-2.5" /> : index + 1}
             </span>
             <span
               className={cx(
-                "text-[11px] font-semibold whitespace-nowrap",
+                "text-[12.5px] font-semibold whitespace-nowrap",
                 step > index ? "text-accent-deep" : step === index ? "text-text-primary" : "text-text-muted",
               )}
             >
@@ -474,7 +499,8 @@ function Footer({ children }: { children: React.ReactNode }) {
 
 /* --------------------------------------------------------------- review --- */
 
-function ReviewBody({ review }: { review: TopicReview }) {
+function ReviewBody({ review, instructions }: { review: TopicReview; instructions: string }) {
+  const steer = instructions.trim();
   if (!review.is_research_topic) {
     return (
       <>
@@ -497,9 +523,9 @@ function ReviewBody({ review }: { review: TopicReview }) {
         <span className="grid h-[22px] w-[22px] flex-none place-items-center rounded-full bg-accent-subtle text-accent-deep" aria-hidden="true">
           <CheckIcon className="h-[11px] w-[11px]" />
         </span>
-        <span className="text-[12.5px] font-semibold text-accent-deep">Recognized research field</span>
+        <span className="text-[13px] font-semibold text-accent-deep">Recognized research field</span>
       </div>
-      <h3 className="mt-3 mb-0 text-[21px] font-bold tracking-[-0.015em] text-text-primary [overflow-wrap:anywhere]">
+      <h3 className="mt-3 mb-0 text-[26px] font-bold tracking-[-0.02em] text-text-primary [overflow-wrap:anywhere]">
         {review.normalized_topic}
       </h3>
       {review.guidance ? (
@@ -507,16 +533,18 @@ function ReviewBody({ review }: { review: TopicReview }) {
           {review.guidance}
         </p>
       ) : null}
-      <div className="mt-[18px] border-t border-hairline-soft pt-4">
+      <div className="mt-5 border-t border-hairline-soft pt-4">
         <ReviewFact label="Scope">
-          Branches, reading paths, and a paper card for every paper on them.
+          Core methods and their history, as branches and reading paths.
         </ReviewFact>
-        <ReviewFact label="Linked paper">
-          {review.source_paper
-            ? `${review.source_paper.title} will anchor the map.`
-            : "None detected. Paste an arXiv link to anchor the map."}
-        </ReviewFact>
-        {review.model ? <ReviewFact label="Model">{review.model}</ReviewFact> : null}
+        {/* Only shown when a link was pasted: otherwise it is a row that always
+            says nothing was found. */}
+        {review.source_paper ? (
+          <ReviewFact label="Linked paper">
+            {review.source_paper.title} will anchor the map.
+          </ReviewFact>
+        ) : null}
+        {steer ? <ReviewFact label="Your instructions">{steer}</ReviewFact> : null}
       </div>
       {review.existing_workspace ? (
         <div className="mt-4 rounded-lg border border-warning-border bg-warning-surface px-3.5 py-3 text-xs leading-[1.55] text-warning">
@@ -541,7 +569,7 @@ function ReviewFact({ label, children }: { label: string; children: React.ReactN
 /* ---------------------------------------------------------------- build --- */
 
 function BuildBody({ run }: { run: PipelineRun }) {
-  const progress = buildProgress(run);
+  const progress = useBuildProgress(run);
   const warnings = (run.warnings ?? []).map((warning) => warning.trim()).filter(Boolean);
   const cancelled = run.status === "cancelled";
   const failed = run.status === "failed";
@@ -558,7 +586,7 @@ function BuildBody({ run }: { run: PipelineRun }) {
       </div>
       <div className="mt-3.5 h-1.5 overflow-hidden rounded-[3px] bg-track">
         <div
-          className="h-full rounded-[3px] bg-accent transition-[width] duration-500 ease-research"
+          className="h-full rounded-[3px] bg-accent transition-[width] duration-500 ease-linear"
           style={{ width: `${progress.percent}%` }}
         />
       </div>
