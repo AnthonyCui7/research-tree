@@ -1,0 +1,450 @@
+{
+  "experiment": "Survey-derived gold-set recall, 4 topics",
+  "gold_total": 32,
+  "topics": [
+    {
+      "topic": "sampling",
+      "snapshot": "experiments/output/workspace_candidate_preparation/run32",
+      "graph": {
+        "ref_lists": 530,
+        "nodes": 836
+      },
+      "surveys_used": [
+        {
+          "title": "From Decoding to Meta-Generation: Inference-time Algorithms for Large Language Models",
+          "year": 2024,
+          "citations": 144
+        },
+        {
+          "title": "Trading Inference-Time Compute for Adversarial Robustness",
+          "year": 2025,
+          "citations": 59
+        },
+        {
+          "title": "A Survey of Slow Thinking-based Reasoning LLMs using Reinforced Learning and Inference-time Scaling Law",
+          "year": 2025,
+          "citations": 18
+        }
+      ],
+      "gold": [
+        {
+          "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model",
+          "year": 2023,
+          "citations": 9600,
+          "survey_votes": 2
+        },
+        {
+          "title": "LEVER: Learning to Verify Language-to-Code Generation with Execution",
+          "year": 2023,
+          "citations": 345,
+          "survey_votes": 2
+        },
+        {
+          "title": "Language Models are Few-Shot Learners",
+          "year": 2020,
+          "citations": 60537,
+          "survey_votes": 1
+        },
+        {
+          "title": "Evaluating Large Language Models Trained on Code",
+          "year": 2021,
+          "citations": 10473,
+          "survey_votes": 1
+        },
+        {
+          "title": "Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+          "year": 2022,
+          "citations": 7161,
+          "survey_votes": 1
+        },
+        {
+          "title": "Qwen2.5 Technical Report",
+          "year": 2024,
+          "citations": 4436,
+          "survey_votes": 1
+        },
+        {
+          "title": "Reflexion: language agents with verbal reinforcement learning",
+          "year": 2023,
+          "citations": 4277,
+          "survey_votes": 1
+        },
+        {
+          "title": "Fast Inference from Transformers via Speculative Decoding",
+          "year": 2022,
+          "citations": 1735,
+          "survey_votes": 1
+        }
+      ],
+      "recall": {
+        "hits_authority": {
+          "r@20": 1.0,
+          "r@50": 1.0,
+          "r@100": 1.0
+        },
+        "pagerank": {
+          "r@20": 0.75,
+          "r@50": 0.875,
+          "r@100": 1.0
+        },
+        "raw_citation_count": {
+          "r@20": 0.75,
+          "r@50": 0.875,
+          "r@100": 0.875
+        },
+        "age_adj_citations": {
+          "r@20": 0.875,
+          "r@50": 0.875,
+          "r@100": 0.875
+        },
+        "cross_encoder": {
+          "r@20": 0.25,
+          "r@50": 0.875,
+          "r@100": 0.875
+        }
+      },
+      "funnel": {
+        "curated_size": 55,
+        "gold_in_curated": 7,
+        "gold_in_citation_topk_baseline": 7,
+        "pool_size": 6815
+      }
+    },
+    {
+      "topic": "prompting",
+      "snapshot": "data/candidate_runs/run12",
+      "graph": {
+        "ref_lists": 202,
+        "nodes": 936
+      },
+      "surveys_used": [
+        {
+          "title": "A Systematic Survey of Prompt Engineering in Large Language Models: Techniques and Applications",
+          "year": 2024,
+          "citations": 975
+        },
+        {
+          "title": "Embracing the future of Artificial Intelligence in the classroom: the relevance of AI literacy, prompt engineering, and critical thinking in modern education",
+          "year": 2024,
+          "citations": 937
+        },
+        {
+          "title": "CoT-Valve: Length-Compressible Chain-of-Thought Tuning",
+          "year": 2025,
+          "citations": 194
+        }
+      ],
+      "gold": [
+        {
+          "title": "Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+          "year": 2022,
+          "citations": 7342,
+          "survey_votes": 3
+        },
+        {
+          "title": "Chain of Thought Prompting Elicits Reasoning in Large Language Models",
+          "year": 2022,
+          "citations": 20709,
+          "survey_votes": 2
+        },
+        {
+          "title": "Tree of Thoughts: Deliberate Problem Solving with Large Language Models",
+          "year": 2023,
+          "citations": 4590,
+          "survey_votes": 2
+        },
+        {
+          "title": "Language Models are Few-Shot Learners",
+          "year": 2020,
+          "citations": 61615,
+          "survey_votes": 1
+        },
+        {
+          "title": "Language Models are Unsupervised Multitask Learners",
+          "year": 2019,
+          "citations": 29672,
+          "survey_votes": 1
+        },
+        {
+          "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+          "year": 2020,
+          "citations": 16700,
+          "survey_votes": 1
+        },
+        {
+          "title": "Training Verifiers to Solve Math Word Problems",
+          "year": 2021,
+          "citations": 9928,
+          "survey_votes": 1
+        },
+        {
+          "title": "ReAct: Synergizing Reasoning and Acting in Language Models",
+          "year": 2022,
+          "citations": 9435,
+          "survey_votes": 1
+        }
+      ],
+      "recall": {
+        "hits_authority": {
+          "r@20": 0.625,
+          "r@50": 0.625,
+          "r@100": 0.875
+        },
+        "pagerank": {
+          "r@20": 0.625,
+          "r@50": 0.625,
+          "r@100": 1.0
+        },
+        "raw_citation_count": {
+          "r@20": 0.25,
+          "r@50": 0.75,
+          "r@100": 1.0
+        },
+        "age_adj_citations": {
+          "r@20": 0.375,
+          "r@50": 0.875,
+          "r@100": 1.0
+        }
+      },
+      "funnel": {
+        "curated_size": 95,
+        "gold_in_curated": 7,
+        "gold_in_citation_topk_baseline": 8,
+        "pool_size": 5090
+      }
+    },
+    {
+      "topic": "rag",
+      "snapshot": "experiments/output/workspace_candidate_preparation/run40",
+      "graph": {
+        "ref_lists": 250,
+        "nodes": 407
+      },
+      "surveys_used": [
+        {
+          "title": "A Survey on RAG Meeting LLMs: Towards Retrieval-Augmented Large Language Models",
+          "year": 2024,
+          "citations": 1022
+        },
+        {
+          "title": "Retrieval-Augmented Generation for AI-Generated Content: A Survey",
+          "year": 2024,
+          "citations": 662
+        },
+        {
+          "title": "Graph Retrieval-Augmented Generation: A Survey",
+          "year": 2024,
+          "citations": 516
+        }
+      ],
+      "gold": [
+        {
+          "title": "REALM: Retrieval-Augmented Language Model Pre-Training",
+          "year": 2020,
+          "citations": 3253,
+          "survey_votes": 2
+        },
+        {
+          "title": "Few-shot Learning with Retrieval Augmented Language Models",
+          "year": 2022,
+          "citations": 1309,
+          "survey_votes": 2
+        },
+        {
+          "title": "In-Context Retrieval-Augmented Language Models",
+          "year": 2023,
+          "citations": 1068,
+          "survey_votes": 2
+        },
+        {
+          "title": "REPLUG: Retrieval-Augmented Black-Box Language Models",
+          "year": 2023,
+          "citations": 1061,
+          "survey_votes": 2
+        },
+        {
+          "title": "KILT: a Benchmark for Knowledge Intensive Language Tasks",
+          "year": 2020,
+          "citations": 830,
+          "survey_votes": 2
+        },
+        {
+          "title": "Precise Zero-Shot Dense Retrieval without Relevance Labels",
+          "year": 2022,
+          "citations": 808,
+          "survey_votes": 2
+        },
+        {
+          "title": "Active Retrieval Augmented Generation",
+          "year": 2023,
+          "citations": 773,
+          "survey_votes": 2
+        },
+        {
+          "title": "Enhancing Retrieval-Augmented Large Language Models with Iterative Retrieval-Generation Synergy",
+          "year": 2023,
+          "citations": 548,
+          "survey_votes": 2
+        }
+      ],
+      "recall": {
+        "hits_authority": {
+          "r@20": 0.875,
+          "r@50": 1.0,
+          "r@100": 1.0
+        },
+        "pagerank": {
+          "r@20": 0.625,
+          "r@50": 0.875,
+          "r@100": 1.0
+        },
+        "raw_citation_count": {
+          "r@20": 0.125,
+          "r@50": 1.0,
+          "r@100": 1.0
+        },
+        "age_adj_citations": {
+          "r@20": 0.125,
+          "r@50": 0.75,
+          "r@100": 1.0
+        }
+      },
+      "funnel": {
+        "curated_size": 55,
+        "gold_in_curated": 7,
+        "gold_in_citation_topk_baseline": 8,
+        "pool_size": 1063
+      }
+    },
+    {
+      "topic": "speculative-decoding",
+      "snapshot": "experiments/output/workspace_candidate_preparation/run45",
+      "graph": {
+        "ref_lists": 300,
+        "nodes": 454
+      },
+      "surveys_used": [
+        {
+          "title": "Unlocking Efficiency in Large Language Model Inference: A Comprehensive Survey of Speculative Decoding",
+          "year": 2024,
+          "citations": 305
+        },
+        {
+          "title": "Speculative Decoding and Beyond: An In-Depth Survey of Techniques",
+          "year": 2025,
+          "citations": 20
+        },
+        {
+          "title": "Beyond the Speculative Game: A Survey of Speculative Execution in Large Language Models",
+          "year": 2024,
+          "citations": 11
+        }
+      ],
+      "gold": [
+        {
+          "title": "LLaMA: Open and Efficient Foundation Language Models",
+          "year": 2023,
+          "citations": 21037,
+          "survey_votes": 3
+        },
+        {
+          "title": "Fast Inference from Transformers via Speculative Decoding",
+          "year": 2022,
+          "citations": 1812,
+          "survey_votes": 3
+        },
+        {
+          "title": "Accelerating Large Language Model Decoding with Speculative Sampling",
+          "year": 2023,
+          "citations": 998,
+          "survey_votes": 3
+        },
+        {
+          "title": "Blockwise Parallel Decoding for Deep Autoregressive Models",
+          "year": 2018,
+          "citations": 389,
+          "survey_votes": 3
+        },
+        {
+          "title": "Speculative Decoding: Exploiting Speculative Execution for Accelerating Seq2seq Generation",
+          "year": 2022,
+          "citations": 194,
+          "survey_votes": 3
+        },
+        {
+          "title": "Accelerating LLM Inference with Staged Speculative Decoding",
+          "year": 2023,
+          "citations": 183,
+          "survey_votes": 3
+        },
+        {
+          "title": "DistillSpec: Improving Speculative Decoding via Knowledge Distillation",
+          "year": 2023,
+          "citations": 167,
+          "survey_votes": 3
+        },
+        {
+          "title": "SpecTr: Fast Speculative Decoding via Optimal Transport",
+          "year": 2023,
+          "citations": 156,
+          "survey_votes": 3
+        }
+      ],
+      "recall": {
+        "hits_authority": {
+          "r@20": 0.75,
+          "r@50": 1.0,
+          "r@100": 1.0
+        },
+        "pagerank": {
+          "r@20": 0.625,
+          "r@50": 1.0,
+          "r@100": 1.0
+        },
+        "raw_citation_count": {
+          "r@20": 0.125,
+          "r@50": 0.125,
+          "r@100": 0.5
+        },
+        "age_adj_citations": {
+          "r@20": 0.125,
+          "r@50": 0.125,
+          "r@100": 0.375
+        }
+      },
+      "funnel": {
+        "curated_size": 70,
+        "gold_in_curated": 8,
+        "gold_in_citation_topk_baseline": 3,
+        "pool_size": 934
+      }
+    }
+  ],
+  "macro_avg_recall (rankers present in all topics)": {
+    "hits_authority": {
+      "r@20": 0.812,
+      "r@50": 0.906,
+      "r@100": 0.969
+    },
+    "pagerank": {
+      "r@20": 0.656,
+      "r@50": 0.844,
+      "r@100": 1.0
+    },
+    "raw_citation_count": {
+      "r@20": 0.312,
+      "r@50": 0.688,
+      "r@100": 0.844
+    },
+    "age_adj_citations": {
+      "r@20": 0.375,
+      "r@50": 0.656,
+      "r@100": 0.812
+    }
+  },
+  "notes": [
+    "survey_reference_count ranker excluded (circular with gold construction)",
+    "cross_encoder only available in the sampling snapshot (legacy schema)",
+    "surveys contribute edges to the shared graph; gold papers receive at most 3 in-degree units from the gold-defining surveys (disclosed)"
+  ]
+}

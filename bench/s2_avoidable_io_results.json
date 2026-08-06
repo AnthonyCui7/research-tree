@@ -1,0 +1,72 @@
+{
+  "experiment": "Avoidable S2 I/O cost, measured directly (no cache server)",
+  "batch_reference_fetch": {
+    "paper_ids_per_call": 202,
+    "trials": [
+      {
+        "wall_seconds": 20.1,
+        "http_calls": 3,
+        "reference_lists_returned": 191,
+        "warnings": 0
+      },
+      {
+        "wall_seconds": 9.9,
+        "http_calls": 3,
+        "reference_lists_returned": 191,
+        "warnings": 0
+      },
+      {
+        "wall_seconds": 10.7,
+        "http_calls": 3,
+        "reference_lists_returned": 191,
+        "warnings": 0
+      }
+    ],
+    "median_wall_seconds": 10.7,
+    "amortized_ms_per_lookup": 53.0
+  },
+  "single_details_call": {
+    "n": 12,
+    "p50_s": 1.53,
+    "p95_s": 6.61,
+    "all_seconds": [
+      0.894,
+      1.497,
+      1.522,
+      6.588,
+      6.61,
+      1.535,
+      1.495,
+      1.493,
+      6.64,
+      1.53,
+      6.589,
+      1.49
+    ]
+  },
+  "avoidable_via_response_cache": {
+    "repeat_lookups": 8776,
+    "total_lookups": 10629,
+    "repeat_rate": 0.8257,
+    "avoidable_seconds_at_batch_rate": 464.9,
+    "cross_topic_only": {
+      "repeat_lookups": 142,
+      "avoidable_seconds_at_batch_rate": 7.5
+    },
+    "assumption": "cache hit ~0 ms; per-lookup cost amortized from measured batch call"
+  },
+  "base_set_stage_io_share": {
+    "recorded_strategies_n": 6,
+    "fetch_seconds_range": [
+      167.9,
+      545.1
+    ],
+    "hits_compute_seconds_range": [
+      0.0208,
+      0.033600000000000005
+    ],
+    "io_share_min": 0.999803,
+    "io_share_max": 0.999955,
+    "source": "experiments/output/ranking_benchmark/base_set_comparison.md (recorded prior runs; per-paper fetch path)"
+  }
+}

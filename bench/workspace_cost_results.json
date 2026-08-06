@@ -1,0 +1,77 @@
+{
+  "experiment": "LLM token usage per workspace build (backend usage log)",
+  "by_call_type": {
+    "TLDR": {
+      "calls": 2,
+      "input": 833,
+      "cached_input": 0,
+      "output": 319,
+      "reasoning": 238,
+      "seconds": 5.2
+    },
+    "agent ProposalSkepticNotes": {
+      "calls": 21,
+      "input": 81353,
+      "cached_input": 0,
+      "output": 5429,
+      "reasoning": 3973,
+      "seconds": 75.5
+    },
+    "agent tool_loop": {
+      "calls": 101,
+      "input": 1063201,
+      "cached_input": 785039,
+      "output": 24726,
+      "reasoning": 11094,
+      "seconds": 341.2
+    },
+    "search query plan": {
+      "calls": 1,
+      "input": 327,
+      "cached_input": 0,
+      "output": 271,
+      "reasoning": 225,
+      "seconds": 3.7
+    },
+    "topic review": {
+      "calls": 15,
+      "input": 4342,
+      "cached_input": 0,
+      "output": 483,
+      "reasoning": 0,
+      "seconds": 25.9
+    },
+    "workspace": {
+      "calls": 10,
+      "input": 91989,
+      "cached_input": 37537,
+      "output": 162686,
+      "reasoning": 92828,
+      "seconds": 971.3
+    },
+    "workspace construction": {
+      "calls": 18,
+      "input": 734447,
+      "cached_input": 0,
+      "output": 229326,
+      "reasoning": 37563,
+      "seconds": 1184.0
+    }
+  },
+  "pipeline_runs_in_log": 16,
+  "build_call_types": [
+    "workspace",
+    "topic review",
+    "search query plan",
+    "workspace construction",
+    "TLDR"
+  ],
+  "per_workspace_build_avg": {
+    "input": 51996,
+    "output": 24568,
+    "reasoning": 8178,
+    "calls": 3
+  },
+  "models": "gpt-5.6-luna (188 calls), gpt-5.4-mini (1)",
+  "note": "dollar cost = tokens x current OpenAI prices; agent-chat calls excluded from build totals"
+}
