@@ -1,0 +1,82 @@
+{
+  "canonical_matched": {
+    "134d928d2a0ec6d71095cae3a30436924516adbb": "Advancing Decoding Strategies: Enhancements in Locally Typical Sampling for LLMs",
+    "c4270cece55dbdf1f7dd202a89c63d812d63ed2a": "Turning Up the Heat: Min-p Sampling for Creative and Coherent LLM Outputs",
+    "e8f1d69cdf4d92350ce237e2d6a615ebe2e52e43": "Mirostat: a Neural Text decoding Algorithm that directly controls perplexity",
+    "a1f8082505c7e90b0a033e1b9da0a97d67aad66c": "Accelerating Large Language Model Decoding with Speculative Sampling",
+    "678a3cc761024b6daaf41ac4333f695358447a2f": "Closing the Curious Case of Neural Text Degeneration",
+    "88b62496cbc52072bfa8f4b29d172b0477b701bc": "Contrastive Decoding: Open-ended Text Generation as Optimization",
+    "5f19ae1135a9500940978104ec15a5b8751bc7d2": "Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+    "d8e9f8c8a37cb4cd26b92ad0d942d641cd512644": "Fast Inference from Transformers via Speculative Decoding"
+  },
+  "canonical_missing_from_db": [
+    "hierarchical neural story generation",
+    "truncation sampling as language model desmoothing",
+    "a contrastive framework for neural text generation",
+    "if beam search is the answer",
+    "dola: decoding by contrasting layers",
+    "diverse beam search",
+    "stochastic beams and where to find them",
+    "comparison of diverse decoding methods",
+    "on decoding strategies for neural text generators",
+    "medusa"
+  ],
+  "recall": {
+    "cross_encoder (shipped)": {
+      "recall@20": 0.25,
+      "recall@50": 0.375,
+      "recall@100": 0.375
+    },
+    "age_adj_citations (shipped)": {
+      "recall@20": 0.25,
+      "recall@50": 0.375,
+      "recall@100": 0.5
+    },
+    "raw_citation_count": {
+      "recall@20": 0.125,
+      "recall@50": 0.375,
+      "recall@100": 0.5
+    },
+    "in_pool_in_degree": {
+      "recall@20": 0.25,
+      "recall@50": 0.375,
+      "recall@100": 0.5
+    },
+    "in_degree_age_norm": {
+      "recall@20": 0.125,
+      "recall@50": 0.375,
+      "recall@100": 0.5
+    },
+    "survey_reference_count": {
+      "recall@20": 0.125,
+      "recall@50": 0.25,
+      "recall@100": 0.75
+    },
+    "pagerank": {
+      "recall@20": 0.125,
+      "recall@50": 0.375,
+      "recall@100": 0.375
+    },
+    "hits_authority": {
+      "recall@20": 0.5,
+      "recall@50": 0.75,
+      "recall@100": 0.75
+    },
+    "combo: survey_refs then in_degree": {
+      "recall@20": 0.125,
+      "recall@50": 0.125,
+      "recall@100": 0.5
+    }
+  },
+  "shipped_pool_canonical_hits": 3,
+  "shipped_pool_canonical_total": 8,
+  "missed_by_shipped_pool": [
+    "Advancing Decoding Strategies: Enhancements in Locally Typical Sampling for LLMs",
+    "Turning Up the Heat: Min-p Sampling for Creative and Coherent LLM Outputs",
+    "Mirostat: a Neural Text decoding Algorithm that directly controls perplexity",
+    "Closing the Curious Case of Neural Text Degeneration",
+    "Contrastive Decoding: Open-ended Text Generation as Optimization"
+  ],
+  "fetched": 384,
+  "graph_nodes": 622
+}

@@ -1,0 +1,29 @@
+{
+  "experiment": "S2 paper-details latency: live API vs disk-JSON cache hit vs Redis GET (incl. JSON parse)",
+  "sample": {
+    "paper_ids": 12,
+    "seed": 42,
+    "median_payload_bytes": 3774,
+    "api_key_used": true
+  },
+  "live_s2_http": {
+    "p50_ms": 6659.71,
+    "p95_ms": 16760.31,
+    "n": 12
+  },
+  "disk_cache_hit": {
+    "p50_ms": 0.24,
+    "p95_ms": 0.32,
+    "n": 12
+  },
+  "redis_get": {
+    "p50_ms": 0.1,
+    "p95_ms": 0.18,
+    "n": 3000
+  },
+  "notes": [
+    "live_s2_http excludes deliberate rate-limiter pacing (timed inside the retry wrapper)",
+    "S2 traffic is additionally capped at 1 req/s globally by the production RateLimiter",
+    "redis_get on local loopback; a managed Redis adds network RTT"
+  ]
+}

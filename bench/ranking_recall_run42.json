@@ -1,0 +1,78 @@
+{
+  "canonical_matched": {
+    "c4270cece55dbdf1f7dd202a89c63d812d63ed2a": "Turning Up the Heat: Min-p Sampling for Creative and Coherent LLM Outputs",
+    "d8e9f8c8a37cb4cd26b92ad0d942d641cd512644": "Fast Inference from Transformers via Speculative Decoding",
+    "5f19ae1135a9500940978104ec15a5b8751bc7d2": "Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+    "cf4aa38ae31b43fd07abe13b4ffdb265babb7be1": "The Curious Case of Neural Text Degeneration"
+  },
+  "canonical_missing_from_db": [
+    "hierarchical neural story generation",
+    "mirostat",
+    "locally typical sampling",
+    "truncation sampling as language model desmoothing",
+    "contrastive decoding",
+    "a contrastive framework for neural text generation",
+    "accelerating large language model decoding with speculative sampling",
+    "if beam search is the answer",
+    "dola: decoding by contrasting layers",
+    "diverse beam search",
+    "stochastic beams and where to find them",
+    "comparison of diverse decoding methods",
+    "on decoding strategies for neural text generators",
+    "medusa"
+  ],
+  "recall": {
+    "cross_encoder (shipped)": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.0
+    },
+    "age_adj_citations (shipped)": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.25
+    },
+    "raw_citation_count": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.5
+    },
+    "in_pool_in_degree": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.0
+    },
+    "in_degree_age_norm": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.0
+    },
+    "survey_reference_count": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.0
+    },
+    "pagerank": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.0
+    },
+    "hits_authority": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.0
+    },
+    "combo: survey_refs then in_degree": {
+      "recall@20": 0.0,
+      "recall@50": 0.0,
+      "recall@100": 0.0
+    }
+  },
+  "shipped_pool_canonical_hits": 3,
+  "shipped_pool_canonical_total": 4,
+  "missed_by_shipped_pool": [
+    "Turning Up the Heat: Min-p Sampling for Creative and Coherent LLM Outputs"
+  ],
+  "fetched": 0,
+  "graph_nodes": 0
+}

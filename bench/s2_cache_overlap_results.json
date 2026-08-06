@@ -1,0 +1,390 @@
+{
+  "experiment": "Shared-cache avoidable S2 reference lookups across recorded candidate runs",
+  "runs_in_chronological_order": [
+    {
+      "run": "workspace_candidate_preparation/run33",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 0,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run34",
+      "topic": "speculative decoding",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 0,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run35",
+      "topic": "sampling",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 0,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run36",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 3,
+      "repeats_from_other_topics_only": 3
+    },
+    {
+      "run": "workspace_candidate_preparation/run37",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 241,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run38",
+      "topic": "sampling",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run39",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 215,
+      "repeats_from_other_topics_only": 2
+    },
+    {
+      "run": "workspace_candidate_preparation/run40",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 152,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run41",
+      "topic": "speculative decoding",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 207,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run42",
+      "topic": "sampling",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 13,
+      "repeats_from_other_topics_only": 7
+    },
+    {
+      "run": "workspace_candidate_preparation/run43",
+      "topic": "sampling",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run44",
+      "topic": "speculative decoding",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 226,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run45",
+      "topic": "speculative decoding",
+      "reference_lookups": 300,
+      "repeats_of_any_earlier_run": 259,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run46",
+      "topic": "speculative decoding",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run47",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 223,
+      "repeats_from_other_topics_only": 3
+    },
+    {
+      "run": "workspace_candidate_preparation/run48",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 225,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run49",
+      "topic": "sampling",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 198,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run50",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run51",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run52",
+      "topic": "sampling",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run53",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run54",
+      "topic": "sampling",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run55",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run56",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run57",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 232,
+      "repeats_from_other_topics_only": 1
+    },
+    {
+      "run": "workspace_candidate_preparation/run58",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run59",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 244,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run60",
+      "topic": "sampling",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 242,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run61",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run62",
+      "topic": "prompting",
+      "reference_lookups": 250,
+      "repeats_of_any_earlier_run": 250,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run63",
+      "topic": "prompting",
+      "reference_lookups": 209,
+      "repeats_of_any_earlier_run": 192,
+      "repeats_from_other_topics_only": 2
+    },
+    {
+      "run": "workspace_candidate_preparation/run64",
+      "topic": "prompting",
+      "reference_lookups": 205,
+      "repeats_of_any_earlier_run": 202,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run65",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 242,
+      "repeats_of_any_earlier_run": 238,
+      "repeats_from_other_topics_only": 1
+    },
+    {
+      "run": "workspace_candidate_preparation/run66",
+      "topic": "prompting",
+      "reference_lookups": 166,
+      "repeats_of_any_earlier_run": 137,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run67",
+      "topic": "prompting",
+      "reference_lookups": 231,
+      "repeats_of_any_earlier_run": 219,
+      "repeats_from_other_topics_only": 1
+    },
+    {
+      "run": "workspace_candidate_preparation/run68",
+      "topic": "prompting",
+      "reference_lookups": 123,
+      "repeats_of_any_earlier_run": 106,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run69",
+      "topic": "prompting",
+      "reference_lookups": 205,
+      "repeats_of_any_earlier_run": 202,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run70",
+      "topic": "prompting",
+      "reference_lookups": 209,
+      "repeats_of_any_earlier_run": 209,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run71",
+      "topic": "prompting",
+      "reference_lookups": 206,
+      "repeats_of_any_earlier_run": 206,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run72",
+      "topic": "prompting",
+      "reference_lookups": 203,
+      "repeats_of_any_earlier_run": 203,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run73",
+      "topic": "hallucinations",
+      "reference_lookups": 242,
+      "repeats_of_any_earlier_run": 121,
+      "repeats_from_other_topics_only": 121
+    },
+    {
+      "run": "workspace_candidate_preparation/run74",
+      "topic": "prompting",
+      "reference_lookups": 202,
+      "repeats_of_any_earlier_run": 202,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run77",
+      "topic": "prompting",
+      "reference_lookups": 202,
+      "repeats_of_any_earlier_run": 202,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "workspace_candidate_preparation/run78",
+      "topic": "prompting",
+      "reference_lookups": 202,
+      "repeats_of_any_earlier_run": 202,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run1",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 3,
+      "repeats_of_any_earlier_run": 0,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run2",
+      "topic": "prompting",
+      "reference_lookups": 3,
+      "repeats_of_any_earlier_run": 0,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run3",
+      "topic": "prompting",
+      "reference_lookups": 2,
+      "repeats_of_any_earlier_run": 2,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run4",
+      "topic": "prompting",
+      "reference_lookups": 6,
+      "repeats_of_any_earlier_run": 0,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run8",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 5,
+      "repeats_of_any_earlier_run": 2,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run9",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 3,
+      "repeats_of_any_earlier_run": 3,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run10",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 3,
+      "repeats_of_any_earlier_run": 3,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run11",
+      "topic": "retrieval augmented generation",
+      "reference_lookups": 5,
+      "repeats_of_any_earlier_run": 5,
+      "repeats_from_other_topics_only": 0
+    },
+    {
+      "run": "candidate_runs/run12",
+      "topic": "prompting",
+      "reference_lookups": 202,
+      "repeats_of_any_earlier_run": 190,
+      "repeats_from_other_topics_only": 1
+    }
+  ],
+  "totals": {
+    "runs": 53,
+    "distinct_topics": 5,
+    "reference_lookups_all_runs": 10629,
+    "unique_papers": 1853,
+    "repeat_lookups": 8776,
+    "repeat_rate_overall": 0.8257,
+    "repeat_rate_runs_after_first": 0.8456,
+    "cross_topic_repeat_lookups": 142
+  },
+  "interpretation_caveats": [
+    "per-paper cache keying assumed (current client caches per batch request hash)",
+    "same-topic repeats are dev-iteration reuse; cross-topic repeats are the organic overlap"
+  ]
+}
