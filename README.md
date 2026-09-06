@@ -63,6 +63,16 @@ apps are rolled forward. Self-hosters can run the same image anywhere; set
 `RESEARCH_TREE_AUTH_MODE=accounts` with a Postgres URL and a `SESSION_SECRET`,
 or `none` behind a reverse proxy that authenticates for you.
 
+## Bring your own key
+
+Behind sign-in each account can save its own OpenAI key from the account menu
+(API keys). The key is checked against OpenAI, sealed with a data key that
+`RESEARCH_TREE_KEY_ENCRYPTION_KEY` (or an Azure Key Vault RSA key) wraps, and
+spent only by that account's builds, annotations and assistant turns; every
+call is metered at list price and shown on the same screen. An account without
+a key can spend the server's `OPENAI_API_KEY` only through an allowance the
+operator grants with `research-tree-grant --email … --usd …`.
+
 ## Verifying changes
 
 ```sh
