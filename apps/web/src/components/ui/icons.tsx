@@ -124,6 +124,14 @@ export function TrashIcon({ className }: IconProps) {
   );
 }
 
+export function PencilIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 14 14" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <path d="M2.2 11.8l.55-2.75L9.4 2.4a1.2 1.2 0 0 1 1.7 0l.5.5a1.2 1.2 0 0 1 0 1.7L4.95 11.25 2.2 11.8zM8.4 3.4l2.2 2.2" />
+    </svg>
+  );
+}
+
 export function EllipsisIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true" className={className}>

@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cx } from "../../lib/cx";
 import { DROPDOWN_EXIT_MS, useDismissAnimation } from "../../lib/animation";
 
@@ -19,6 +19,8 @@ export function anchorFromEvent(element: HTMLElement, align: MenuAnchor["align"]
   };
 }
 
+const VIEWPORT_MARGIN = 12;
+
 type PopoverMenuProps = {
   anchor: MenuAnchor;
   onClose: () => void;
@@ -34,6 +36,17 @@ type PopoverMenuProps = {
  */
 export function PopoverMenu({ anchor, onClose, label, width = 216, children }: PopoverMenuProps) {
   const { closing, dismiss } = useDismissAnimation(onClose, DROPDOWN_EXIT_MS);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // A menu opened near the bottom edge — a right-click low on the canvas — is
+  // pulled up once its height is known, so its last item is not off screen.
+  const [top, setTop] = useState(() => Math.min(anchor.y, window.innerHeight - VIEWPORT_MARGIN));
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const overflow = anchor.y + menu.offsetHeight + VIEWPORT_MARGIN - window.innerHeight;
+    setTop(overflow > 0 ? Math.max(VIEWPORT_MARGIN, anchor.y - overflow) : anchor.y);
+  }, [anchor.y, children]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -49,6 +62,7 @@ export function PopoverMenu({ anchor, onClose, label, width = 216, children }: P
   return (
     <div className="fixed inset-0 z-menu" onMouseDown={dismiss} role="presentation">
       <div
+        ref={menuRef}
         className={cx(
           "absolute overflow-hidden rounded-[11px] border border-border bg-surface shadow-popover",
           // The menu grows out of the edge it is pinned to.
@@ -56,8 +70,8 @@ export function PopoverMenu({ anchor, onClose, label, width = 216, children }: P
           closing ? "animate-dropdown-exit" : "animate-dropdown-enter",
         )}
         style={{
-          top: Math.min(anchor.y, window.innerHeight - 24),
-          [anchor.align]: anchor.x,
+          top,
+          [anchor.align]: Math.min(anchor.x, Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN)),
           width,
         }}
         role="menu"

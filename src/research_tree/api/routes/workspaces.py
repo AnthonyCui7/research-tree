@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from research_tree.api.dependencies import (
     get_paper_annotation_service,
     get_topic_review_service,
+    get_workspace_edit_service,
     get_workspace_pipeline_service,
     get_workspace_query_service,
 )
@@ -25,6 +26,8 @@ from research_tree.api.schemas import (
     RestoreWorkspaceRequest,
     TopicReviewRequest,
     TopicReviewResponse,
+    WorkspaceEditRequest,
+    WorkspaceEditResponse,
     WorkspaceEventsResponse,
     WorkspaceMutationResponse,
     WorkspaceResponse,
@@ -34,6 +37,7 @@ from research_tree.api.schemas import (
 )
 from research_tree.redis_client import get_async_redis
 from research_tree.services.annotations import PaperAnnotationService
+from research_tree.services.edits import WorkspaceEditService
 from research_tree.services.pipeline import WorkspacePipelineService
 from research_tree.services.topics import TopicReviewService
 from research_tree.services.workspaces import WorkspaceQueryService
@@ -263,6 +267,25 @@ def delete_workspace(
             expected_version_hash
             or (request or DeleteWorkspaceRequest()).expected_version_hash
         ),
+    )
+
+
+@router.post("/{workspace_id}/edits", response_model=WorkspaceEditResponse)
+def edit_workspace(
+    workspace_id: str,
+    request: WorkspaceEditRequest,
+    service: WorkspaceEditService = Depends(get_workspace_edit_service),
+) -> dict[str, object]:
+    """Apply a hand edit and publish it as a version the reader authored.
+
+    Answers 409 when the workspace moved past `expected_version_hash`, and 400
+    when an operation cannot apply or the result fails the validators.
+    """
+
+    return service.apply(
+        workspace_id,
+        operations=request.operations,
+        expected_version_hash=request.expected_version_hash,
     )
 
 

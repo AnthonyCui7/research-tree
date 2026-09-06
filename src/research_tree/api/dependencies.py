@@ -6,6 +6,7 @@ from fastapi import Depends, Request
 
 from research_tree.services.agent import WorkspaceAgentService
 from research_tree.services.annotations import PaperAnnotationService
+from research_tree.services.edits import WorkspaceEditService
 from research_tree.services.reviews import WorkspaceReviewService
 from research_tree.services.pipeline import WorkspacePipelineService
 from research_tree.services.topics import TopicReviewService
@@ -29,6 +30,12 @@ def get_workspace_query_service(
     repository: WorkspaceRepository = Depends(get_repository),
 ) -> WorkspaceQueryService:
     return WorkspaceQueryService(repository)
+
+
+def get_workspace_edit_service(
+    repository: WorkspaceRepository = Depends(get_repository),
+) -> WorkspaceEditService:
+    return WorkspaceEditService(repository)
 
 
 def get_paper_annotation_service(

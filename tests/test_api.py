@@ -244,6 +244,140 @@ def test_restore_and_delete_workspace_lifecycle(client, repository) -> None:
     assert client.get("/workspaces/workspace-1").status_code == 404
 
 
+def test_hand_edit_publishes_a_version_the_reader_authored(client, repository) -> None:
+    seed_hash = _seed_current(repository)
+
+    response = client.post(
+        "/workspaces/workspace-1/edits",
+        json={
+            "expected_version_hash": seed_hash,
+            "operations": [
+                {
+                    "op": "set",
+                    "entity_type": "branch",
+                    "branch_id": "branch-main",
+                    "field": "label",
+                    "value": "Renamed Branch",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["changed"] is True
+    assert body["previous_version_hash"] == seed_hash
+    assert body["summary"] == "Renamed branch “Main Branch” to “Renamed Branch”"
+    current = client.get("/workspaces/workspace-1").json()
+    assert current["workspace_version_hash"] == body["workspace_version_hash"]
+    assert current["workspace"]["tree"]["nodes"][0]["label"] == "Renamed Branch"
+    [version] = [
+        item
+        for item in client.get("/workspaces/workspace-1/versions").json()["versions"]
+        if item["version_hash"] == body["workspace_version_hash"]
+    ]
+    assert version["actor_type"] == "user"
+    assert version["reason"] == body["summary"]
+    events = client.get("/workspaces/workspace-1/events").json()["events"]
+    [edited] = [event for event in events if event["event_type"] == "workspace_edited"]
+    assert edited["target_ids"]["branch_ids"] == ["branch-main"]
+    assert edited["payload"]["operation_types"] == ["rename_branch"]
+
+
+def test_hand_edit_moves_a_paper_onto_the_other_branch(client, repository) -> None:
+    seed_hash = repository.save_workspace_version(
+        "workspace-1",
+        _two_branch_workspace(),
+        actor="system",
+        parent_version_hash=None,
+        reason="seed fixture",
+    )
+
+    response = client.post(
+        "/workspaces/workspace-1/edits",
+        json={
+            "expected_version_hash": seed_hash,
+            "operations": [
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p1",
+                    "to_branch_id": "branch-side",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["summary"] == "Moved “Core Method” to “Side Branch”"
+    workspace = client.get("/workspaces/workspace-1").json()["workspace"]
+    main, side = workspace["tree"]["nodes"]
+    assert main["primary_paper_ids"] == ["p2"]
+    assert side["primary_paper_ids"] == ["p3", "p1"]
+    assert workspace["paper_paths"][1]["paper_ids"] == ["p3", "p1"]
+    assert workspace["paper_cards"]["p1"]["primary_tree_location"]["node_id"] == "branch-side"
+
+
+def test_hand_edit_removal_can_be_undone_by_restoring_the_previous_version(
+    client, repository
+) -> None:
+    seed_hash = _seed_current(repository)
+
+    edit = client.post(
+        "/workspaces/workspace-1/edits",
+        json={
+            "expected_version_hash": seed_hash,
+            "operations": [
+                {"op": "remove", "entity_type": "paper_placement", "paper_id": "p2"}
+            ],
+        },
+    )
+    assert edit.status_code == 200, edit.text
+    assert edit.json()["summary"] == "Removed “Evaluation Benchmark”"
+    assert "p2" not in client.get("/workspaces/workspace-1").json()["workspace"]["paper_cards"]
+
+    undo = client.post(
+        f"/workspaces/workspace-1/versions/{edit.json()['previous_version_hash']}/restore",
+        json={"expected_version_hash": edit.json()["workspace_version_hash"]},
+    )
+
+    assert undo.status_code == 200, undo.text
+    assert undo.json()["workspace_version_hash"] == seed_hash
+    assert "p2" in client.get("/workspaces/workspace-1").json()["workspace"]["paper_cards"]
+
+
+def test_hand_edit_refuses_a_stale_hash_and_a_bad_operation(client, repository) -> None:
+    seed_hash = _seed_current(repository)
+    rename = {
+        "op": "set",
+        "entity_type": "branch",
+        "branch_id": "branch-main",
+        "field": "label",
+        "value": "Renamed Branch",
+    }
+
+    stale = client.post(
+        "/workspaces/workspace-1/edits",
+        json={"expected_version_hash": "0" * 64, "operations": [rename]},
+    )
+    broken = client.post(
+        "/workspaces/workspace-1/edits",
+        json={
+            "expected_version_hash": seed_hash,
+            "operations": [
+                {"op": "remove", "entity_type": "paper_placement", "paper_id": "missing"}
+            ],
+        },
+    )
+
+    assert stale.status_code == 409
+    assert stale.json()["error_code"] == "review_conflict"
+    assert broken.status_code == 400
+    assert "visible paper does not exist: missing" in broken.json()["detail"]
+    # Neither attempt published anything.
+    assert client.get("/workspaces/workspace-1").json()["workspace_version_hash"] == seed_hash
+
+
 def test_deleting_workspace_cancels_active_pipeline_and_blocks_late_publication(repository) -> None:
     _seed_current(repository)
     stale_workspace = repository.get_current_workspace("workspace-1")
@@ -1032,6 +1166,28 @@ def _workspace(branch_label: str = "Main Branch") -> dict[str, Any]:
             "warnings": [],
         },
     }
+
+
+def _two_branch_workspace() -> dict[str, Any]:
+    workspace = _workspace()
+    side = _branch_node("branch-side", "root", "Side Branch")
+    side["primary_paper_ids"] = ["p3"]
+    workspace["tree"]["nodes"].append(side)
+    workspace["paper_cards"]["p3"] = _paper_card("p3", "Side Paper", "Side Branch")
+    workspace["paper_cards"]["p3"]["primary_tree_location"]["node_id"] = "branch-side"
+    workspace["paper_paths"].append(
+        {
+            "path_id": "path-side",
+            "branch_node_id": "branch-side",
+            "path_type": "primary_timeline",
+            "label": "Side path",
+            "description": "The other line.",
+            "paper_ids": ["p3"],
+            "rationale": "Fixture.",
+        }
+    )
+    workspace["reading_order"].append({"order": 3, "paper_id": "p3", "reason": "Last."})
+    return workspace
 
 
 def _branch_node(node_id: str, parent_id: str, label: str) -> dict[str, Any]:

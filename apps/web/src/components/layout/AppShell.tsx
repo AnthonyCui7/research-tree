@@ -12,11 +12,13 @@ import { WorkspaceCreator } from "../workspace/WorkspaceCreator";
 import { WorkspaceHistory } from "../workspace/WorkspaceHistory";
 import { WorkspaceAgent } from "../workspace/WorkspaceAgent";
 import { DeleteWorkspaceDialog } from "../workspace/DeleteWorkspaceDialog";
+import { NodeActionsMenu } from "../workspace/NodeActionsMenu";
 import { Toast, ToastStack } from "../ui/Toast";
 import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
 import { ClockIcon, TrashIcon } from "../ui/icons";
 import { cx } from "../../lib/cx";
 import { useAgentSession } from "../../data/useAgentSession";
+import { useWorkspaceEditor } from "../../data/useWorkspaceEditor";
 import { signOut, useSessionInfo } from "../../data/session";
 import type { SessionUser } from "../../lib/types";
 
@@ -37,6 +39,7 @@ import type {
   TreeNodeId,
   TreeViewModel,
   WorkspaceDocument,
+  WorkspaceEditOperation,
   WorkspaceSummary,
 } from "../../lib/types";
 
@@ -118,6 +121,15 @@ export function AppShell({
   // failure has nowhere else to appear. Dismissal is tracked by message, so a
   // later — different — failure still speaks up.
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  // The actions menu for one card, opened from the canvas or the inspector.
+  const [nodeActions, setNodeActions] = useState<{ nodeId: TreeNodeId; anchor: MenuAnchor } | null>(
+    null,
+  );
+  const [renamingNodeId, setRenamingNodeId] = useState<TreeNodeId | null>(null);
+  // A moved paper gets a new card id (its path and position changed), so the
+  // selection follows the paper rather than the id once the tree reloads. The
+  // version the move was sent against says when that reload has happened.
+  const [followPaper, setFollowPaper] = useState<{ paperId: string; from: string } | null>(null);
 
   const activeWorkspaceId = activeSummary?.workspace_id ?? null;
   const selectedNode = tree && selectedNodeId ? (tree.nodesById[selectedNodeId] ?? null) : null;
@@ -125,8 +137,34 @@ export function AppShell({
     buildingRun?.workspace_id === activeWorkspaceId && isRunActive(buildingRun);
   const refreshError = status !== "error" && error && error !== dismissedError ? error : null;
   const session = useAgentSession(activeWorkspace?.workspace_id ?? null, onWorkspaceChanged);
+  const editor = useWorkspaceEditor(
+    activeWorkspaceId,
+    tree?.currentVersionHash ?? null,
+    onWorkspaceChanged,
+  );
   const apiKeyLabel = useApiKeyLabel();
   const sessionInfo = useSessionInfo();
+
+  useEffect(() => {
+    setRenamingNodeId(null);
+  }, [selectedNodeId]);
+
+  useEffect(() => {
+    if (!followPaper || !tree || tree.currentVersionHash === followPaper.from) return;
+    const moved = tree.nodes.find(
+      (node) => node.kind === "paper" && node.paperId === followPaper.paperId,
+    );
+    if (moved) onSelectNode(moved.id);
+    setFollowPaper(null);
+  }, [followPaper, onSelectNode, tree]);
+
+  function applyEdit(operations: WorkspaceEditOperation[]) {
+    const move = operations.find((operation) => operation.op === "move");
+    if (move && tree?.currentVersionHash) {
+      setFollowPaper({ paperId: move.paper_id, from: tree.currentVersionHash });
+    }
+    void editor.apply(operations);
+  }
 
   // A refresh that succeeds re-arms the strip, so the same failure returning
   // after a good refresh is reported again rather than silently swallowed.
@@ -268,18 +306,46 @@ export function AppShell({
                 workspace={activeWorkspace}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={onSelectNode}
+                onOpenNodeActions={(nodeId, point) => {
+                  onSelectNode(nodeId);
+                  setNodeActions({ nodeId, anchor: { x: point.x, y: point.y, align: "left" } });
+                }}
               />
             ) : null}
 
-            {refreshError ? (
+            {refreshError || editor.notice ? (
               <ToastStack>
-                <Toast
-                  tone="error"
-                  onDismiss={() => setDismissedError(refreshError)}
-                  dismissLabel="Dismiss workspace refresh error"
-                >
-                  {refreshError}
-                </Toast>
+                {refreshError ? (
+                  <Toast
+                    tone="error"
+                    onDismiss={() => setDismissedError(refreshError)}
+                    dismissLabel="Dismiss workspace refresh error"
+                  >
+                    {refreshError}
+                  </Toast>
+                ) : null}
+                {editor.notice ? (
+                  <Toast
+                    key={editor.notice.text}
+                    tone={editor.notice.tone}
+                    onDismiss={editor.dismissNotice}
+                    dismissLabel="Dismiss"
+                  >
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="min-w-0 [overflow-wrap:anywhere]">{editor.notice.text}</span>
+                      {editor.notice.undo ? (
+                        <button
+                          className="flex-none rounded-[5px] border border-accent-border bg-surface px-2 py-0.5 text-[11px] font-semibold text-accent-deep transition-[background-color] duration-150 enabled:hover:bg-accent-subtle disabled:cursor-not-allowed disabled:text-text-muted"
+                          type="button"
+                          onClick={editor.notice.undo}
+                          disabled={editor.busy}
+                        >
+                          Undo
+                        </button>
+                      ) : null}
+                    </span>
+                  </Toast>
+                ) : null}
               </ToastStack>
             ) : null}
           </section>
@@ -313,6 +379,27 @@ export function AppShell({
                   onSelectNode={onSelectNode}
                   onClose={onClosePanel}
                   onOpenAssistant={() => onOpenPanel("agent")}
+                  onOpenActions={(trigger) =>
+                    setNodeActions({
+                      nodeId: selectedNode.id,
+                      anchor: anchorFromEvent(trigger, "right"),
+                    })
+                  }
+                  renaming={renamingNodeId === selectedNode.id}
+                  onRenameSubmit={async (label) => {
+                    if (selectedNode.kind !== "branch") return;
+                    const result = await editor.apply([
+                      {
+                        op: "set",
+                        entity_type: "branch",
+                        branch_id: selectedNode.branchNodeId,
+                        field: "label",
+                        value: label,
+                      },
+                    ]);
+                    if (result) setRenamingNodeId(null);
+                  }}
+                  onRenameCancel={() => setRenamingNodeId(null)}
                 />
               ) : null}
               {shownPanel === "agent" && activeWorkspace ? (
@@ -396,6 +483,21 @@ export function AppShell({
         </PopoverMenu>
       ) : null}
 
+      {nodeActions && tree ? (
+        <NodeActionsFor
+          tree={tree}
+          nodeId={nodeActions.nodeId}
+          anchor={nodeActions.anchor}
+          disabled={activeRunning || editor.busy}
+          onClose={() => setNodeActions(null)}
+          onRename={(branchId) => {
+            setRenamingNodeId(branchId);
+            onOpenPanel("inspector");
+          }}
+          onApply={applyEdit}
+        />
+      ) : null}
+
       {deleteTarget ? (
         <DeleteWorkspaceDialog
           workspace={deleteTarget}
@@ -419,5 +521,45 @@ export function AppShell({
         onRunFinished={onPipelineFinished}
       />
     </div>
+  );
+}
+
+/** The actions menu, once the card it was opened for is known to be a branch or paper. */
+function NodeActionsFor({
+  tree,
+  nodeId,
+  anchor,
+  disabled,
+  onClose,
+  onRename,
+  onApply,
+}: {
+  tree: TreeViewModel;
+  nodeId: TreeNodeId;
+  anchor: MenuAnchor;
+  disabled: boolean;
+  onClose: () => void;
+  onRename: (branchId: string) => void;
+  onApply: (operations: WorkspaceEditOperation[]) => void;
+}) {
+  const node = tree.nodesById[nodeId];
+  const gone = !node || node.kind === "root";
+  // The card can vanish under an open menu — its own removal, or a reload
+  // that gave it a new id. Closing here keeps the menu from reappearing when
+  // the card comes back, as it does after an undo.
+  useEffect(() => {
+    if (gone) onClose();
+  }, [gone, onClose]);
+  if (gone) return null;
+  return (
+    <NodeActionsMenu
+      node={node}
+      tree={tree}
+      anchor={anchor}
+      disabled={disabled}
+      onClose={onClose}
+      onRename={onRename}
+      onApply={onApply}
+    />
   );
 }

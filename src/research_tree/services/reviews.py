@@ -181,7 +181,7 @@ class WorkspaceReviewService:
                 str(edit_result.get("error_message") or "workspace review could not be edited.")
             )
 
-        validation_summary = _validate_proposal(
+        validation_summary = validate_workspace_proposal(
             current_workspace=current,
             proposed_workspace=proposed,
             proposed_operations=operations,
@@ -349,7 +349,7 @@ class WorkspaceReviewService:
             raise WorkspaceServiceError(str(error)) from error
 
 
-def _validate_proposal(
+def validate_workspace_proposal(
     *,
     current_workspace: dict[str, Any],
     proposed_workspace: dict[str, Any],

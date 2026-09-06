@@ -11,6 +11,7 @@ type TreeCanvasProps = {
   workspace: WorkspaceDocument | null;
   selectedNodeId: TreeNodeId | null;
   onSelectNode: (nodeId: TreeNodeId) => void;
+  onOpenNodeActions?: (nodeId: TreeNodeId, point: { x: number; y: number }) => void;
 };
 
 const MIN_ZOOM = 0.5;
@@ -26,7 +27,13 @@ type Viewport = { zoom: number; scrollLeft: number; scrollTop: number };
  */
 const viewports = new Map<string, Viewport>();
 
-export function TreeCanvas({ tree, workspace, selectedNodeId, onSelectNode }: TreeCanvasProps) {
+export function TreeCanvas({
+  tree,
+  workspace,
+  selectedNodeId,
+  onSelectNode,
+  onOpenNodeActions,
+}: TreeCanvasProps) {
   const [zoom, setZoom] = useState(() => viewports.get(tree.workspaceId)?.zoom ?? 1);
   const canvasRef = useRef<HTMLDivElement>(null);
   const measureLayerRef = useRef<HTMLDivElement>(null);
@@ -272,6 +279,7 @@ export function TreeCanvas({ tree, workspace, selectedNodeId, onSelectNode }: Tr
                 node={node}
                 selected={node.id === selectedNodeId}
                 onSelectNode={onSelectNode}
+                onOpenActions={onOpenNodeActions}
               />
             ))}
           </div>

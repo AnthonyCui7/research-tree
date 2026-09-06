@@ -8,9 +8,17 @@ type TreeNodeProps = {
   /** Required for interactive nodes; a measured node is never interactive. */
   selected?: boolean;
   onSelectNode?: (nodeId: TreeNodeId) => void;
+  /** A right-click on a branch or paper card; the root has no actions. */
+  onOpenActions?: (nodeId: TreeNodeId, point: { x: number; y: number }) => void;
 };
 
-export function TreeNode({ node, selected = false, onSelectNode, measure = false }: TreeNodeProps) {
+export function TreeNode({
+  node,
+  selected = false,
+  onSelectNode,
+  onOpenActions,
+  measure = false,
+}: TreeNodeProps) {
   const family = node.kind === "root" ? null : familyTone(node.family);
 
   return (
@@ -36,6 +44,11 @@ export function TreeNode({ node, selected = false, onSelectNode, measure = false
       tabIndex={measure ? -1 : undefined}
       aria-pressed={selected}
       onClick={() => onSelectNode?.(node.id)}
+      onContextMenu={(event) => {
+        if (measure || node.kind === "root" || !onOpenActions) return;
+        event.preventDefault();
+        onOpenActions(node.id, { x: event.clientX, y: event.clientY });
+      }}
     >
       {node.kind === "root" ? <RootNodeContent node={node} /> : null}
       {node.kind === "branch" ? <BranchNodeContent node={node} /> : null}

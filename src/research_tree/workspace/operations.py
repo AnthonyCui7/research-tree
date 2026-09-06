@@ -80,6 +80,36 @@ def remove_visible_paper_operation(
     return operation
 
 
+def rename_branch_operation(*, branch_id: str, label: str) -> dict[str, Any]:
+    return {
+        "op": "set",
+        "entity_type": "branch",
+        "branch_id": branch_id,
+        "field": "label",
+        "value": label,
+    }
+
+
+def move_visible_paper_operation(
+    *,
+    paper_id: str,
+    to_branch_id: str,
+    path_id: str | None = None,
+    index: int | None = None,
+) -> dict[str, Any]:
+    operation: dict[str, Any] = {
+        "op": "move",
+        "entity_type": "paper_placement",
+        "paper_id": paper_id,
+        "to_branch_id": to_branch_id,
+    }
+    if path_id:
+        operation["path_id"] = path_id
+    if index is not None:
+        operation["index"] = index
+    return operation
+
+
 def operation_target_ids(operations: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize which branches, papers, and paths a set of operations touches.
 
@@ -246,20 +276,7 @@ def _apply_remove(
 def _apply_move(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
     entity_type = str(operation.get("entity_type") or "")
     if entity_type == "paper_placement":
-        paper_id = str(operation.get("paper_id") or "")
-        to_branch_id = str(operation.get("to_branch_id") or "")
-        if not paper_id or not to_branch_id:
-            raise WorkspacePatchError("move paper_placement requires paper_id and to_branch_id.")
-        if to_branch_id not in _nodes_by_id(workspace):
-            raise WorkspacePatchError(f"destination branch does not exist: {to_branch_id}.")
-        _remove_paper_references(workspace, paper_id)
-        _place_visible_paper(
-            workspace,
-            paper_id=paper_id,
-            branch_id=to_branch_id,
-            index=_optional_int(operation.get("index")),
-            path_id=_optional_str(operation.get("path_id")),
-        )
+        _move_paper_placement(workspace, operation)
     elif entity_type == "branch":
         _move_branch(workspace, operation)
     else:
@@ -363,6 +380,48 @@ def _insert_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> N
             children.insert(_bounded_index(operation.get("index"), len(children)), node_id)
 
 
+def _move_paper_placement(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
+    """Move a visible paper onto another branch's reading path.
+
+    The canvas draws a branch's papers from its reading paths, so a paper that
+    merely joined `primary_paper_ids` would disappear from view. Without an
+    explicit `path_id` the paper lands at the end of the destination's first
+    path; a branch that has none shows its `primary_paper_ids` as a row of its
+    own, so the placement is still visible.
+    """
+
+    paper_id = str(operation.get("paper_id") or "")
+    to_branch_id = str(operation.get("to_branch_id") or "")
+    if not paper_id or not to_branch_id:
+        raise WorkspacePatchError("move paper_placement requires paper_id and to_branch_id.")
+    destination = _required_node(workspace, to_branch_id)
+    if _string_list(destination.get("child_node_ids")) or _child_branch_ids(workspace, to_branch_id):
+        raise WorkspacePatchError(
+            f"branch {to_branch_id} groups other branches; move the paper to one of them."
+        )
+    cards = _required_mapping(workspace.get("paper_cards"), "paper_cards")
+    if paper_id not in cards:
+        raise WorkspacePatchError(f"visible paper does not exist: {paper_id}.")
+    path_id = _optional_str(operation.get("path_id"))
+    if path_id:
+        path = _required_path(workspace, path_id)
+        if str(path.get("branch_node_id") or "") != to_branch_id:
+            raise WorkspacePatchError(
+                f"paper path {path_id} does not belong to branch {to_branch_id}."
+            )
+    else:
+        path_id = _first_path_id_for_branch(workspace, to_branch_id)
+    step = _detach_paper_placement(workspace, paper_id)
+    _place_visible_paper(
+        workspace,
+        paper_id=paper_id,
+        branch_id=to_branch_id,
+        index=_optional_int(operation.get("index")),
+        path_id=path_id,
+        step=step,
+    )
+
+
 def _insert_paper_placement(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
     paper_id = str(operation.get("paper_id") or "")
     branch_id = str(operation.get("branch_id") or "")
@@ -389,6 +448,7 @@ def _insert_paper_placement(workspace: dict[str, Any], operation: Mapping[str, A
         branch_id=branch_id,
         index=_optional_int(operation.get("index")),
         path_id=_optional_str(operation.get("path_id")),
+        step=_recorded_step(_removed_placement_for_paper(workspace, paper_id)),
     )
 
 
@@ -480,26 +540,127 @@ def _place_visible_paper(
     branch_id: str,
     index: int | None,
     path_id: str | None,
+    step: Mapping[str, Any] | None = None,
 ) -> None:
     node = _required_node(workspace, branch_id)
     cards = _required_mapping(workspace.get("paper_cards"), "paper_cards")
     card = cards.get(paper_id)
     if not isinstance(card, dict):
         raise WorkspacePatchError(f"visible paper card does not exist: {paper_id}.")
-    card["primary_tree_location"] = {
-        "node_id": branch_id,
-        "label": node.get("label"),
-    }
+    card["primary_tree_location"] = _tree_location(workspace, branch_id)
     paper_ids = _string_list(node.get("primary_paper_ids"))
     paper_ids = [item for item in paper_ids if item != paper_id]
     paper_ids.insert(_bounded_index(index, len(paper_ids)), paper_id)
     node["primary_paper_ids"] = paper_ids
-    if path_id:
-        path = _required_path(workspace, path_id)
-        path_ids = _string_list(path.get("paper_ids"))
-        path_ids = [item for item in path_ids if item != paper_id]
-        path_ids.insert(_bounded_index(index, len(path_ids)), paper_id)
-        path["paper_ids"] = path_ids
+    if not path_id:
+        return
+    path = _required_path(workspace, path_id)
+    path_ids = [item for item in _string_list(path.get("paper_ids")) if item != paper_id]
+    position = _bounded_index(index, len(path_ids))
+    path_ids.insert(position, paper_id)
+    path["paper_ids"] = path_ids
+    # A path with steps must list them in the same order as its paper ids, so
+    # the paper gets a step at the same position, keeping whatever reason it
+    # had before and falling back to the card's own words.
+    steps = path.get("paper_steps")
+    if not isinstance(steps, list) and step is None:
+        return
+    kept_steps = [
+        item
+        for item in (steps if isinstance(steps, list) else [])
+        if not (isinstance(item, Mapping) and str(item.get("paper_id") or "") == paper_id)
+    ]
+    new_step = copy.deepcopy(dict(step)) if step else {}
+    new_step["paper_id"] = paper_id
+    if not str(new_step.get("why_read_here") or "").strip():
+        new_step["why_read_here"] = _fallback_step_reason(card)
+    kept_steps.insert(min(position, len(kept_steps)), new_step)
+    path["paper_steps"] = kept_steps
+
+
+def _detach_paper_placement(workspace: dict[str, Any], paper_id: str) -> dict[str, Any] | None:
+    """Take a visible paper off every branch list and reading path it sits on.
+
+    Unlike a removal, the card, its reading-order entry, and the references
+    other cards make to it all stay: the paper is still in the workspace, only
+    its place is changing. Returns the reading-path step it had, if any, so the
+    new placement can keep its reason.
+    """
+
+    for node in _nodes_by_id(workspace).values():
+        if not isinstance(node, dict):
+            continue
+        for field_name in ("primary_paper_ids", "secondary_paper_ids"):
+            node[field_name] = [
+                item for item in _string_list(node.get(field_name)) if item != paper_id
+            ]
+    step: dict[str, Any] | None = None
+    kept_paths: list[dict[str, Any]] = []
+    for path in workspace.get("paper_paths") or []:
+        if not isinstance(path, dict):
+            continue
+        paper_ids = _string_list(path.get("paper_ids"))
+        if paper_id not in paper_ids:
+            kept_paths.append(path)
+            continue
+        path["paper_ids"] = [item for item in paper_ids if item != paper_id]
+        if isinstance(path.get("paper_steps"), list):
+            remaining: list[Any] = []
+            for item in path["paper_steps"]:
+                if isinstance(item, Mapping) and str(item.get("paper_id") or "") == paper_id:
+                    if step is None:
+                        step = copy.deepcopy(dict(item))
+                    continue
+                remaining.append(item)
+            path["paper_steps"] = remaining
+        if path["paper_ids"]:
+            kept_paths.append(path)
+    workspace["paper_paths"] = kept_paths
+    return step
+
+
+def _tree_location(workspace: Mapping[str, Any], branch_id: str) -> dict[str, Any]:
+    """The card's location in the shape construction normalizes to."""
+
+    root = _mapping(workspace.get("root"))
+    root_label = str(root.get("label") or workspace.get("title") or "Root")
+    if branch_id == _root_id(workspace):
+        return {"node_id": branch_id, "path": [root_label]}
+    node = _nodes_by_id(workspace).get(branch_id)
+    label = str((node or {}).get("label") or branch_id)
+    return {"node_id": branch_id, "path": [root_label, label]}
+
+
+def _fallback_step_reason(card: Mapping[str, Any]) -> str:
+    for field_name in ("importance", "concise_importance", "tldr"):
+        value = str(card.get(field_name) or "").strip()
+        if value:
+            return value
+    return "Placed on this path by its reader."
+
+
+def _recorded_step(placement: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not placement:
+        return None
+    for record in placement.get("path_placements") or []:
+        if isinstance(record, Mapping) and isinstance(record.get("paper_step"), Mapping):
+            return dict(record["paper_step"])
+    return None
+
+
+def _first_path_id_for_branch(workspace: Mapping[str, Any], branch_id: str) -> str | None:
+    for path in workspace.get("paper_paths") or []:
+        if isinstance(path, Mapping) and str(path.get("branch_node_id") or "") == branch_id:
+            return _optional_str(path.get("path_id"))
+    return None
+
+
+def _child_branch_ids(workspace: Mapping[str, Any], branch_id: str) -> list[str]:
+    return [
+        node_id
+        for node_id, node in _nodes_by_id(workspace).items()
+        if str(node.get("parent_id") or "") == branch_id
+    ]
 
 
 def _removed_paper_placement_record(

@@ -172,6 +172,30 @@ class WorkspaceMutationResponse(BaseModel):
     changed: bool
 
 
+class WorkspaceEditRequest(BaseModel):
+    """A change made by hand on the canvas, as structured operations.
+
+    The operations are the ones `workspace/operations.py` applies for the
+    assistant's proposals (`set` a branch label, `move` or `remove` a
+    `paper_placement`), so a hand edit and an approved proposal write the
+    same shape.
+    """
+
+    expected_version_hash: str | None = None
+    operations: list[dict[str, Any]] = Field(min_length=1, max_length=50)
+
+
+class WorkspaceEditResponse(BaseModel):
+    workspace_id: str
+    workspace_version_hash: str
+    # What the edit replaced; restoring it is the undo.
+    previous_version_hash: str
+    changed: bool
+    # The version reason, as history shows it.
+    summary: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 class WorkspaceEventsResponse(BaseModel):
     workspace_id: str
     events: list[dict[str, Any]]

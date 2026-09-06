@@ -144,6 +144,129 @@ class WorkspaceBackendTest(unittest.TestCase):
             ["p2", "p1"],
         )
 
+    def test_move_paper_between_branches_keeps_it_readable(self) -> None:
+        workspace = _workspace_with_side_branch()
+
+        proposed = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p1",
+                    "to_branch_id": "branch-side",
+                }
+            ],
+        )
+
+        main, side = proposed["tree"]["nodes"][0], proposed["tree"]["nodes"][1]
+        self.assertEqual(main["primary_paper_ids"], ["p2"])
+        self.assertEqual(side["primary_paper_ids"], ["p3", "p1"])
+        path_main, path_side = proposed["paper_paths"]
+        self.assertEqual(path_main["paper_ids"], ["p2"])
+        self.assertEqual([step["paper_id"] for step in path_main["paper_steps"]], ["p2"])
+        # The paper lands at the end of the destination's path, with the reason
+        # it already had, so it is still drawn and still explained.
+        self.assertEqual(path_side["paper_ids"], ["p3", "p1"])
+        self.assertEqual(
+            path_side["paper_steps"],
+            [
+                {"paper_id": "p3", "why_read_here": "The side view."},
+                {"paper_id": "p1", "why_read_here": "Start with the method."},
+            ],
+        )
+        self.assertEqual(
+            proposed["paper_cards"]["p1"]["primary_tree_location"],
+            {"node_id": "branch-side", "path": ["Retrieval-Augmented Generation", "Side Branch"]},
+        )
+        # A move is not a removal: the reading order, the root's references and
+        # other cards' references to the paper all survive.
+        self.assertEqual(
+            [item["paper_id"] for item in proposed["reading_order"]], ["p1", "p2", "p3"]
+        )
+        self.assertEqual(proposed["root"]["representative_paper_ids"], ["p1"])
+        self.assertEqual(proposed["paper_cards"]["p2"]["read_before"], ["p1"])
+        self.assertNotIn("removed_paper_placements", proposed)
+
+    def test_moving_the_last_paper_off_a_path_drops_the_path(self) -> None:
+        workspace = _workspace_with_side_branch()
+
+        proposed = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p3",
+                    "to_branch_id": "branch-main",
+                    "index": 0,
+                }
+            ],
+        )
+
+        self.assertEqual([path["path_id"] for path in proposed["paper_paths"]], ["path-main"])
+        self.assertEqual(proposed["paper_paths"][0]["paper_ids"], ["p3", "p1", "p2"])
+        self.assertEqual(
+            [step["paper_id"] for step in proposed["paper_paths"][0]["paper_steps"]],
+            ["p3", "p1", "p2"],
+        )
+        self.assertEqual(proposed["tree"]["nodes"][1]["primary_paper_ids"], [])
+
+    def test_move_without_a_prior_step_uses_the_cards_own_words(self) -> None:
+        workspace = _workspace_with_side_branch()
+        del workspace["paper_paths"][0]["paper_steps"]
+        workspace["paper_cards"]["p1"]["importance"] = "It set the template."
+
+        proposed = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p1",
+                    "to_branch_id": "branch-side",
+                    "path_id": "path-side",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            proposed["paper_paths"][1]["paper_steps"][-1],
+            {"paper_id": "p1", "why_read_here": "It set the template."},
+        )
+
+    def test_move_refuses_a_grouping_branch_and_a_foreign_path(self) -> None:
+        workspace = _workspace_with_side_branch()
+        group = _branch_node("branch-group", "root")
+        group.update({"label": "Group", "is_leaf": False, "child_node_ids": ["branch-side"]})
+        workspace["tree"]["nodes"].append(group)  # type: ignore[union-attr]
+
+        with self.assertRaisesRegex(WorkspacePatchError, "groups other branches"):
+            apply_structured_workspace_patch(
+                base_workspace=workspace,
+                operations=[
+                    {
+                        "op": "move",
+                        "entity_type": "paper_placement",
+                        "paper_id": "p1",
+                        "to_branch_id": "branch-group",
+                    }
+                ],
+            )
+        with self.assertRaisesRegex(WorkspacePatchError, "does not belong to branch"):
+            apply_structured_workspace_patch(
+                base_workspace=workspace,
+                operations=[
+                    {
+                        "op": "move",
+                        "entity_type": "paper_placement",
+                        "paper_id": "p1",
+                        "to_branch_id": "branch-side",
+                        "path_id": "path-main",
+                    }
+                ],
+            )
+
     def test_structured_reorder_requires_exact_members(self) -> None:
         with self.assertRaises(WorkspacePatchError):
             apply_structured_workspace_patch(
@@ -1211,6 +1334,41 @@ def _workspace() -> dict[str, object]:
             "warnings": [],
         },
     }
+
+
+def _workspace_with_side_branch() -> dict[str, Any]:
+    """The fixture plus a second leaf branch, each path carrying its steps."""
+
+    workspace: dict[str, Any] = _workspace()  # type: ignore[assignment]
+    side = _branch_node("branch-side", "root")
+    side.update({"label": "Side Branch", "primary_paper_ids": ["p3"]})
+    workspace["tree"]["nodes"].append(side)
+    workspace["paper_cards"]["p3"] = _paper_card("p3", "Side Paper")
+    workspace["paper_cards"]["p3"]["primary_tree_location"] = {
+        "node_id": "branch-side",
+        "path": ["Retrieval-Augmented Generation", "Side Branch"],
+    }
+    workspace["paper_cards"]["p2"]["read_before"] = ["p1"]
+    workspace["paper_paths"][0]["paper_steps"] = [
+        {"paper_id": "p1", "why_read_here": "Start with the method."},
+        {"paper_id": "p2", "why_read_here": "Then the benchmark."},
+    ]
+    workspace["paper_paths"].append(
+        {
+            "path_id": "path-side",
+            "branch_node_id": "branch-side",
+            "path_type": "primary_timeline",
+            "label": "Side path",
+            "description": "The other line.",
+            "paper_ids": ["p3"],
+            "paper_steps": [{"paper_id": "p3", "why_read_here": "The side view."}],
+            "rationale": "Fixture.",
+        }
+    )
+    workspace["reading_order"].append(
+        {"order": 3, "paper_id": "p3", "reason": "Finally the side view."}
+    )
+    return workspace
 
 
 def _branch_node(node_id: str, parent_id: str) -> dict[str, object]:

@@ -13,6 +13,8 @@ import type {
   ReviewActionResponse,
   TopicReview,
   WorkspaceDocument,
+  WorkspaceEditOperation,
+  WorkspaceEditResult,
   WorkspaceReview,
   WorkspaceSummary,
   WorkspaceVersion,
@@ -78,6 +80,11 @@ export type WorkspaceGateway = {
   ) => Promise<PipelineRun>;
   cancelPipelineRun: (runId: string) => Promise<PipelineRun>;
   restoreWorkspace: (workspaceId: string, versionHash: string, expectedHash: string) => Promise<void>;
+  editWorkspace: (
+    workspaceId: string,
+    operations: WorkspaceEditOperation[],
+    expectedHash: string,
+  ) => Promise<WorkspaceEditResult>;
   deleteWorkspace: (workspaceId: string, expectedHash: string) => Promise<void>;
   runAgent: (
     workspaceId: string,
@@ -151,6 +158,13 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     await postJson(
       `/workspaces/${encodeURIComponent(workspaceId)}/versions/${encodeURIComponent(versionHash)}/restore`,
       { expected_version_hash: expectedHash },
+    );
+  },
+
+  async editWorkspace(workspaceId, operations, expectedHash) {
+    return postJson<WorkspaceEditResult>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/edits`,
+      { expected_version_hash: expectedHash, operations },
     );
   },
 

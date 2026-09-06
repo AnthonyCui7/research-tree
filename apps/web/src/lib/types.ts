@@ -214,6 +214,32 @@ export type WorkspaceReview = {
   interrupt_payload?: AgentInterruptPayload | null;
 };
 
+/**
+ * A change made by hand on the canvas, in the operation shape the server
+ * applies for the assistant's proposals too.
+ */
+export type WorkspaceEditOperation =
+  | { op: "set"; entity_type: "branch"; branch_id: string; field: "label"; value: string }
+  | {
+      op: "move";
+      entity_type: "paper_placement";
+      paper_id: string;
+      to_branch_id: string;
+      path_id?: string;
+    }
+  | { op: "remove"; entity_type: "paper_placement"; paper_id: string };
+
+export type WorkspaceEditResult = {
+  workspace_id: string;
+  workspace_version_hash: string;
+  /** What the edit replaced; restoring it is the undo. */
+  previous_version_hash: string;
+  changed: boolean;
+  /** The version reason, as history shows it. */
+  summary: string;
+  warnings: string[];
+};
+
 export type ReviewActionResponse = {
   workspace_id: string;
   review_id: string;

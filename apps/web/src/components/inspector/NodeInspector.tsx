@@ -1,9 +1,11 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "../../lib/cx";
 import { DROPDOWN_EXIT_MS, useExitAnimation } from "../../lib/animation";
 import { longDateLabel } from "../../lib/format";
+import { compactActionClass, compactPrimaryActionClass } from "../../lib/controlClasses";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import { PanelClose } from "../panel/RightPanel";
+import { EllipsisIcon } from "../ui/icons";
 
 // The reader carries a PDF engine, which is most of what the app would ship.
 // Loading it when a paper is opened keeps it out of the first page load.
@@ -30,6 +32,12 @@ type NodeInspectorProps = {
   onClose: () => void;
   /** Opens the workspace assistant; the reader's Assistant button uses it. */
   onOpenAssistant?: () => void;
+  /** Opens the card's actions menu from the button beside the close control. */
+  onOpenActions?: (trigger: HTMLElement) => void;
+  /** The branch heading is an input while true. */
+  renaming?: boolean;
+  onRenameSubmit?: (label: string) => Promise<void>;
+  onRenameCancel?: () => void;
 };
 
 export function NodeInspector({
@@ -39,6 +47,10 @@ export function NodeInspector({
   onSelectNode,
   onClose,
   onOpenAssistant,
+  onOpenActions,
+  renaming = false,
+  onRenameSubmit,
+  onRenameCancel,
 }: NodeInspectorProps) {
   return (
     // Node details carry their own heading, so there is no panel title to show.
@@ -52,13 +64,35 @@ export function NodeInspector({
         onClose={onClose}
         label="Close details"
       />
+      {node.kind !== "root" && onOpenActions ? (
+        <button
+          className="absolute top-3.5 right-[46px] z-[2] grid h-[26px] w-[26px] place-items-center rounded-[6px] border-0 bg-surface p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
+          type="button"
+          onClick={(event) => onOpenActions(event.currentTarget)}
+          aria-label={node.kind === "branch" ? "Branch actions" : "Paper actions"}
+          aria-haspopup="menu"
+          title="Actions"
+        >
+          <EllipsisIcon className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
       <div
-        className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pr-11 pb-7"
+        className={cx(
+          "scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pb-7",
+          node.kind !== "root" && onOpenActions ? "pr-[76px]" : "pr-11",
+        )}
         key={node.id}
       >
         {node.kind === "root" ? <RootView node={node} tree={tree} updatedAt={updatedAt} /> : null}
         {node.kind === "branch" ? (
-          <BranchView node={node} tree={tree} onSelectNode={onSelectNode} />
+          <BranchView
+            node={node}
+            tree={tree}
+            onSelectNode={onSelectNode}
+            renaming={renaming}
+            onRenameSubmit={onRenameSubmit}
+            onRenameCancel={onRenameCancel}
+          />
         ) : null}
         {node.kind === "paper" ? (
           <PaperView node={node} workspaceId={tree.workspaceId} onOpenAssistant={onOpenAssistant} />
@@ -312,17 +346,27 @@ function BranchView({
   node,
   tree,
   onSelectNode,
+  renaming,
+  onRenameSubmit,
+  onRenameCancel,
 }: {
   node: BranchTreeNode;
   tree: TreeViewModel;
   onSelectNode: (nodeId: TreeNodeId) => void;
+  renaming: boolean;
+  onRenameSubmit?: (label: string) => Promise<void>;
+  onRenameCancel?: () => void;
 }) {
   const readingPath = useMemo(() => papersForBranch(tree, node.branchNodeId), [tree, node.branchNodeId]);
   return (
     <>
-      <h2 className="m-0 max-w-[40ch] text-[17px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]">
-        {node.title}
-      </h2>
+      {renaming && onRenameSubmit && onRenameCancel ? (
+        <RenameForm title={node.title} onSubmit={onRenameSubmit} onCancel={onRenameCancel} />
+      ) : (
+        <h2 className="m-0 max-w-[40ch] text-[17px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]">
+          {node.title}
+        </h2>
+      )}
       <p className="mt-1.5 mb-0 text-xs text-text-secondary">
         <b className="font-semibold text-text-primary">{readingPath.length}</b>{" "}
         {readingPath.length === 1 ? "paper" : "papers"} in reading path
@@ -363,6 +407,78 @@ function BranchView({
       <Chips label="Tags" values={node.tags} />
       <Questions questions={node.openQuestions} />
     </>
+  );
+}
+
+/**
+ * The branch heading as an input. Enter saves, Escape cancels; a label left
+ * unchanged or emptied sends nothing.
+ */
+function RenameForm({
+  title,
+  onSubmit,
+  onCancel,
+}: {
+  title: string;
+  onSubmit: (label: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [label, setLabel] = useState(title);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
+
+  const trimmed = label.trim();
+  const unchanged = !trimmed || trimmed === title;
+
+  async function submit() {
+    if (unchanged) {
+      onCancel();
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSubmit(trimmed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      className="flex flex-col gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <input
+        ref={inputRef}
+        className="w-full rounded-[7px] border-[1.5px] border-accent bg-surface px-2.5 py-1.5 text-[16px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary outline-0 shadow-[0_0_0_3px_var(--color-accent-subtle)]"
+        value={label}
+        onChange={(event) => setLabel(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.stopPropagation();
+            onCancel();
+          }
+        }}
+        aria-label="Branch name"
+        maxLength={200}
+        disabled={busy}
+      />
+      <div className="flex items-center gap-1.5">
+        <button className={compactPrimaryActionClass} type="submit" disabled={busy || unchanged}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+        <button className={compactActionClass} type="button" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
