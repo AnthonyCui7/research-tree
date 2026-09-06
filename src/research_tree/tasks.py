@@ -36,10 +36,14 @@ app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
-    # A pipeline that is still running after 45 minutes is stuck; the soft
-    # limit lands first so the run record can say so.
-    task_time_limit=2700,
-    task_soft_time_limit=2400,
+    # A build loads the embedding models into its process (about 1.3 GB
+    # resident, measured Sep 2026). Recycling the child after every task hands
+    # that memory back, so the second child stays small for annotation jobs.
+    worker_max_tasks_per_child=1,
+    # A build that is still running after an hour is stuck; the soft limit
+    # lands first so the run record can say so.
+    task_time_limit=3900,
+    task_soft_time_limit=3600,
     broker_transport_options={
         # Longer than the hard time limit, so a slow run is never handed to a
         # second worker while the first is still on it.
@@ -90,11 +94,39 @@ def _repository():
     return build_workspace_repository()
 
 
-@app.task(name="research_tree.run_pipeline")
-def run_pipeline(run_id: str) -> None:
+# One build at a time per worker: two builds' models do not fit in the
+# container together. A build that finds the slot taken waits on the queue,
+# touching its run so the queued-run reclaimer knows it is alive.
+BUILD_SLOT_KEY = "pipeline:build_slot"
+BUILD_SLOT_TTL_SECONDS = 4000
+BUILD_SLOT_RETRY_SECONDS = 30
+
+
+@app.task(name="research_tree.run_pipeline", bind=True, max_retries=None)
+def run_pipeline(self, run_id: str) -> None:
+    from research_tree.redis_client import get_redis
     from research_tree.services.pipeline import WorkspacePipelineService
 
-    WorkspacePipelineService(_repository(), repo_root=REPO_ROOT)._execute(run_id)
+    redis = get_redis()
+    if redis is not None and not redis.set(BUILD_SLOT_KEY, run_id, nx=True, ex=BUILD_SLOT_TTL_SECONDS):
+        holder = redis.get(BUILD_SLOT_KEY)
+        if holder != run_id.encode("utf-8"):
+            logger.info("build %s waits for the slot held by %s", run_id, holder)
+            _repository().touch_pipeline_run(run_id)
+            raise self.retry(countdown=BUILD_SLOT_RETRY_SECONDS)
+    try:
+        WorkspacePipelineService(_repository(), repo_root=REPO_ROOT)._execute(run_id)
+    finally:
+        if redis is not None:
+            _release_build_slot(redis, run_id)
+
+
+def _release_build_slot(redis, run_id: str) -> None:
+    try:
+        if redis.get(BUILD_SLOT_KEY) == run_id.encode("utf-8"):
+            redis.delete(BUILD_SLOT_KEY)
+    except Exception as error:  # noqa: BLE001 - the slot expires on its own
+        logger.warning("could not release the build slot: %s", error)
 
 
 @app.task(name="research_tree.generate_annotations")

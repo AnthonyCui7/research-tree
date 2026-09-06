@@ -249,6 +249,40 @@ def test_builds_go_to_the_queue_only_when_redis_is_configured(monkeypatch: pytes
     assert default_pipeline_dispatch() is _dispatch_celery
 
 
+def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from celery.exceptions import Retry
+
+    from research_tree import tasks
+
+    executed: list[str] = []
+    touched: list[str] = []
+
+    class Service:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def _execute(self, run_id: str) -> None:
+            executed.append(run_id)
+            assert redis_env.get(tasks.BUILD_SLOT_KEY) == run_id.encode("utf-8")
+
+    class Repository:
+        def touch_pipeline_run(self, run_id: str) -> None:
+            touched.append(run_id)
+
+    monkeypatch.setattr("research_tree.services.pipeline.WorkspacePipelineService", Service)
+    monkeypatch.setattr(tasks, "_repository", lambda: Repository())
+    tasks.run_pipeline.apply(args=["pipeline_one"], throw=True)
+    assert executed == ["pipeline_one"]
+    assert redis_env.get(tasks.BUILD_SLOT_KEY) is None
+
+    redis_env.set(tasks.BUILD_SLOT_KEY, "pipeline_other")
+    with pytest.raises(Retry):
+        tasks.run_pipeline.apply(args=["pipeline_two"], throw=True)
+    assert executed == ["pipeline_one"]
+    assert touched == ["pipeline_two"]
+    assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"pipeline_other"
+
+
 def test_the_worker_knows_every_task() -> None:
     from research_tree.tasks import app
 
