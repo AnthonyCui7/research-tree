@@ -10,6 +10,7 @@ answer it.
 from __future__ import annotations
 
 import logging
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -239,7 +240,10 @@ def generate_situating_blurbs(
         blurbs[index] = extract_response_output_text(raw_response).strip()
 
     with ThreadPoolExecutor(max_workers=BLURB_CONCURRENCY) as pool:
-        futures = {pool.submit(describe, index): index for index in range(len(chunks))}
+        futures = {
+            pool.submit(contextvars.copy_context().run, describe, index): index
+            for index in range(len(chunks))
+        }
         for future, index in futures.items():
             try:
                 future.result()

@@ -159,6 +159,18 @@ class PaperAnnotationsResponse(BaseModel):
     annotations: list[PaperAnnotation]
 
 
+class AnnotationJobResponse(BaseModel):
+    job_id: str
+    status: str
+    workspace_id: str | None = None
+    paper_id: str | None = None
+    retrieval_mode: str | None = None
+    error_code: str | None = None
+    error_status: int | None = None
+    detail: str | None = None
+    created_at: str | None = None
+
+
 class WorkspaceReviewResponse(BaseModel):
     workspace_id: str
     review_id: str

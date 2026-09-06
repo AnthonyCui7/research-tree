@@ -13,6 +13,8 @@ from typing import Any
 
 from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
 from research_tree.principal import current_owner_id
+from research_tree.rate_limits import check_rate_limit
+from research_tree.redis_client import get_redis
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
     SEMANTIC_SCHOLAR_RATE_LIMITER,
@@ -26,6 +28,9 @@ logger = logging.getLogger("uvicorn.error")
 TOPIC_REVIEW_REASONING_EFFORT = "low"
 TOPIC_REVIEW_TIMEOUT_SECONDS = 30.0
 TOPIC_REVIEW_APPROVAL_TTL_SECONDS = 15 * 60
+# Approvals live in Redis when it is configured, so the API replica that
+# reviewed a topic need not be the one that builds it. Otherwise in memory.
+TOPIC_REVIEW_KEY_PREFIX = "topic_review:"
 _topic_review_approvals: dict[str, tuple[str, float]] = {}
 _topic_review_approvals_lock = threading.Lock()
 
@@ -38,6 +43,7 @@ class TopicReviewService:
         raw_topic = " ".join(topic.split()).strip()
         if not raw_topic:
             return _result(raw_topic, raw_topic, False, "Enter a research topic.")
+        check_rate_limit("topic_reviews")
 
         workspaces = self.repository.list_workspaces(owner_id=current_owner_id())
         source_paper = _linked_paper_metadata(raw_topic)
@@ -83,6 +89,13 @@ class TopicReviewService:
 
     def consume_approved_topic(self, *, token: str, topic: str) -> str | None:
         normalized_topic = " ".join(topic.split()).strip()
+        redis = get_redis()
+        if redis is not None:
+            approved_topic = redis.getdel(f"{TOPIC_REVIEW_KEY_PREFIX}{token}")
+            if approved_topic is None:
+                return None
+            approved_topic = approved_topic.decode("utf-8")
+            return approved_topic if approved_topic == normalized_topic else None
         now = time.monotonic()
         with _topic_review_approvals_lock:
             expired_tokens = [
@@ -232,6 +245,12 @@ def _result(raw: str, normalized: str, valid: bool, guidance: str) -> dict[str, 
 
 def _issue_topic_review_approval(normalized_topic: str) -> str:
     token = secrets.token_urlsafe(32)
+    redis = get_redis()
+    if redis is not None:
+        redis.setex(
+            f"{TOPIC_REVIEW_KEY_PREFIX}{token}", TOPIC_REVIEW_APPROVAL_TTL_SECONDS, normalized_topic
+        )
+        return token
     expires_at = time.monotonic() + TOPIC_REVIEW_APPROVAL_TTL_SECONDS
     with _topic_review_approvals_lock:
         _topic_review_approvals[token] = (normalized_topic, expires_at)

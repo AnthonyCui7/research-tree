@@ -9,9 +9,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import logging
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol
+
+logger = logging.getLogger("uvicorn.error")
 
 
 class JsonRequestError(RuntimeError):
@@ -28,28 +31,60 @@ class JsonRequestError(RuntimeError):
 RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
+# Reserves the next request slot atomically on the Redis server's own clock,
+# so every process sharing the key queues into one lane without a busy loop
+# and without trusting container clocks. Returns how long the caller waits.
+_RESERVE_SLOT_LUA = """
+local key = KEYS[1]
+local delay = tonumber(ARGV[1])
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+local last = tonumber(redis.call('GET', key) or '0')
+local slot = math.max(now, last + delay)
+redis.call('SET', key, slot, 'PX', delay * 20)
+return slot - now
+"""
+
+
 class RateLimiter:
     """Spaces request starts across everything that shares this limiter.
 
     Semantic Scholar counts one request per second cumulatively across all of
     its endpoints, so the budget belongs to the API key rather than to any one
-    client. With a `lock_file`, the last-request timestamp lives in that file
-    under an exclusive flock, so the spacing holds across *processes* too —
-    a backend, a CLI, and a not-yet-exited old backend all share one lane.
-    (Measured Aug 2026: three backend processes with independent in-memory
-    limiters tripled the request rate under one key and kept it in Semantic
-    Scholar's penalty box.) Without a `lock_file` it is in-memory only.
+    client. With Redis configured, the last-request timestamp lives there and
+    the spacing holds across containers (the API, the worker, a CLI). With a
+    `lock_file` it lives in that file under an exclusive flock, which spans
+    *processes* on one machine. (Measured Aug 2026: three backend processes
+    with independent in-memory limiters tripled the request rate under one
+    key and kept it in Semantic Scholar's penalty box.) Without either it is
+    in-memory only.
     """
 
-    def __init__(self, lock_file: Path | None = None) -> None:
+    def __init__(
+        self,
+        lock_file: Path | None = None,
+        *,
+        redis_client: Any = None,
+        redis_key: str = "s2:rate_limiter",
+    ) -> None:
         self._last_request_at = 0.0
         self._lock = Lock()
         self._lock_file = lock_file
+        self._redis_client = redis_client
+        self._redis_resolved = redis_client is not None
+        self._redis_key = redis_key
+        self._redis_failed = False
+        self._reserve_slot: Any = None
 
     def acquire(self, delay_seconds: float) -> None:
         with self._lock:
             if delay_seconds <= 0:
                 self._last_request_at = time.monotonic()
+                return
+            wait = self._reserve_across_containers(delay_seconds)
+            if wait is not None:
+                if wait > 0:
+                    time.sleep(wait)
                 return
             if self._lock_file is not None:
                 self._acquire_across_processes(delay_seconds)
@@ -58,6 +93,34 @@ class RateLimiter:
             if elapsed < delay_seconds:
                 time.sleep(delay_seconds - elapsed)
             self._last_request_at = time.monotonic()
+
+    def _redis(self) -> Any:
+        if not self._redis_resolved:
+            from research_tree.redis_client import get_redis
+
+            self._redis_client = get_redis()
+            self._redis_resolved = True
+        return self._redis_client
+
+    def _reserve_across_containers(self, delay_seconds: float) -> float | None:
+        """Seconds to wait for the reserved slot, or None when Redis is not in play."""
+
+        client = self._redis()
+        if client is None or self._redis_failed:
+            return None
+        try:
+            if self._reserve_slot is None:
+                self._reserve_slot = client.register_script(_RESERVE_SLOT_LUA)
+            wait_ms = self._reserve_slot(
+                keys=[self._redis_key], args=[int(delay_seconds * 1000)]
+            )
+        except Exception as error:  # noqa: BLE001 - fall back rather than stall every request
+            self._redis_failed = True
+            logger.warning(
+                "Redis rate limiter unavailable (%s); falling back to the local limiter.", error
+            )
+            return None
+        return max(int(wait_ms), 0) / 1000.0
 
     def _acquire_across_processes(self, delay_seconds: float) -> None:
         # Sleeping while holding the flock makes waiting processes queue
@@ -80,6 +143,58 @@ class RateLimiter:
             handle.flush()
 
 
+class JsonResponseCache(Protocol):
+    """Where a provider's JSON responses are kept between runs."""
+
+    def get(self, key: str) -> Any | None: ...
+
+    def put(self, key: str, payload: Any) -> None: ...
+
+
+class FileJsonResponseCache:
+    def __init__(self, cache_dir: Path) -> None:
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def get(self, key: str) -> Any | None:
+        path = self.cache_dir / f"{key}.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def put(self, key: str, payload: Any) -> None:
+        _write_atomic(self.cache_dir / f"{key}.json", json.dumps(payload, indent=2))
+
+
+class ArtifactJsonResponseCache:
+    """The same cache on the artifact store (Blob in the cloud), so every
+    container shares one copy and a redeploy does not empty it."""
+
+    def __init__(self, store: Any, prefix: str = "s2") -> None:
+        self.store = store
+        self.prefix = prefix
+
+    def get(self, key: str) -> Any | None:
+        raw = self.store.get(f"{self.prefix}/{key}")
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+
+    def put(self, key: str, payload: Any) -> None:
+        self.store.put(f"{self.prefix}/{key}", json.dumps(payload, indent=2).encode("utf-8"))
+
+
+def default_response_cache(cache_dir: Path) -> JsonResponseCache:
+    from research_tree.artifact_store import blob_account_url, default_artifact_store
+
+    if blob_account_url():
+        return ArtifactJsonResponseCache(default_artifact_store())
+    return FileJsonResponseCache(cache_dir)
+
+
 class CachedJsonClient:
     def __init__(
         self,
@@ -90,6 +205,7 @@ class CachedJsonClient:
         max_retries: int = 2,
         timeout_seconds: float = 20.0,
         rate_limiter: RateLimiter | None = None,
+        response_cache: JsonResponseCache | None = None,
     ) -> None:
         self.cache_dir = cache_dir
         self.request_delay_seconds = request_delay_seconds
@@ -98,25 +214,29 @@ class CachedJsonClient:
         self.max_retries = max(max_retries, 0)
         self.timeout_seconds = max(timeout_seconds, 1.0)
         self.rate_limiter = rate_limiter or RateLimiter()
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache = response_cache or default_response_cache(cache_dir)
 
     def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
         full_url = _url_with_params(url, params or {})
-        cache_path = self._cache_path("GET", full_url)
-        if cache_path.exists() and not self.refresh_cache:
-            return json.loads(cache_path.read_text(encoding="utf-8"))
+        cache_key = self._cache_key("GET", full_url)
+        if not self.refresh_cache:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         payload = self._request_with_retries("GET", full_url, None)
-        _write_atomic(cache_path, json.dumps(payload, indent=2))
+        self.cache.put(cache_key, payload)
         return payload
 
     def post_json(self, url: str, body: dict[str, Any]) -> Any:
-        cache_path = self._cache_path("POST", url, body)
-        if cache_path.exists() and not self.refresh_cache:
-            return json.loads(cache_path.read_text(encoding="utf-8"))
+        cache_key = self._cache_key("POST", url, body)
+        if not self.refresh_cache:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         payload = self._request_with_retries("POST", url, body)
-        _write_atomic(cache_path, json.dumps(payload, indent=2))
+        self.cache.put(cache_key, payload)
         return payload
 
     def _request_with_retries(
@@ -184,19 +304,28 @@ class CachedJsonClient:
     def _wait_for_delay(self) -> None:
         self.rate_limiter.acquire(self.request_delay_seconds)
 
+    def _cache_key(
+        self,
+        method: str,
+        url: str,
+        body: dict[str, Any] | None = None,
+    ) -> str:
+        cache_key = json.dumps(
+            {"method": method, "url": url, "body": body},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+
     def _cache_path(
         self,
         method: str,
         url: str,
         body: dict[str, Any] | None = None,
     ) -> Path:
-        cache_key = json.dumps(
-            {"method": method, "url": url, "body": body},
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
-        return self.cache_dir / f"{digest}.json"
+        # The file the on-disk cache uses for this request; kept for callers
+        # that inspect the cache directly.
+        return self.cache_dir / f"{self._cache_key(method, url, body)}.json"
 
 
 def _write_atomic(path: Path, text: str) -> None:

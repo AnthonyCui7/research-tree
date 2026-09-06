@@ -1852,12 +1852,13 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
         return events
 
 
-def build_workspace_repository(*, artifacts: Any = None) -> WorkspaceRepository:
+def build_workspace_repository(*, artifacts: Any = None, redis: Any = None) -> WorkspaceRepository:
     """The repository the process should use, chosen by configuration.
 
     Postgres when `RESEARCH_TREE_DATABASE_URL` is set, otherwise the JSON files
     under the data directory. Imported lazily so a file-based deployment never
-    loads the database driver.
+    loads the database driver. With Redis configured the Postgres repository
+    also announces changes on it, which is what wakes the event streams.
     """
 
     from research_tree.db import database_url, get_engine
@@ -1865,10 +1866,13 @@ def build_workspace_repository(*, artifacts: Any = None) -> WorkspaceRepository:
 
     if database_url():
         from research_tree.artifact_store import default_artifact_store
+        from research_tree.redis_client import get_redis
         from research_tree.workspace.postgres_repository import PostgresWorkspaceRepository
 
         return PostgresWorkspaceRepository(
-            get_engine(), artifacts=artifacts or default_artifact_store()
+            get_engine(),
+            artifacts=artifacts or default_artifact_store(),
+            redis=redis if redis is not None else get_redis(),
         )
     return LocalJsonWorkspaceRepository(workspaces_dir())
 

@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import threading
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from research_tree.annotation.config import (
@@ -74,8 +75,13 @@ def annotate_chunks(
             items = _repair_annotations(text, chunk["text"], api_key=api_key)
         return build_annotations(items or [], chunk, page_sources)
 
+    # Each submission runs in a copy of this thread's context, so whatever is
+    # bound here (the account the work is for) is visible to the model calls.
     with ThreadPoolExecutor(max_workers=annotation_concurrency()) as pool:
-        futures = {pool.submit(annotate, position): position for position in range(len(chunks))}
+        futures = {
+            pool.submit(contextvars.copy_context().run, annotate, position): position
+            for position in range(len(chunks))
+        }
         for future in as_completed(futures):
             position = futures[future]
             try:

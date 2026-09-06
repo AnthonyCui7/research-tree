@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import copy
+import hashlib
 import logging
 import os
 import socket
@@ -11,6 +11,7 @@ from threading import Event, Thread
 from typing import Any, Callable
 from uuid import uuid4
 
+from research_tree.artifact_store import ArtifactStore, default_artifact_store
 from research_tree.artifacts import write_json_file
 from research_tree.retrieval.candidate_preparation import (
     PipelineConfig,
@@ -19,7 +20,12 @@ from research_tree.retrieval.candidate_preparation import (
 from research_tree.paths import data_root, pipeline_runs_dir, semantic_scholar_cache_dir
 from research_tree.retrieval.semantic_scholar import SemanticScholarClient, s2_api_key
 from research_tree.principal import LOCAL_PRINCIPAL, Principal, bind_principal, current_owner_id
-from research_tree.services.errors import InvalidPayloadError, WorkspaceNotFoundError
+from research_tree.rate_limits import check_rate_limit
+from research_tree.services.errors import (
+    InvalidPayloadError,
+    WorkspaceNotFoundError,
+    WorkspaceServiceError,
+)
 from research_tree.services.tenancy import require_owned, require_run_owned
 from research_tree.services.topics import TopicReviewService, topic_slug
 from research_tree.llm import DEFAULT_MODEL
@@ -52,6 +58,14 @@ logger = logging.getLogger("uvicorn.error")
 
 
 PIPELINE_STAGES = ("candidates", "construct", "hydrate", "related")
+# The candidate artifacts a rerun may reuse; both are uploaded to the artifact
+# store after the candidates stage so a rerun on another container (or after
+# a redeploy) can fetch them by hash.
+REUSABLE_ARTIFACTS = ("candidate_json", "paper_database_json")
+
+# Hands a reserved run to whatever executes it: `execute(run_id)` on a local
+# thread by default, the Celery queue when Redis is configured.
+Dispatch = Callable[[str, Callable[[str], None]], None]
 
 
 class WorkspacePipelineService:
@@ -60,11 +74,19 @@ class WorkspacePipelineService:
         repository: WorkspaceRepository,
         *,
         repo_root: Path,
-        dispatch: Callable[[Callable[[], None], str], None] | None = None,
+        dispatch: Dispatch | None = None,
+        artifacts: ArtifactStore | None = None,
     ) -> None:
         self.repository = repository
         self.repo_root = repo_root.resolve()
-        self.dispatch = dispatch or _dispatch_local_thread
+        self.dispatch = dispatch or default_pipeline_dispatch()
+        self._artifacts = artifacts
+
+    @property
+    def artifacts(self) -> ArtifactStore:
+        if self._artifacts is None:
+            self._artifacts = default_artifact_store()
+        return self._artifacts
 
     def start_approved_new_workspace(
         self,
@@ -81,6 +103,7 @@ class WorkspacePipelineService:
             raise InvalidPayloadError(
                 "Review the research focus again before building a workspace."
             )
+        check_rate_limit("workspaces")
         workspace_id = self._available_workspace_id(topic_slug(normalized_topic))
         return self._start(
             workspace_id=workspace_id,
@@ -208,14 +231,21 @@ class WorkspacePipelineService:
                 self.repository.reserve_pipeline_rerun(run)
         except ValueError as error:
             raise InvalidPayloadError(str(error)) from error
-        self.dispatch(
-            lambda: self._execute(run_id, copy.deepcopy(source_run)),
-            f"research-tree-{run_id}",
-        )
+        try:
+            self.dispatch(run_id, self._execute)
+        except Exception as error:  # noqa: BLE001 - the queue is down; do not leave a ghost run
+            logger.exception("workspace pipeline could not be queued run_id=%s", run_id)
+            self.repository.cancel_pipeline_runs(workspace_id)
+            raise WorkspaceServiceError("The build could not be queued. Try again.") from error
         return run
 
-    def _execute(self, run_id: str, source_run: dict[str, Any] | None) -> None:
+    def _execute(self, run_id: str, source_run: dict[str, Any] | None = None) -> None:
         run = self.repository.get_pipeline_run(run_id)
+        if source_run is None and run.get("source_run_id"):
+            try:
+                source_run = self.repository.get_pipeline_run(str(run["source_run_id"]))
+            except FileNotFoundError:
+                source_run = None
         # The thread (or worker) that runs this has no request context, so the
         # run's owner is bound here: everything downstream that records an
         # actor or resolves credentials sees the account that asked for it.
@@ -256,7 +286,14 @@ class WorkspacePipelineService:
             if "candidates" in run["requested_stages"]:
                 self._stage(run, "candidates", "running", inputs={"topic": run["topic"]})
                 candidate_output = run_workspace_candidate_preparation_pipeline(
-                    PipelineConfig(repo_root=self.repo_root, topic=run["topic"], verbose=False)
+                    PipelineConfig(
+                        repo_root=self.repo_root,
+                        topic=run["topic"],
+                        verbose=False,
+                        # Each run owns its output tree, so two builds on one
+                        # worker never race for the same numbered directory.
+                        output_base_dir=self._pipeline_artifact_dir(run_id) / "candidates",
+                    )
                 )
                 run_dir = self._safe_artifact_path(str(candidate_output["run_dir"]))
                 artifacts.update(
@@ -266,6 +303,7 @@ class WorkspacePipelineService:
                         "paper_database_json": str(run_dir / "s2_bulk_deduped_paper_database.json"),
                     }
                 )
+                self._store_reusable_artifacts(artifacts)
                 self._stage(run, "candidates", "completed", outputs=artifacts)
 
             run_dir = self._required_artifact(artifacts, "run_dir")
@@ -522,13 +560,44 @@ class WorkspacePipelineService:
 
         if run["requested_stages"][0] == "candidates":
             return {}
-        artifacts = {"run_dir": str(self._pipeline_artifact_dir(run["run_id"]))}
+        run_dir = self._pipeline_artifact_dir(run["run_id"])
+        artifacts = {"run_dir": str(run_dir)}
         source_artifacts = (source_run or {}).get("artifacts") or {}
-        for name in ("candidate_json", "paper_database_json"):
+        for name in REUSABLE_ARTIFACTS:
             value = source_artifacts.get(name)
-            if value:
+            digest = source_artifacts.get(f"{name}_sha256")
+            if value and Path(value).is_file():
+                artifacts[name] = value
+                if digest:
+                    artifacts[f"{name}_sha256"] = digest
+            elif digest:
+                # The source run happened on another container or before a
+                # redeploy: its files are gone, its uploads are not.
+                data = self.artifacts.get(f"pipeline/{digest}")
+                if data is not None:
+                    path = run_dir / Path(str(value or f"{name}.json")).name
+                    path.write_bytes(data)
+                    artifacts[name] = str(path)
+                    artifacts[f"{name}_sha256"] = digest
+                elif value:
+                    artifacts[name] = value
+            elif value:
                 artifacts[name] = value
         return artifacts
+
+    def _store_reusable_artifacts(self, artifacts: dict[str, Any]) -> None:
+        for name in REUSABLE_ARTIFACTS:
+            value = artifacts.get(name)
+            if not value or not Path(value).is_file():
+                continue
+            data = Path(value).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            try:
+                self.artifacts.put(f"pipeline/{digest}", data)
+            except Exception as error:  # noqa: BLE001 - a rerun elsewhere loses reuse, this run does not fail
+                logger.warning("could not store pipeline artifact %s: %s", name, error)
+                continue
+            artifacts[f"{name}_sha256"] = digest
 
     def _pipeline_artifact_dir(self, run_id: str) -> Path:
         directory = (pipeline_runs_dir() / run_id).resolve()
@@ -721,10 +790,24 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _dispatch_local_thread(callback: Callable[[], None], name: str) -> None:
-    """Local runner boundary; deployments can inject a durable queue dispatcher."""
+def _dispatch_local_thread(run_id: str, execute: Callable[[str], None]) -> None:
+    """Run the pipeline on a daemon thread of this process."""
 
-    Thread(target=callback, name=name, daemon=True).start()
+    Thread(target=execute, args=(run_id,), name=f"research-tree-{run_id}", daemon=True).start()
+
+
+def _dispatch_celery(run_id: str, execute: Callable[[str], None]) -> None:
+    from research_tree.tasks import run_pipeline
+
+    run_pipeline.delay(run_id)
+
+
+def default_pipeline_dispatch() -> Dispatch:
+    """The queue when Redis is configured, otherwise a thread in this process."""
+
+    from research_tree.redis_client import redis_url
+
+    return _dispatch_celery if redis_url() else _dispatch_local_thread
 
 
 def _run_in_daemon_thread(callback: Callable[[], Any], name: str) -> Future:

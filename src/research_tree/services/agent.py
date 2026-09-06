@@ -6,6 +6,7 @@ from typing import Any, Callable
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.llm import DEFAULT_MODEL
 from research_tree.agents.workspace.run import run_workspace_agent
+from research_tree.rate_limits import check_rate_limit
 from research_tree.services.errors import ReviewConflictError, WorkspaceNotFoundError
 from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id
@@ -30,20 +31,17 @@ class WorkspaceAgentService:
         self._graph = graph
         self.graph_factory = graph_factory or _default_graph_factory
 
-    def run_agent(
-        self,
-        workspace_id: str,
-        *,
-        message: str,
-        conversation_history: list[dict[str, str]] | None = None,
-        thread_id: str | None = None,
-        allow_pipeline_rerun: bool = False,
-        model: str = DEFAULT_MODEL,
-    ) -> dict[str, Any]:
+    def ensure_agent_available(self, workspace_id: str) -> str:
+        """Everything that can refuse a turn before any model call is made.
+
+        The streaming route runs this first so a refusal is an ordinary error
+        response rather than something buried in a stream that has started.
+        """
+
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
         require_owned(self.repository, safe_workspace_id)
         try:
-            workspace = self.repository.get_current_workspace(safe_workspace_id)
+            self.repository.get_current_workspace(safe_workspace_id)
         except FileNotFoundError as error:
             raise WorkspaceNotFoundError(
                 f"workspace does not exist: {safe_workspace_id}"
@@ -60,6 +58,20 @@ class WorkspaceAgentService:
             raise ReviewConflictError(
                 "Assistant is unavailable while the workspace pipeline is still running."
             )
+        return safe_workspace_id
+
+    def run_agent(
+        self,
+        workspace_id: str,
+        *,
+        message: str,
+        conversation_history: list[dict[str, str]] | None = None,
+        thread_id: str | None = None,
+        allow_pipeline_rerun: bool = False,
+        model: str = DEFAULT_MODEL,
+    ) -> dict[str, Any]:
+        safe_workspace_id = self.ensure_agent_available(workspace_id)
+        check_rate_limit("agent_turns")
 
         try:
             graph = self._graph or self.graph_factory(self.repository)

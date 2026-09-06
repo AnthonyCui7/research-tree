@@ -25,9 +25,10 @@ from research_tree.api.routes import account, agent, health, reviews, workspaces
 from research_tree.db import database_url, plain_postgres_dsn
 from research_tree.log_scrub import install_log_scrubbing
 from research_tree.principal import auth_mode
+from research_tree.redis_client import get_async_redis
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.services.agent import WorkspaceAgentService
-from research_tree.services.errors import WorkspaceServiceError
+from research_tree.services.errors import WorkspaceServiceError, public_service_error_message
 from research_tree.workspace.repository import build_workspace_repository
 
 
@@ -35,20 +36,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIR_ENV = "RESEARCH_TREE_WEB_DIR"
 
 logger = logging.getLogger("uvicorn.error")
-
-# Error codes whose message is written by this codebase for the user to read.
-# Everything else gets a generic message so internal detail cannot leak.
-PUBLIC_ERROR_CODES = {
-    "invalid_payload",
-    "invalid_resource_id",
-    "unauthenticated",
-    "not_allowed",
-    "rate_limited",
-    "no_llm_credentials",
-    "allowance_exhausted",
-    "api_key_invalid",
-}
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -75,6 +62,9 @@ async def lifespan(app: FastAPI):
     finally:
         if checkpoint_pool is not None:
             checkpoint_pool.close()
+        async_redis = get_async_redis()
+        if async_redis is not None:
+            await async_redis.aclose()
         if auth_mode() == "accounts":
             from research_tree.auth.db import dispose_async_engine
 
@@ -158,7 +148,7 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content={
-                "detail": _public_service_error_message(exc),
+                "detail": public_service_error_message(exc),
                 "error_code": exc.error_code,
             },
         )
@@ -230,14 +220,3 @@ def _is_browser_callback(request: Request) -> bool:
 
 app = create_app()
 
-
-def _public_service_error_message(exc: WorkspaceServiceError) -> str:
-    if exc.error_code in {"workspace_not_found", "review_not_found"}:
-        return "That workspace is no longer available. Refresh and try again."
-    if exc.error_code in {"review_conflict", "stale_workspace"}:
-        return "This workspace changed. Refresh and try again."
-    if exc.error_code in PUBLIC_ERROR_CODES:
-        # Bad-request messages name the offending field and its allowed values,
-        # which is exactly what the caller needs to fix the request.
-        return exc.message
-    return "We could not complete that request. Please try again."

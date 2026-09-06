@@ -11,11 +11,17 @@ not rows at all: they go to the artifact store under content-addressed keys.
 Liveness for pipeline runs is a heartbeat column rather than a PID probe: a
 run whose owner stopped touching it for three minutes is failed on read, which
 is how a crashed worker surfaces to the reader.
+
+With a Redis client, every committed change is announced on a channel
+(`research_tree:workspaces` for the collection, `research_tree:runs:{id}` for
+one run) after the transaction commits, so the API's event streams can wake
+up instead of polling. A failed announcement is logged and otherwise ignored.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator, Mapping
@@ -38,23 +44,53 @@ from research_tree.workspace.repository import (
     workspace_summary,
 )
 
+logger = logging.getLogger("uvicorn.error")
+
 ACTIVE_RUN_STATUSES = ("queued", "running")
+WORKSPACES_CHANNEL = "research_tree:workspaces"
+RUN_CHANNEL_PREFIX = "research_tree:runs:"
 RUNNING_RECLAIM_AFTER = "3 minutes"
 QUEUED_RECLAIM_AFTER = "30 minutes"
 RECLAIM_ERROR = "Pipeline worker stopped before this run completed."
 
 
 class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
-    def __init__(self, engine: Engine, *, artifacts: ArtifactStore | None = None) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        *,
+        artifacts: ArtifactStore | None = None,
+        redis: Any = None,
+    ) -> None:
         self._engine = engine
         self._artifacts = artifacts or FilesystemArtifactStore()
+        self._redis = redis
 
     @contextmanager
     def _transaction(self, workspace_id: str | None = None) -> Iterator[Connection]:
+        channels: set[str] = set()
         with self._engine.begin() as conn:
+            conn.info["notify"] = channels
             if workspace_id is not None:
                 _lock_workspace(conn, workspace_id)
             yield conn
+        self._publish(channels)
+
+    @staticmethod
+    def _notify(conn: Connection, *channels: str) -> None:
+        pending = conn.info.get("notify")
+        if pending is not None:
+            pending.update(channels)
+
+    def _publish(self, channels: set[str]) -> None:
+        if self._redis is None or not channels:
+            return
+        for channel in sorted(channels):
+            try:
+                self._redis.publish(channel, "1")
+            except Exception as error:  # noqa: BLE001 - streams fall back to polling
+                logger.warning("change notification failed on %s: %s", channel, error)
+                return
 
     # ---- workspaces -------------------------------------------------------
 
@@ -251,6 +287,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
         self._write_navigation(ctx, workspace_id, hashes, current_index)
 
     def _update_head(self, ctx: Connection, workspace_id: str, summary: Mapping[str, Any]) -> None:
+        self._notify(ctx, WORKSPACES_CHANNEL)
         ctx.execute(
             text(
                 """
@@ -369,6 +406,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
                 ),
                 {"id": workspace_id},
             )
+            self._notify(conn, WORKSPACES_CHANNEL)
         return {
             "workspace_id": workspace_id,
             "workspace_version_hash": current_hash,
@@ -503,7 +541,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
     # ---- pipeline runs ----------------------------------------------------
 
     def save_pipeline_run(self, pipeline_run: Mapping[str, Any]) -> None:
-        with self._engine.begin() as conn:
+        with self._transaction() as conn:
             self._upsert_pipeline_run(conn, pipeline_run)
 
     def _upsert_pipeline_run(self, conn: Connection, pipeline_run: Mapping[str, Any]) -> None:
@@ -548,6 +586,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
             )
         except IntegrityError as error:
             raise ValueError("a pipeline run for this workspace is already active.") from error
+        self._notify(conn, f"{RUN_CHANNEL_PREFIX}{run_id}", WORKSPACES_CHANNEL)
 
     def reserve_new_workspace_run(self, pipeline_run: Mapping[str, Any]) -> None:
         """Atomically reject duplicate topics across active workspaces and jobs."""
@@ -556,7 +595,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
         if not topic_key:
             raise ValueError("pipeline run topic cannot be empty.")
         owner_id = _uuid_or_none(pipeline_run.get("owner_id"))
-        with self._engine.begin() as conn:
+        with self._transaction() as conn:
             conn.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
                 {"key": f"topic:{owner_id or ''}:{topic_key}"},
@@ -609,7 +648,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
             self._upsert_pipeline_run(conn, pipeline_run)
 
     def get_pipeline_run(self, run_id: str) -> dict[str, Any]:
-        with self._engine.begin() as conn:
+        with self._transaction() as conn:
             self._reclaim_stale_runs(conn, run_id=run_id)
             row = conn.execute(
                 text("SELECT record FROM pipeline_runs WHERE run_id = :run_id"),
@@ -620,7 +659,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
         return dict(row[0])
 
     def list_pipeline_runs(self, workspace_id: str) -> list[dict[str, Any]]:
-        with self._engine.begin() as conn:
+        with self._transaction() as conn:
             self._reclaim_stale_runs(conn, workspace_id=workspace_id)
             rows = conn.execute(
                 text(
@@ -661,7 +700,10 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
                 ),
             },
         ).all()
-        return [str(row[0]) for row in rows]
+        cancelled = [str(row[0]) for row in rows]
+        if cancelled:
+            self._notify(conn, WORKSPACES_CHANNEL, *(f"{RUN_CHANNEL_PREFIX}{r}" for r in cancelled))
+        return cancelled
 
     def touch_pipeline_run(self, run_id: str) -> None:
         with self._engine.begin() as conn:
@@ -706,7 +748,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
         elif workspace_id is not None:
             scope = " AND workspace_id = :workspace_id"
             params["workspace_id"] = workspace_id
-        conn.execute(
+        rows = conn.execute(
             text(
                 f"""
                 UPDATE pipeline_runs
@@ -715,10 +757,13 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
                     (status = 'running' AND heartbeat_at < now() - INTERVAL '{RUNNING_RECLAIM_AFTER}')
                     OR (status = 'queued' AND heartbeat_at < now() - INTERVAL '{QUEUED_RECLAIM_AFTER}')
                 ){scope}
+                RETURNING run_id
                 """
             ),
             params,
-        )
+        ).all()
+        if rows:
+            self._notify(conn, WORKSPACES_CHANNEL, *(f"{RUN_CHANNEL_PREFIX}{row[0]}" for row in rows))
 
     # ---- per-paper artifacts ---------------------------------------------
 

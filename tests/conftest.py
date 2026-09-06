@@ -9,11 +9,13 @@ from fastapi.testclient import TestClient
 
 from research_tree.api.app import create_app
 from research_tree.api.dependencies import get_repository
+from research_tree.redis_client import forget_redis_clients
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository, WorkspaceRepository
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_DATABASE_URL_ENV = "RESEARCH_TREE_TEST_DATABASE_URL"
+TEST_REDIS_URL_ENV = "RESEARCH_TREE_TEST_REDIS_URL"
 
 # Every test that takes `repository` (directly or through `client`) runs once
 # per lane. Locally that is the JSON files; CI also points
@@ -43,7 +45,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
-def keyless_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def keyless_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """No test reaches a provider, a database, or a sign-in flow by accident.
 
     A loaded `.env` must not change what the suite does, so the keys and the
@@ -67,7 +69,11 @@ def keyless_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("RESEARCH_TREE_AUTH_MODE", "none")
+    monkeypatch.setenv("RESEARCH_TREE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr("research_tree.api.app.load_dotenv_file", lambda path: None)
+    forget_redis_clients()
+    yield
+    forget_redis_clients()
 
 
 @pytest.fixture
@@ -143,6 +149,32 @@ def reopen_repository(
         )
 
     return _reopen
+
+
+@pytest.fixture
+def redis_client():
+    """A flushed Redis for one test; skipped unless a scratch Redis is configured."""
+
+    url = os.environ.get(TEST_REDIS_URL_ENV)
+    if not url:
+        pytest.skip(f"{TEST_REDIS_URL_ENV} is not set")
+    import redis
+
+    client = redis.Redis.from_url(url)
+    client.flushdb()
+    yield client
+    client.flushdb()
+    client.close()
+
+
+@pytest.fixture
+def redis_env(redis_client, monkeypatch: pytest.MonkeyPatch):
+    """The same Redis, also reachable through `RESEARCH_TREE_REDIS_URL`."""
+
+    monkeypatch.setenv("RESEARCH_TREE_REDIS_URL", os.environ[TEST_REDIS_URL_ENV])
+    forget_redis_clients()
+    yield redis_client
+    forget_redis_clients()
 
 
 @pytest.fixture

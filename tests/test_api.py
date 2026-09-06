@@ -674,7 +674,7 @@ def test_failed_pipeline_does_not_publish_a_partial_workspace(repository) -> Non
     service = WorkspacePipelineService(
         repository,
         repo_root=_temp_dir(),
-        dispatch=lambda callback, _name: callback(),
+        dispatch=lambda run_id, execute: execute(run_id),
     )
 
     with patch(
@@ -695,7 +695,7 @@ def test_workspace_pipeline_always_uses_luna_for_construction(repository) -> Non
     service = WorkspacePipelineService(
         repository,
         repo_root=_temp_dir(),
-        dispatch=lambda callback, _name: callback(),
+        dispatch=lambda run_id, execute: execute(run_id),
     )
 
     with patch(
@@ -731,7 +731,7 @@ def test_failed_partial_rerun_keeps_source_artifacts_unchanged(repository) -> No
     service = WorkspacePipelineService(
         repository,
         repo_root=repo_root,
-        dispatch=lambda callback, _name: callback(),
+        dispatch=lambda run_id, execute: execute(run_id),
     )
 
     with (

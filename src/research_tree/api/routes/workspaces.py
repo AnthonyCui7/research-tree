@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from research_tree.api.dependencies import (
     get_paper_annotation_service,
@@ -13,6 +14,7 @@ from research_tree.api.dependencies import (
     get_workspace_query_service,
 )
 from research_tree.api.schemas import (
+    AnnotationJobResponse,
     CreateWorkspaceRequest,
     DeleteWorkspaceRequest,
     PaperAnnotationsResponse,
@@ -30,20 +32,27 @@ from research_tree.api.schemas import (
     WorkspaceVersionsResponse,
     WorkspacesResponse,
 )
+from research_tree.redis_client import get_async_redis
 from research_tree.services.annotations import PaperAnnotationService
 from research_tree.services.pipeline import WorkspacePipelineService
 from research_tree.services.topics import TopicReviewService
 from research_tree.services.workspaces import WorkspaceQueryService
 
 
+logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 ACTIVE_PIPELINE_RUN_STATUSES = {"queued", "running"}
 RUN_POLL_SECONDS = 0.5
 COLLECTION_POLL_SECONDS = 1.0
+# With Redis the repository announces every change, so the streams re-read on
+# a message and only fall back to a slow poll in case one is missed.
+NOTIFIED_POLL_SECONDS = 10.0
 # Proxies drop idle connections; a comment line keeps them open without
 # looking like an event to the client.
 HEARTBEAT_SECONDS = 15.0
+WORKSPACES_CHANNEL = "research_tree:workspaces"
+RUN_CHANNEL_PREFIX = "research_tree:runs:"
 
 
 @router.post("/topic-review", response_model=TopicReviewResponse)
@@ -99,26 +108,26 @@ async def stream_pipeline_run_updates(
         previous_signature: str | None = None
         run = first_run
         since_heartbeat = 0.0
-        while True:
-            if await request.is_disconnected():
-                return
-            signature = json.dumps(run, sort_keys=True, default=str)
-            if signature != previous_signature:
-                previous_signature = signature
-                since_heartbeat = 0.0
-                yield f"event: pipeline_run_updated\ndata: {signature}\n\n"
-            if run.get("status") not in ACTIVE_PIPELINE_RUN_STATUSES:
-                # Say the stream is over on purpose. EventSource treats a closed
-                # connection as a dropped one and reconnects forever otherwise.
-                yield "event: stream_complete\ndata: {}\n\n"
-                return
-            await asyncio.sleep(RUN_POLL_SECONDS)
-            since_heartbeat += RUN_POLL_SECONDS
-            if since_heartbeat >= HEARTBEAT_SECONDS:
-                since_heartbeat = 0.0
-                yield ": heartbeat\n\n"
-            # Repository reads hit the filesystem; keep them off the event loop.
-            run = await asyncio.to_thread(service.get_run, run_id)
+        async with _ChangeSignal(f"{RUN_CHANNEL_PREFIX}{run_id}", RUN_POLL_SECONDS) as changes:
+            while True:
+                if await request.is_disconnected():
+                    return
+                signature = json.dumps(run, sort_keys=True, default=str)
+                if signature != previous_signature:
+                    previous_signature = signature
+                    since_heartbeat = 0.0
+                    yield f"event: pipeline_run_updated\ndata: {signature}\n\n"
+                if run.get("status") not in ACTIVE_PIPELINE_RUN_STATUSES:
+                    # Say the stream is over on purpose. EventSource treats a closed
+                    # connection as a dropped one and reconnects forever otherwise.
+                    yield "event: stream_complete\ndata: {}\n\n"
+                    return
+                since_heartbeat += await changes.wait()
+                if since_heartbeat >= HEARTBEAT_SECONDS:
+                    since_heartbeat = 0.0
+                    yield ": heartbeat\n\n"
+                # Repository reads leave the event loop; the database has its own pool.
+                run = await asyncio.to_thread(service.get_run, run_id)
 
     return _sse_response(event_stream())
 
@@ -131,21 +140,71 @@ async def stream_workspace_updates(
     async def event_stream():
         previous_signature: str | None = None
         since_heartbeat = 0.0
-        while True:
-            if await request.is_disconnected():
-                return
-            workspaces = await asyncio.to_thread(_workspace_collection_signature, service)
-            if workspaces != previous_signature:
-                previous_signature = workspaces
-                since_heartbeat = 0.0
-                yield f"event: workspaces_updated\ndata: {workspaces}\n\n"
-            await asyncio.sleep(COLLECTION_POLL_SECONDS)
-            since_heartbeat += COLLECTION_POLL_SECONDS
-            if since_heartbeat >= HEARTBEAT_SECONDS:
-                since_heartbeat = 0.0
-                yield ": heartbeat\n\n"
+        async with _ChangeSignal(WORKSPACES_CHANNEL, COLLECTION_POLL_SECONDS) as changes:
+            while True:
+                if await request.is_disconnected():
+                    return
+                workspaces = await asyncio.to_thread(_workspace_collection_signature, service)
+                if workspaces != previous_signature:
+                    previous_signature = workspaces
+                    since_heartbeat = 0.0
+                    yield f"event: workspaces_updated\ndata: {workspaces}\n\n"
+                since_heartbeat += await changes.wait()
+                if since_heartbeat >= HEARTBEAT_SECONDS:
+                    since_heartbeat = 0.0
+                    yield ": heartbeat\n\n"
 
     return _sse_response(event_stream())
+
+
+class _ChangeSignal:
+    """Waits for the next change on a channel, or for the poll interval.
+
+    Subscribed through Redis when it is configured (the repository publishes
+    after every commit); otherwise, or if Redis fails mid-stream, a plain
+    sleep at the fast poll interval. `wait` returns the seconds it waited so
+    the caller can keep its heartbeat cadence.
+    """
+
+    def __init__(self, channel: str, poll_seconds: float) -> None:
+        self._channel = channel
+        self._poll_seconds = poll_seconds
+        self._pubsub = None
+
+    async def __aenter__(self) -> "_ChangeSignal":
+        client = get_async_redis()
+        if client is not None:
+            try:
+                pubsub = client.pubsub()
+                await pubsub.subscribe(self._channel)
+                self._pubsub = pubsub
+            except Exception as error:  # noqa: BLE001 - polling is the fallback
+                logger.warning("event stream falls back to polling: %s", error)
+                self._pubsub = None
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        if self._pubsub is not None:
+            try:
+                await self._pubsub.unsubscribe(self._channel)
+                await self._pubsub.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def wait(self) -> float:
+        if self._pubsub is None:
+            await asyncio.sleep(self._poll_seconds)
+            return self._poll_seconds
+        started = asyncio.get_running_loop().time()
+        try:
+            await self._pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=NOTIFIED_POLL_SECONDS
+            )
+        except Exception as error:  # noqa: BLE001 - keep serving, just poll from here on
+            logger.warning("event stream lost its Redis subscription: %s", error)
+            self._pubsub = None
+            await asyncio.sleep(self._poll_seconds)
+        return asyncio.get_running_loop().time() - started
 
 
 def _workspace_collection_signature(service: WorkspaceQueryService) -> str:
@@ -232,9 +291,10 @@ def get_paper_pdf(
     )
 
 
-# Annotating a paper for the first time is minutes of model calls, so this is
-# written as a plain request the reader waits on rather than a run to poll.
-# Handled off the event loop by FastAPI, since the work is blocking.
+# Annotating a paper for the first time is minutes of model calls. Without a
+# queue this is a plain request the reader waits on (handled off the event
+# loop by FastAPI, since the work is blocking); with one, a miss answers 202
+# with the job the worker is running, and the reader polls it below.
 @router.get("/{workspace_id}/paper-annotations", response_model=PaperAnnotationsResponse)
 def get_paper_annotations(
     workspace_id: str,
@@ -242,8 +302,22 @@ def get_paper_annotations(
     mode: str | None = None,
     refresh: bool = False,
     service: PaperAnnotationService = Depends(get_paper_annotation_service),
+):
+    result = service.get_paper_annotations(workspace_id, paper_id, mode=mode, refresh=refresh)
+    if "job_id" in result:
+        return JSONResponse(status_code=202, content=result)
+    return result
+
+
+@router.get(
+    "/{workspace_id}/paper-annotations/jobs/{job_id}", response_model=AnnotationJobResponse
+)
+def get_paper_annotation_job(
+    workspace_id: str,
+    job_id: str,
+    service: PaperAnnotationService = Depends(get_paper_annotation_service),
 ) -> dict[str, object]:
-    return service.get_paper_annotations(workspace_id, paper_id, mode=mode, refresh=refresh)
+    return service.annotation_job(workspace_id, job_id)
 
 
 @router.get("/{workspace_id}/versions", response_model=WorkspaceVersionsResponse)

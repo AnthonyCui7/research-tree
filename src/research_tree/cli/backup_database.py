@@ -52,9 +52,19 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_pg_dump(dsn: str) -> bytes:
     # --no-owner/--no-privileges: the restore target's roles differ from the
-    # source's, and neither matters for the data.
+    # source's, and neither matters for the data. --schema=public: everything
+    # of ours lives there, and it is all the app role can read, so the worker
+    # takes the backup with its own credentials.
     completed = subprocess.run(
-        ["pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--dbname", dsn],
+        [
+            "pg_dump",
+            "--format=custom",
+            "--no-owner",
+            "--no-privileges",
+            "--schema=public",
+            "--dbname",
+            dsn,
+        ],
         check=False,
         capture_output=True,
     )

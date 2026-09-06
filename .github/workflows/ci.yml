@@ -25,6 +25,12 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U research_tree"
           --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -33,10 +39,12 @@ jobs:
       - run: uv sync --frozen --extra dev
       # No API keys: the deterministic LLM fallback must keep the suite green
       # without network access. The Postgres lane runs every repository test a
-      # second time against the schema the real migration builds.
+      # second time against the schema the real migration builds; the Redis
+      # lane covers the queue-side behaviour (jobs, limits, tokens).
       - run: uv run python -m pytest tests/ -q
         env:
           RESEARCH_TREE_TEST_DATABASE_URL: postgresql+psycopg://research_tree:research_tree@localhost:5432/research_tree_test
+          RESEARCH_TREE_TEST_REDIS_URL: redis://localhost:6379/0
 
   frontend:
     runs-on: ubuntu-latest
@@ -115,4 +123,10 @@ jobs:
       - name: Roll out the API
         run: |
           az containerapp update -n api -g ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.IMAGE }}:${{ github.sha }} --output none
+      # The worker last: it consumes what the API just started enqueueing,
+      # and task names are stable across versions.
+      - name: Roll out the worker
+        run: |
+          az containerapp update -n worker -g ${{ vars.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.IMAGE }}:${{ github.sha }} --output none

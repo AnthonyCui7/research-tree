@@ -78,3 +78,31 @@ class AllowanceExhaustedError(WorkspaceServiceError):
 class ApiKeyInvalidError(WorkspaceServiceError):
     status_code = 400
     error_code = "api_key_invalid"
+
+
+# Error codes whose message is written by this codebase for the user to read.
+# Everything else gets a generic message so internal detail cannot leak.
+PUBLIC_ERROR_CODES = {
+    "invalid_payload",
+    "invalid_resource_id",
+    "unauthenticated",
+    "not_allowed",
+    "rate_limited",
+    "no_llm_credentials",
+    "allowance_exhausted",
+    "api_key_invalid",
+}
+
+
+def public_service_error_message(exc: WorkspaceServiceError) -> str:
+    if exc.error_code in {"workspace_not_found", "review_not_found"}:
+        return "That workspace is no longer available. Refresh and try again."
+    if exc.error_code in {"review_conflict", "stale_workspace"}:
+        return "This workspace changed. Refresh and try again."
+    if exc.error_code == "paper_unavailable":
+        return "We could not fetch or annotate that paper right now. Try again later."
+    if exc.error_code in PUBLIC_ERROR_CODES:
+        # Bad-request messages name the offending field and its allowed values,
+        # which is exactly what the caller needs to fix the request.
+        return exc.message
+    return "We could not complete that request. Please try again."

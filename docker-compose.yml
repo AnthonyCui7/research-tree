@@ -6,6 +6,15 @@
 # RESEARCH_TREE_AUTH_MODE=none here means the single implicit local user: only
 # run it that way on loopback or behind a proxy that does its own sign-in.
 # Set it to `accounts` (and SESSION_SECRET in .env) to exercise sign-in locally.
+#
+# The worker runs builds and annotation jobs off the queue, exactly as in the
+# cloud; the api and the worker share the data volume so artifacts written by
+# one are readable by the other (Blob Storage plays that part in the cloud).
+
+x-app-environment: &app-environment
+  RESEARCH_TREE_DATABASE_URL: postgresql+psycopg://research_tree:research_tree@postgres:5432/research_tree
+  RESEARCH_TREE_REDIS_URL: redis://redis:6379/0
+  RESEARCH_TREE_DATA_DIR: /data
 
 services:
   api:
@@ -14,15 +23,41 @@ services:
       - "127.0.0.1:8000:8000"
     env_file: .env
     environment:
+      <<: *app-environment
       RESEARCH_TREE_AUTH_MODE: ${RESEARCH_TREE_AUTH_MODE:-none}
-      RESEARCH_TREE_DATABASE_URL: postgresql+psycopg://research_tree:research_tree@postgres:5432/research_tree
       RESEARCH_TREE_PUBLIC_ORIGIN: http://localhost:5173
-      RESEARCH_TREE_DATA_DIR: /data
     volumes:
       - data:/data
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["celery", "-A", "research_tree.tasks", "worker", "-B", "--loglevel=info", "--concurrency=2", "-s", "/home/app/celerybeat-schedule"]
+    env_file: .env
+    environment:
+      <<: *app-environment
+      RESEARCH_TREE_AUTH_MODE: ${RESEARCH_TREE_AUTH_MODE:-none}
+    volumes:
+      - data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:63790:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   migrate:
     build: .
