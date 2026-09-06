@@ -78,6 +78,8 @@ def _configure_logging(**kwargs) -> None:
         stream=sys.stdout,
         force=True,
     )
+    # The Azure SDK narrates every Blob request at INFO; a build makes hundreds.
+    logging.getLogger("azure").setLevel(logging.WARNING)
     install_log_scrubbing()
 
 
