@@ -28,8 +28,8 @@ export class ApiError extends Error {
     const timedOut = error instanceof DOMException && error.name === "TimeoutError";
     return new ApiError(
       timedOut
-        ? "That request took too long. Check the backend and try again."
-        : "We could not reach the server. Check that the backend is running.",
+        ? "That request took too long. Try again."
+        : "We could not reach the server.",
       0,
     );
   }

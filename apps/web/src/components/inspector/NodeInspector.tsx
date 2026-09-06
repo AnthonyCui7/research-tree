@@ -166,7 +166,6 @@ function SourceLinks({
                 setMenuOpen(false);
                 setReaderOpen(true);
               }}
-              title="Read the paper with generated highlights and margin notes"
             >
               Open PDF <span className="text-text-muted">· inline annotations</span>
             </PdfMenuItem>

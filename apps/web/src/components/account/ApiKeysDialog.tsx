@@ -38,7 +38,6 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
   return (
     <AccountDialog
       title="API keys"
-      subtitle="The key Research Tree calls OpenAI with."
       onClose={onClose}
       footer={
         <button className={cx(primaryActionClass, "ml-auto")} type="button" disabled>
@@ -75,10 +74,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
         ) : null}
       </AccountSection>
 
-      <AccountSection
-        title="Replace the key"
-        detail="Keys are stored encrypted per account, never in the browser."
-      >
+      <AccountSection title="Replace the key">
         <input
           className={textInputClass}
           type="password"
@@ -90,8 +86,8 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
           aria-label="New OpenAI API key"
         />
         <AccountNotice>
-          Saving is off in this build: there is no account to hold the key and no encrypted store to
-          put it in, so nothing you type here is sent anywhere. Change the key in the server's{" "}
+          Saving is off in this build. Nothing you type here is sent anywhere. Change the key in the
+          server's{" "}
           <code className="font-mono text-[11.5px]">.env</code> for now.
         </AccountNotice>
       </AccountSection>

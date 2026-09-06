@@ -24,7 +24,7 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   return (
     <AccountDialog title="Settings" subtitle="Preferences for this browser." onClose={onClose}>
-      <AccountSection title="Sidebar" detail="The workspace list down the left-hand side.">
+      <AccountSection title="Sidebar">
         <Toggle
           checked={!sidebarCollapsed}
           label="Show the workspace sidebar"
@@ -35,9 +35,7 @@ export function SettingsDialog({
       <AccountSection
         title="Workspaces"
         detail={
-          live
-            ? "Changes on the server appear on their own."
-            : "The update stream dropped, so the list is not refreshing itself."
+          live ? undefined : "The update stream dropped, so the list is not refreshing itself."
         }
       >
         <div className="flex items-center gap-2.5">

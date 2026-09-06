@@ -93,11 +93,6 @@ export function WorkspaceList({
           </div>
         );
       })}
-      {workspaces.length === 0 && !placeholderRun ? (
-        <p className="mt-8 px-2.5 text-[11.5px] leading-[1.6] text-text-muted">
-          Workspaces you build will live here.
-        </p>
-      ) : null}
     </nav>
   );
 }

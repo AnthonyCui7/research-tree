@@ -86,8 +86,7 @@ export function DeleteWorkspaceDialog({
             Delete “{workspace.title}”?
           </h2>
           <p className="mt-2 mb-0 text-[13px] leading-[1.62] text-text-secondary">
-            This removes the workspace and its version history from Research Tree. The papers it
-            points at are unaffected.
+            This removes the workspace and its version history from Research Tree.
           </p>
           {error ? (
             <p

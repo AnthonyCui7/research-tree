@@ -11,9 +11,6 @@ export function HelpDialog({ onClose }: { onClose: () => void }) {
         <p className="m-0 text-[13px] leading-[1.6] text-text-secondary">
           Documentation is not written yet.
         </p>
-        <p className="mt-1.5 mb-0 text-[12.5px] leading-[1.6] text-text-muted">
-          It will live here once there is something to read.
-        </p>
       </div>
     </AccountDialog>
   );

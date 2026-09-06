@@ -25,14 +25,8 @@ router = APIRouter(prefix="/account", tags=["account"])
 # has no accounts and no database. The read side is real — it reports the key the
 # process is actually using — while the write sides accept and refuse to store.
 # See PROJECT.md "Next Steps" for what turning them on requires.
-STORAGE_UNAVAILABLE = (
-    "Saved keys arrive with accounts and a database. This build reads its key from "
-    "the server environment."
-)
-BUG_REPORT_UNAVAILABLE = (
-    "Bug reports are written to the server log for now. Persistent reports arrive "
-    "with accounts and a database."
-)
+STORAGE_UNAVAILABLE = "This build reads its key from the server environment."
+BUG_REPORT_UNAVAILABLE = "Bug reports are written to the server log for now."
 
 
 @router.get("/me", response_model=SessionResponse)

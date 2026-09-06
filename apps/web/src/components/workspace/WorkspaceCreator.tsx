@@ -338,9 +338,6 @@ export function WorkspaceCreator({
                 Instructions
                 <span className="text-[12.5px] font-normal text-text-muted">optional</span>
               </label>
-              <p className="mt-[3px] mb-0 text-[12.5px] leading-[1.55] text-text-secondary">
-                Steer construction: what to emphasize, exclude, or anchor on.
-              </p>
               <textarea
                 className={cx(textInputClass, "mt-2 min-h-[92px] resize-y")}
                 id="creator-instructions"
@@ -533,19 +530,16 @@ function ReviewBody({ review, instructions }: { review: TopicReview; instruction
           {review.guidance}
         </p>
       ) : null}
-      <div className="mt-5 border-t border-hairline-soft pt-4">
-        <ReviewFact label="Scope">
-          Core methods and their history, as branches and reading paths.
-        </ReviewFact>
-        {/* Only shown when a link was pasted: otherwise it is a row that always
-            says nothing was found. */}
-        {review.source_paper ? (
-          <ReviewFact label="Linked paper">
-            {review.source_paper.title} will anchor the map.
-          </ReviewFact>
-        ) : null}
-        {steer ? <ReviewFact label="Your instructions">{steer}</ReviewFact> : null}
-      </div>
+      {review.source_paper || steer ? (
+        <div className="mt-5 border-t border-hairline-soft pt-4">
+          {review.source_paper ? (
+            <ReviewFact label="Linked paper">
+              {review.source_paper.title} will anchor the map.
+            </ReviewFact>
+          ) : null}
+          {steer ? <ReviewFact label="Your instructions">{steer}</ReviewFact> : null}
+        </div>
+      ) : null}
       {review.existing_workspace ? (
         <div className="mt-4 rounded-lg border border-warning-border bg-warning-surface px-3.5 py-3 text-xs leading-[1.55] text-warning">
           You already have a “{review.existing_workspace.title}” workspace for this topic.
@@ -625,12 +619,12 @@ function BuildBody({ run }: { run: PipelineRun }) {
       ) : null}
       {failed ? (
         <p className="mt-4 mb-0 rounded-lg border border-error-border bg-error-surface px-3.5 py-3 text-xs leading-[1.5] text-error">
-          {run.error || "The workspace could not be built. Your existing workspaces are unchanged."}
+          {run.error || "The workspace could not be built."}
         </p>
       ) : null}
       {cancelled ? (
         <p className="mt-4 mb-0 rounded-lg border border-border bg-surface-subtle px-3.5 py-3 text-xs leading-[1.5] text-text-secondary">
-          Build cancelled. Your existing workspaces are unchanged.
+          Build cancelled.
         </p>
       ) : null}
     </>

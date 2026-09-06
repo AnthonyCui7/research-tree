@@ -72,7 +72,6 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
   return (
     <AccountDialog
       title="Report a bug"
-      subtitle="What went wrong, and what you were doing."
       onClose={onClose}
       footer={
         <button
@@ -133,10 +132,7 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
           />
         </AccountSection>
 
-        <AccountNotice>
-          Reports are written to the server log for now. Tracked, persistent reports arrive with
-          accounts and a database.
-        </AccountNotice>
+        <AccountNotice>Reports are written to the server log for now.</AccountNotice>
 
         {error ? (
           <p

@@ -76,11 +76,11 @@ export function AuthScreens({ notice, initialMode = "sign-in" }: AuthScreensProp
   return (
     <div className="grid min-h-screen grid-cols-[minmax(0,5fr)_minmax(0,6fr)] bg-background max-[900px]:grid-cols-1">
       <section
-        className="flex flex-col justify-between border-r border-border bg-surface-subtle px-14 py-12 max-[900px]:hidden"
+        className="flex flex-col border-r border-border bg-surface-subtle px-14 py-12 max-[900px]:hidden"
         aria-label="About Research Tree"
       >
         <div className="text-sm font-bold tracking-[-0.01em] text-text-primary">Research Tree</div>
-        <div className="max-w-[46ch]">
+        <div className="my-auto max-w-[46ch]">
           <h1 className="m-0 text-[28px] leading-[1.2] font-bold tracking-[-0.02em] text-text-primary">
             A map of a research field, built from its literature.
           </h1>
@@ -89,21 +89,7 @@ export function AuthScreens({ notice, initialMode = "sign-in" }: AuthScreensProp
             field&rsquo;s lines of work, and orders each line by what you need to have read
             first.
           </p>
-          <dl className="mt-8 mb-0 divide-y divide-hairline border-y border-hairline">
-            <Point term="Branches, not a reading list">
-              The field&rsquo;s lines of work, each with the papers that define it.
-            </Point>
-            <Point term="Paths in prerequisite order">
-              Reading paths ordered by what builds on what, not by publication date.
-            </Point>
-            <Point term="Edits you review">
-              An assistant proposes changes to the map; nothing lands until you approve it.
-            </Point>
-          </dl>
         </div>
-        <p className="m-0 text-[11.5px] text-text-muted">
-          Open source · Papers from Semantic Scholar · Reading with your own model key
-        </p>
       </section>
 
       <section className="grid place-items-center px-6 py-10">
@@ -122,11 +108,6 @@ export function AuthScreens({ notice, initialMode = "sign-in" }: AuthScreensProp
           >
             {title}
           </h2>
-          <p className="mt-1.5 mb-0 text-[12.5px] leading-[1.5] text-text-secondary">
-            {mode === "sign-in"
-              ? "Your workspaces are waiting where you left them."
-              : "Your workspaces belong to your account and follow you between devices."}
-          </p>
 
           {notice ? (
             <p
@@ -185,7 +166,7 @@ export function AuthScreens({ notice, initialMode = "sign-in" }: AuthScreensProp
             </Field>
             {mode === "create-account" ? (
               <p className="mt-1.5 mb-0 text-[11px] text-text-muted">
-                At least {MIN_PASSWORD_LENGTH} characters. A passphrase works well.
+                At least {MIN_PASSWORD_LENGTH} characters.
               </p>
             ) : null}
           </div>
@@ -247,15 +228,6 @@ function authMessage(error: unknown, mode: AuthMode): string {
     return "That email and password do not match.";
   }
   return message;
-}
-
-function Point({ term, children }: { term: string; children: ReactNode }) {
-  return (
-    <div className="grid grid-cols-[180px_minmax(0,1fr)] gap-4 py-3 max-[1100px]:grid-cols-1 max-[1100px]:gap-1">
-      <dt className="text-[12.5px] font-semibold text-text-primary">{term}</dt>
-      <dd className="m-0 text-[12.5px] leading-[1.55] text-text-secondary">{children}</dd>
-    </div>
-  );
 }
 
 function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {

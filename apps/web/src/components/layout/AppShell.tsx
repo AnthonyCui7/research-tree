@@ -236,7 +236,7 @@ export function AppShell({
             aria-live={status === "loading" ? "polite" : "off"}
           >
             {status === "loading" || (status === "ready" && !tree && workspaceLoading) ? (
-              <WorkspaceNotice title="Loading workspace" detail="Reading the saved structure…" />
+              <WorkspaceNotice title="Loading workspace" />
             ) : null}
             {status === "error" ? (
               <WorkspaceNotice

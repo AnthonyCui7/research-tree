@@ -52,7 +52,6 @@ export function WorkspaceEmptyState({ onCreate, disabled = false }: WorkspaceEmp
             <ArrowRightIcon className="h-3 w-3" />
           </button>
         </form>
-        <p className="mt-4 mb-0 text-[11px] text-text-muted">You confirm the topic before anything runs.</p>
       </div>
     </div>
   );
@@ -79,7 +78,7 @@ function TreeSketch() {
 
 type WorkspaceNoticeProps = {
   title: string;
-  detail: string;
+  detail?: string;
   tone?: "neutral" | "error";
   actionLabel?: string;
   onAction?: () => void;
@@ -110,7 +109,9 @@ export function WorkspaceNotice({
         >
           {title}
         </h2>
-        <p className="mt-1.5 mb-0 text-[13px] leading-[1.6] text-text-secondary">{detail}</p>
+        {detail ? (
+          <p className="mt-1.5 mb-0 text-[13px] leading-[1.6] text-text-secondary">{detail}</p>
+        ) : null}
         {actionLabel && onAction ? (
           <button className={cx(secondaryActionClass, "mt-3.5")} type="button" onClick={onAction}>
             {actionLabel}

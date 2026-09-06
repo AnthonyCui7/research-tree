@@ -153,18 +153,18 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
         {outcome === "applied" ? (
           <div className="flex items-center gap-2 rounded-lg border border-accent-border bg-accent-subtle px-[13px] py-2.5 text-xs text-accent-deep">
             <CheckIcon className="h-3 w-3 flex-none" />
-            Revision applied. It is the current version — see History.
+            Revision applied.
           </div>
         ) : null}
         {outcome === "rerun_started" ? (
           <div className="flex items-center gap-2 rounded-lg border border-accent-border bg-accent-subtle px-[13px] py-2.5 text-xs text-accent-deep">
             <CheckIcon className="h-3 w-3 flex-none" />
-            Approved — a pipeline re-run has started. Watch its progress in the sidebar.
+            Approved. A pipeline re-run has started.
           </div>
         ) : null}
         {outcome === "rejected" ? (
           <div className="rounded-lg border border-border bg-surface-subtle px-[13px] py-2.5 text-xs text-text-secondary">
-            Revision rejected. The workspace is unchanged.
+            Revision rejected.
           </div>
         ) : null}
 
@@ -372,7 +372,7 @@ function AgentRunNotices({ result }: { result: AgentRunResult }) {
         <div className="grid gap-1 rounded-lg border border-error-border bg-error-surface px-[13px] py-2.5 text-xs leading-[1.5] text-error" role="alert">
           <span>
             {result.final_response?.trim() ||
-              "The assistant could not complete that request. Your workspace is unchanged."}
+              "The assistant could not complete that request."}
           </span>
           {errors.map((detail, index) => (
             <span className="text-[11px] leading-[1.45] opacity-80 [overflow-wrap:anywhere]" key={`${index}:${detail}`}>

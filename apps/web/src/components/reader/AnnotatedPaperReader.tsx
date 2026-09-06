@@ -432,20 +432,6 @@ function ViewerHelp() {
         It extracts the PDF text, then writes highlights, notes, and jargon definitions anchored to
         the page layout.
       </p>
-      <div className="mt-2 text-[11.5px] leading-[1.7] text-text-secondary">
-        <div>
-          <b className="font-semibold text-text-primary">Mode</b> · Fast, or Dense for more
-          annotations
-        </div>
-        <div>
-          <b className="font-semibold text-text-primary">Reprocess</b> · regenerate the annotations
-          from scratch
-        </div>
-        <div>
-          <b className="font-semibold text-text-primary">Assistant</b> · chat with the workspace
-          agent, which can read this paper
-        </div>
-      </div>
       <ul className="mt-2.5 mb-0 flex list-none gap-3 border-t border-hairline p-0 pt-2.5">
         {LEGEND.map(({ type, label }) => (
           <li className="flex items-center gap-1.5 text-[11px] text-text-secondary" key={type}>
