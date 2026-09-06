@@ -292,7 +292,12 @@ class TestAccountRoutes:
 
         assert response.status_code == 200
         openai = response.json()["openai"]
-        assert openai == {"configured": True, "masked": "sk-…9f2a", "source": "environment"}
+        assert openai == {
+            "configured": True,
+            "masked": "sk-…9f2a",
+            "source": "environment",
+            "created_at": None,
+        }
 
     def test_api_key_status_without_a_key(self, client) -> None:
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
@@ -302,6 +307,7 @@ class TestAccountRoutes:
             "configured": False,
             "masked": None,
             "source": None,
+            "created_at": None,
         }
 
     def test_saving_a_key_reports_that_it_was_not_stored(self, client) -> None:

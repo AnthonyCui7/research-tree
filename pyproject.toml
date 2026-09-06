@@ -29,6 +29,10 @@ dependencies = [
   "httpx>=0.28.0",
   "redis>=5.0",
   "celery[redis]>=5.4",
+  # Sealing bring-your-own keys: AES-GCM and AES key wrap.
+  "cryptography>=43",
+  # Wrapping their data keys inside Key Vault.
+  "azure-keyvault-keys>=4.9",
 ]
 
 [project.scripts]
@@ -43,6 +47,7 @@ research-tree-users = "research_tree.cli.manage_users:main"
 research-tree-import-data = "research_tree.cli.import_data_to_postgres:main"
 research-tree-backup = "research_tree.cli.backup_database:main"
 research-tree-migrate = "research_tree.cli.migrate:main"
+research-tree-grant = "research_tree.cli.grant_allowance:main"
 
 [project.optional-dependencies]
 dev = [

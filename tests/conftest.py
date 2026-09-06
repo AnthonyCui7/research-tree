@@ -9,6 +9,9 @@ from fastapi.testclient import TestClient
 
 from research_tree.api.app import create_app
 from research_tree.api.dependencies import get_repository
+from research_tree.billing.keywrap import forget_key_wrapper
+from research_tree.credentials import forget_user_key
+from research_tree.db import get_engine
 from research_tree.redis_client import forget_redis_clients
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository, WorkspaceRepository
 
@@ -31,6 +34,9 @@ APP_TABLES = (
     "workspace_navigation",
     "workspace_versions",
     "workspaces",
+    "usage_events",
+    "user_api_keys",
+    "allowances",
     "accesstoken",
     "oauth_account",
     '"user"',
@@ -66,14 +72,31 @@ def keyless_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
         "RESEARCH_TREE_ADMIN_EMAILS",
         "GOOGLE_OAUTH_CLIENT_ID",
         "GOOGLE_OAUTH_CLIENT_SECRET",
+        "RESEARCH_TREE_KEY_ENCRYPTION_KEY",
+        "RESEARCH_TREE_KEY_VAULT_URL",
+        "RESEARCH_TREE_MODEL_PRICES",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("RESEARCH_TREE_AUTH_MODE", "none")
     monkeypatch.setenv("RESEARCH_TREE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr("research_tree.api.app.load_dotenv_file", lambda path: None)
-    forget_redis_clients()
+    _forget_process_caches()
     yield
+    _forget_process_caches()
+
+
+def _forget_process_caches() -> None:
+    """Per-process caches keyed on the environment, which every test rewrites."""
+
     forget_redis_clients()
+    forget_key_wrapper()
+    forget_user_key()
+    if get_engine.cache_info().currsize:
+        try:
+            get_engine().dispose()
+        except Exception:  # noqa: BLE001 - an engine built for a URL that is gone
+            pass
+        get_engine.cache_clear()
 
 
 @pytest.fixture

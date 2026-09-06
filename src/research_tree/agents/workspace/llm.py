@@ -9,6 +9,8 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from research_tree.credentials import openai_api_key
+from research_tree.principal import auth_mode
 from research_tree.agents.workspace.models import WorkspaceCritique
 from research_tree.llm import DEFAULT_MODEL, call_responses_api
 from research_tree.workspace.serialization import extract_response_output_text
@@ -210,11 +212,21 @@ class OpenAIResponsesAgentClient:
         default_model: str = DEFAULT_MODEL,
         timeout_seconds: float = 180.0,
     ) -> None:
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY is required for OpenAI agent calls.")
+        # Resolved per call, not here: this client outlives the request that
+        # built the graph, and each turn spends the account's own key.
+        self._api_key = api_key
         self.default_model = default_model
         self.timeout_seconds = max(timeout_seconds, 1.0)
+
+    @property
+    def api_key(self) -> str | None:
+        return self._api_key
+
+    def _resolved_api_key(self) -> str:
+        key = self._api_key or openai_api_key()
+        if not key:
+            raise RuntimeError("OPENAI_API_KEY is required for OpenAI agent calls.")
+        return key
 
     def complete_structured(
         self,
@@ -290,7 +302,7 @@ class OpenAIResponsesAgentClient:
         }
         raw_response = call_responses_api(
             body,
-            api_key=str(self.api_key),
+            api_key=self._resolved_api_key(),
             timeout_seconds=min(self.timeout_seconds, profile.timeout_seconds),
             label="agent tool_loop",
         )
@@ -317,14 +329,16 @@ class OpenAIResponsesAgentClient:
         }
         return call_responses_api(
             body,
-            api_key=str(self.api_key),
+            api_key=self._resolved_api_key(),
             timeout_seconds=min(self.timeout_seconds, profile.timeout_seconds),
             label=f"agent {call_name}",
         )
 
 
 def default_workspace_agent_llm_client() -> WorkspaceAgentLlmClient:
-    if os.environ.get("OPENAI_API_KEY"):
+    # Behind sign-in an account may hold its own key even when the server has
+    # none, so the live client is the only right choice there.
+    if os.environ.get("OPENAI_API_KEY") or auth_mode() == "accounts":
         return OpenAIResponsesAgentClient()
     return DeterministicWorkspaceAgentLlmClient()
 

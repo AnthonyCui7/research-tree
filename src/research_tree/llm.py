@@ -15,6 +15,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from research_tree.billing.usage import record_llm_usage
+
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -69,6 +71,7 @@ def call_responses_api(
         raw_response=raw_response,
         elapsed_seconds=time.monotonic() - started_at,
     )
+    record_llm_usage(model=str(body.get("model") or ""), raw_response=raw_response, label=label)
     return raw_response
 
 
@@ -104,6 +107,7 @@ def call_embeddings_api(
         len(texts),
         usage.get("prompt_tokens") if isinstance(usage, dict) else None,
     )
+    record_llm_usage(model=model, raw_response=raw_response, label=label)
 
     data = raw_response.get("data")
     if not isinstance(data, list) or len(data) != len(texts):

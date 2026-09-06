@@ -80,6 +80,20 @@ class ApiKeyInvalidError(WorkspaceServiceError):
     error_code = "api_key_invalid"
 
 
+class ByokUnavailableError(WorkspaceServiceError):
+    """Keys cannot be saved here: no key-encryption key is configured."""
+
+    status_code = 503
+    error_code = "byok_unavailable"
+
+
+class ProviderUnreachableError(WorkspaceServiceError):
+    """OpenAI could not be reached to check a key."""
+
+    status_code = 502
+    error_code = "provider_unreachable"
+
+
 # Error codes whose message is written by this codebase for the user to read.
 # Everything else gets a generic message so internal detail cannot leak.
 PUBLIC_ERROR_CODES = {
@@ -91,6 +105,8 @@ PUBLIC_ERROR_CODES = {
     "no_llm_credentials",
     "allowance_exhausted",
     "api_key_invalid",
+    "byok_unavailable",
+    "provider_unreachable",
 }
 
 

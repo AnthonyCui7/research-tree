@@ -19,6 +19,7 @@ from research_tree.retrieval.candidate_preparation import (
 )
 from research_tree.paths import data_root, pipeline_runs_dir, semantic_scholar_cache_dir
 from research_tree.retrieval.semantic_scholar import SemanticScholarClient, s2_api_key
+from research_tree.credentials import openai_api_key
 from research_tree.principal import LOCAL_PRINCIPAL, Principal, bind_principal, current_owner_id
 from research_tree.rate_limits import check_rate_limit
 from research_tree.services.errors import (
@@ -58,6 +59,8 @@ logger = logging.getLogger("uvicorn.error")
 
 
 PIPELINE_STAGES = ("candidates", "construct", "hydrate", "related")
+# The stages that call OpenAI; `related` ranks with the baked local models.
+MODEL_STAGES = ("candidates", "construct", "hydrate")
 # The candidate artifacts a rerun may reuse; both are uploaded to the artifact
 # store after the candidates stage so a rerun on another container (or after
 # a redeploy) can fetch them by hash.
@@ -517,6 +520,10 @@ class WorkspacePipelineService:
     ) -> None:
         if self._run_was_cancelled(str(run["run_id"])):
             raise RuntimeError("pipeline run was cancelled")
+        if status == "running" and name in MODEL_STAGES:
+            # Resolving the key here fails the run with the account's own
+            # sentence (no key, allowance used up) before the stage spends.
+            openai_api_key()
         previous = dict(run["stages"].get(name) or {})
         run["stages"][name] = {
             **previous,

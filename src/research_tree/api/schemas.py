@@ -16,22 +16,67 @@ class ApiKeyStatus(BaseModel):
     configured: bool
     """Last four characters only — a whole key never leaves the server."""
     masked: str | None = None
-    """Where the key came from: `environment` today, an account store later."""
+    """`environment` for the local profile's key, `account` for a saved one."""
     source: str | None = None
+    created_at: str | None = None
+
+
+class AllowanceSummary(BaseModel):
+    """A sponsored allowance on the platform key, as the account page shows it."""
+
+    id: str
+    limit_usd: float
+    spent_usd: float
+    remaining_usd: float
+    period: str
+    period_start: str | None = None
+    expires_at: str | None = None
+    exhausted: bool
 
 
 class ApiKeysResponse(BaseModel):
     openai: ApiKeyStatus
+    allowance: AllowanceSummary | None = None
+    """False when no key-encryption key is configured (and for the local profile)."""
+    saving_enabled: bool = False
+    """Whether the server holds a platform key an allowance could spend."""
+    platform_key: bool = False
 
 
 class SaveApiKeyRequest(BaseModel):
-    provider: str = Field(pattern=r"^openai$")
-    api_key: str = Field(min_length=8, max_length=400)
+    provider: str = Field(default="openai", pattern=r"^openai$")
+    # No length bounds here on purpose: a pydantic refusal echoes the value,
+    # and this value is a secret. The route checks the shape itself.
+    api_key: str
 
 
 class SaveApiKeyResponse(BaseModel):
     stored: bool
     detail: str
+    openai: ApiKeyStatus | None = None
+
+
+class RemoveApiKeyResponse(BaseModel):
+    removed: bool
+    detail: str = ""
+
+
+class UsageEvent(BaseModel):
+    created_at: str | None = None
+    source: str
+    feature: str | None = None
+    label: str | None = None
+    model: str
+    cost_usd: float
+
+
+class UsageResponse(BaseModel):
+    days: int
+    calls: int
+    total_usd: float
+    byok_usd: float
+    sponsored_usd: float
+    recent: list[UsageEvent] = Field(default_factory=list)
 
 
 class BugReportRequest(BaseModel):

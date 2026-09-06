@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 
+from research_tree.credentials import openai_api_key as resolve_openai_api_key
 from research_tree.llm import DEFAULT_MODEL
 
 
@@ -53,7 +54,7 @@ def annotation_concurrency() -> int:
 
 
 def openai_api_key() -> str:
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = resolve_openai_api_key()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required to annotate a paper.")
     return api_key

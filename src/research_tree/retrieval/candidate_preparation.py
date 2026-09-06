@@ -46,6 +46,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from research_tree.credentials import openai_api_key
 from research_tree.artifacts import write_json_file
 from research_tree.paths import cache_dir as default_cache_dir, data_root
 from research_tree.retrieval.citation_graph import (
@@ -683,7 +684,7 @@ def adjudicate_flags(
     frontier = frontier or []
     if not flagged and not frontier:
         return set()
-    if not os.environ.get("OPENAI_API_KEY"):
+    if not openai_api_key():
         warnings.append(
             "Flag adjudication was skipped (no OPENAI_API_KEY); token-match "
             "flags stand and no frontier picks were added for this run."

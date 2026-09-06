@@ -11,6 +11,7 @@ import urllib.request
 from urllib.parse import quote, urlparse
 from typing import Any
 
+from research_tree.credentials import openai_api_key
 from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
 from research_tree.principal import current_owner_id
 from research_tree.rate_limits import check_rate_limit
@@ -44,6 +45,9 @@ class TopicReviewService:
         if not raw_topic:
             return _result(raw_topic, raw_topic, False, "Enter a research topic.")
         check_rate_limit("topic_reviews")
+        # Resolved before any lookup so an account with nothing to spend hears
+        # so first, without a Semantic Scholar request on its behalf.
+        api_key = openai_api_key()
 
         workspaces = self.repository.list_workspaces(owner_id=current_owner_id())
         source_paper = _linked_paper_metadata(raw_topic)
@@ -58,9 +62,10 @@ class TopicReviewService:
             return result
         reviewed = _review_with_model(
             raw_topic,
+            api_key=api_key,
             source_paper=source_paper,
             existing_workspaces=_workspace_review_context(workspaces),
-        ) if os.environ.get("OPENAI_API_KEY") else None
+        ) if api_key else None
         if reviewed is None:
             result = _result(
                 raw_topic,
@@ -117,6 +122,7 @@ class TopicReviewService:
 def _review_with_model(
     topic: str,
     *,
+    api_key: str | None = None,
     source_paper: dict[str, str] | None = None,
     existing_workspaces: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
@@ -184,7 +190,7 @@ Existing workspaces: {json.dumps(existing_workspaces or [])}"""
     try:
         payload = call_responses_api(
             body,
-            api_key=os.environ["OPENAI_API_KEY"],
+            api_key=api_key or os.environ["OPENAI_API_KEY"],
             timeout_seconds=TOPIC_REVIEW_TIMEOUT_SECONDS,
             label="topic review",
         )

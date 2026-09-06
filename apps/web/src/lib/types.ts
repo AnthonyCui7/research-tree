@@ -70,12 +70,56 @@ export type TopicReview = {
 /** What the server will say about a provider key: never the key itself. */
 export type ApiKeyStatus = {
   configured: boolean;
+  /** Last four characters only; a whole key never reaches the browser. */
   masked: string | null;
+  /** `environment` for the local profile's key, `account` for a saved one. */
   source: string | null;
+  created_at: string | null;
 };
 
-/** Both write paths answer with `stored: false` until there is a database. */
-export type SaveApiKeyResult = { stored: boolean; detail: string };
+/** A sponsored allowance on the operator's key, granted by email. */
+export type AllowanceSummary = {
+  id: string;
+  limit_usd: number;
+  spent_usd: number;
+  remaining_usd: number;
+  period: "one_off" | "monthly";
+  period_start: string | null;
+  expires_at: string | null;
+  exhausted: boolean;
+};
+
+export type ApiKeysResult = {
+  openai: ApiKeyStatus;
+  allowance: AllowanceSummary | null;
+  /** False for the local profile and when the server holds no key-encryption key. */
+  saving_enabled: boolean;
+  /** Whether the server holds a platform key an allowance could spend. */
+  platform_key: boolean;
+};
+
+export type SaveApiKeyResult = { stored: boolean; detail: string; openai: ApiKeyStatus | null };
+export type RemoveApiKeyResult = { removed: boolean; detail: string };
+
+export type UsageEvent = {
+  created_at: string | null;
+  source: string;
+  feature: string | null;
+  label: string | null;
+  model: string;
+  cost_usd: number;
+};
+
+export type UsageSummary = {
+  days: number;
+  calls: number;
+  total_usd: number;
+  byok_usd: number;
+  sponsored_usd: number;
+  recent: UsageEvent[];
+};
+
+/** Bug reports answer with `stored: false` until there is somewhere to keep them. */
 export type BugReportResult = { received: boolean; stored: boolean; detail: string };
 
 export type PipelineRun = {

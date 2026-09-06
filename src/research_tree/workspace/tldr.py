@@ -5,6 +5,7 @@ import os
 import re
 from typing import Any, Mapping, Protocol
 
+from research_tree.credentials import openai_api_key
 from research_tree.llm import DEFAULT_MODEL, call_responses_api
 from research_tree.workspace.serialization import extract_response_output_text
 
@@ -31,7 +32,7 @@ class OpenAIResponsesTldrGenerator:
         model: str = DEFAULT_TLDR_MODEL,
         timeout_seconds: float = 90.0,
     ) -> None:
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.api_key = api_key or openai_api_key()
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY is required for generated TLDRs.")
         self.model = model

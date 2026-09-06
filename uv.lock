@@ -165,6 +165,21 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-keyvault-keys"
+version = "4.11.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "cryptography" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3d/97/2881414bdb1c9885c2e2195364b726d0ea3a2ef8a01c99e71238fc72b3b8/azure_keyvault_keys-4.11.2.tar.gz", hash = "sha256:8459c86542d103f8b67acb845fae5168029b6f7eb0fd7678ed8628c7b928addf", size = 261148, upload-time = "2026-08-26T16:05:33.779Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/c5/7dd5c7ee55b608fb54143253214391e58c7fe404b115b557226f69495c52/azure_keyvault_keys-4.11.2-py3-none-any.whl", hash = "sha256:aa5eecd5a5f868d619542c5528bc8edbc9bc71d7ce46721c366a9d3c7cac6759", size = 200715, upload-time = "2026-08-26T16:05:35.588Z" },
+]
+
+[[package]]
 name = "azure-storage-blob"
 version = "12.30.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2044,8 +2059,10 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "azure-identity" },
+    { name = "azure-keyvault-keys" },
     { name = "azure-storage-blob" },
     { name = "celery", extra = ["redis"] },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "fastapi-users", extra = ["oauth", "sqlalchemy"] },
     { name = "httpx" },
@@ -2077,8 +2094,10 @@ pipeline = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "azure-identity", specifier = ">=1.17" },
+    { name = "azure-keyvault-keys", specifier = ">=4.9" },
     { name = "azure-storage-blob", specifier = ">=12.20" },
     { name = "celery", extras = ["redis"], specifier = ">=5.4" },
+    { name = "cryptography", specifier = ">=43" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-users", extras = ["oauth", "sqlalchemy"], specifier = ">=15.0" },
     { name = "httpx", specifier = ">=0.28.0" },

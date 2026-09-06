@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
+from research_tree.credentials import openai_api_key
 from research_tree.artifacts import write_json_file, write_text_file
 from research_tree.llm import DEFAULT_MODEL, call_responses_api
 from research_tree.retrieval.semantic_scholar import (
@@ -98,7 +99,7 @@ class OpenAIResponsesWorkspaceClient:
         text_verbosity: str | None = DEFAULT_WORKSPACE_LLM_TEXT_VERBOSITY,
         response_format: str = DEFAULT_WORKSPACE_LLM_RESPONSE_FORMAT,
     ) -> None:
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.api_key = api_key or openai_api_key()
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY is required for workspace construction.")
         self.timeout_seconds = max(timeout_seconds, 1.0)
@@ -238,7 +239,7 @@ def construct_workspace(
             model=model,
             response_schema=delta_schema,
         ).raw_response
-    elif os.environ.get("OPENAI_API_KEY"):
+    elif openai_api_key():
         client = (
             OpenAIResponsesWorkspaceClient()
             if construction_mode == "initial_workspace"

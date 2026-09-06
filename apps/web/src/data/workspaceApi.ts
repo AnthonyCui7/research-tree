@@ -2,8 +2,11 @@ import { ApiError } from "../lib/apiError";
 import type {
   AgentRunResult,
   AnnotationRetrievalMode,
-  ApiKeyStatus,
+  ApiKeysResult,
   BugReportResult,
+  RemoveApiKeyResult,
+  SaveApiKeyResult,
+  UsageSummary,
   PaperAnnotation,
   PipelineRun,
   ReviewActionResponse,
@@ -85,7 +88,10 @@ export type WorkspaceGateway = {
   getWorkspaceReviews: (workspaceId: string) => Promise<WorkspaceReview[]>;
   approveReview: (workspaceId: string, reviewId: string) => Promise<ReviewActionResponse>;
   rejectReview: (workspaceId: string, reviewId: string) => Promise<ReviewActionResponse>;
-  getApiKeys: () => Promise<{ openai: ApiKeyStatus }>;
+  getApiKeys: () => Promise<ApiKeysResult>;
+  saveApiKey: (apiKey: string) => Promise<SaveApiKeyResult>;
+  removeApiKey: () => Promise<RemoveApiKeyResult>;
+  getUsage: () => Promise<UsageSummary>;
   reportBug: (summary: string, details: string, area: string) => Promise<BugReportResult>;
   getPaperAnnotations: (
     workspaceId: string,
@@ -199,7 +205,22 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
   },
 
   async getApiKeys() {
-    return getJson<{ openai: ApiKeyStatus }>("/account/api-keys");
+    return getJson<ApiKeysResult>("/account/api-keys");
+  },
+
+  async saveApiKey(apiKey) {
+    return requestJson<SaveApiKeyResult>("/account/api-keys", {
+      method: "PUT",
+      body: JSON.stringify({ provider: "openai", api_key: apiKey }),
+    });
+  },
+
+  async removeApiKey() {
+    return requestJson<RemoveApiKeyResult>("/account/api-keys", { method: "DELETE" });
+  },
+
+  async getUsage() {
+    return getJson<UsageSummary>("/account/usage");
   },
 
   async reportBug(summary, details, area) {

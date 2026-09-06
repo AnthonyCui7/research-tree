@@ -22,6 +22,7 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from research_tree.credentials import openai_api_key
 from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
 from research_tree.retrieval.text import truncate_words
 from research_tree.workspace.serialization import extract_response_output_text
@@ -82,7 +83,7 @@ def plan_search_queries(
 ) -> SearchQueryPlan:
     """Ask the model for a field's search vocabulary, falling back to the topic."""
 
-    key = api_key or os.environ.get("OPENAI_API_KEY")
+    key = api_key or openai_api_key()
     if not key:
         return fallback_query_plan(topic)
     try:
@@ -167,7 +168,7 @@ def judge_flagged_papers(
 
     if not papers:
         return set()
-    key = api_key or os.environ.get("OPENAI_API_KEY")
+    key = api_key or openai_api_key()
     if not key:
         return None
     # Callers match verdicts back by Semantic Scholar id, so a paper without
