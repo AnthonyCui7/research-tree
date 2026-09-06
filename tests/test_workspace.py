@@ -188,6 +188,73 @@ class WorkspaceBackendTest(unittest.TestCase):
         self.assertEqual(proposed["paper_cards"]["p2"]["read_before"], ["p1"])
         self.assertNotIn("removed_paper_placements", proposed)
 
+    def test_move_lands_where_the_publication_date_puts_it(self) -> None:
+        workspace = _workspace_with_side_branch()
+        # Side path: p3 (2021), p4 (2023). p1 (2022) belongs between them; p2,
+        # undated, goes last.
+        workspace["paper_cards"]["p4"] = _paper_card("p4", "Later Side Paper")
+        workspace["paper_cards"]["p4"]["primary_tree_location"] = {
+            "node_id": "branch-side",
+            "path": ["Retrieval-Augmented Generation", "Side Branch"],
+        }
+        workspace["tree"]["nodes"][1]["primary_paper_ids"] = ["p3", "p4"]
+        workspace["paper_paths"][1]["paper_ids"] = ["p3", "p4"]
+        workspace["paper_paths"][1]["paper_steps"].append(
+            {"paper_id": "p4", "why_read_here": "The later view."}
+        )
+        workspace["paper_cards"]["p3"]["publication_date"] = "2021-03-01"
+        workspace["paper_cards"]["p4"]["publication_date"] = "2023-05-01"
+        workspace["paper_cards"]["p1"]["publication_date"] = "2022-01-15"
+        workspace["paper_cards"]["p2"]["year"] = None
+
+        proposed = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p1",
+                    "to_branch_id": "branch-side",
+                },
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p2",
+                    "to_branch_id": "branch-side",
+                },
+            ],
+        )
+
+        side_path = proposed["paper_paths"][-1]
+        self.assertEqual(side_path["paper_ids"], ["p3", "p1", "p4", "p2"])
+        self.assertEqual(
+            [step["paper_id"] for step in side_path["paper_steps"]], ["p3", "p1", "p4", "p2"]
+        )
+        self.assertEqual(proposed["tree"]["nodes"][1]["primary_paper_ids"], ["p3", "p1", "p4", "p2"])
+        # The source path is gone with its papers; nothing else moved.
+        self.assertEqual([path["path_id"] for path in proposed["paper_paths"]], ["path-side"])
+
+    def test_moving_a_lone_paper_onto_its_own_path_keeps_the_path(self) -> None:
+        workspace = _workspace_with_side_branch()
+
+        proposed = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p3",
+                    "to_branch_id": "branch-side",
+                }
+            ],
+        )
+
+        self.assertEqual(proposed["paper_paths"][1]["paper_ids"], ["p3"])
+        self.assertEqual(
+            proposed["paper_paths"][1]["paper_steps"],
+            [{"paper_id": "p3", "why_read_here": "The side view."}],
+        )
+
     def test_moving_the_last_paper_off_a_path_drops_the_path(self) -> None:
         workspace = _workspace_with_side_branch()
 

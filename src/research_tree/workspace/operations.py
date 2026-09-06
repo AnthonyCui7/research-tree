@@ -411,15 +411,61 @@ def _move_paper_placement(workspace: dict[str, Any], operation: Mapping[str, Any
             )
     else:
         path_id = _first_path_id_for_branch(workspace, to_branch_id)
-    step = _detach_paper_placement(workspace, paper_id)
+    step = _detach_paper_placement(workspace, paper_id, keep_path_id=path_id)
+    index = _optional_int(operation.get("index"))
+    if index is None:
+        row = (
+            _string_list(_required_path(workspace, path_id).get("paper_ids"))
+            if path_id
+            else _string_list(destination.get("primary_paper_ids"))
+        )
+        index = _chronological_index(cards, paper_id, row)
     _place_visible_paper(
         workspace,
         paper_id=paper_id,
         branch_id=to_branch_id,
-        index=_optional_int(operation.get("index")),
+        index=index,
         path_id=path_id,
         step=step,
     )
+
+
+def _chronological_index(
+    cards: Mapping[str, Any],
+    paper_id: str,
+    row: list[str],
+) -> int:
+    """Where a paper lands on a row nobody told us a position for.
+
+    A row is drawn as a timeline and reads oldest to newest, so the paper goes
+    after the last paper published no later than it; the row's own order is
+    never reshuffled. A paper with no date, or a row where nothing is older,
+    goes to the end or the front respectively.
+    """
+
+    key = _publication_key(cards.get(paper_id))
+    if key is None:
+        return len(row)
+    index = 0
+    for position, other_id in enumerate(row):
+        other_key = _publication_key(cards.get(other_id))
+        if other_key is not None and other_key <= key:
+            index = position + 1
+    return index
+
+
+def _publication_key(card: Any) -> str | None:
+    """A sortable date: the ISO date when known, else the year, else nothing."""
+
+    if not isinstance(card, Mapping):
+        return None
+    date = str(card.get("publication_date") or "").strip()
+    if date:
+        return date
+    year = card.get("year")
+    if isinstance(year, int) and not isinstance(year, bool):
+        return f"{year:04d}"
+    return None
 
 
 def _insert_paper_placement(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
@@ -578,13 +624,19 @@ def _place_visible_paper(
     path["paper_steps"] = kept_steps
 
 
-def _detach_paper_placement(workspace: dict[str, Any], paper_id: str) -> dict[str, Any] | None:
+def _detach_paper_placement(
+    workspace: dict[str, Any],
+    paper_id: str,
+    *,
+    keep_path_id: str | None = None,
+) -> dict[str, Any] | None:
     """Take a visible paper off every branch list and reading path it sits on.
 
     Unlike a removal, the card, its reading-order entry, and the references
     other cards make to it all stay: the paper is still in the workspace, only
     its place is changing. Returns the reading-path step it had, if any, so the
-    new placement can keep its reason.
+    new placement can keep its reason. A path left empty is dropped, except the
+    one the paper is about to land on again.
     """
 
     for node in _nodes_by_id(workspace).values():
@@ -613,7 +665,7 @@ def _detach_paper_placement(workspace: dict[str, Any], paper_id: str) -> dict[st
                     continue
                 remaining.append(item)
             path["paper_steps"] = remaining
-        if path["paper_ids"]:
+        if path["paper_ids"] or str(path.get("path_id") or "") == keep_path_id:
             kept_paths.append(path)
     workspace["paper_paths"] = kept_paths
     return step
