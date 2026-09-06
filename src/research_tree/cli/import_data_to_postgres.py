@@ -262,17 +262,27 @@ def _import_runs(source_dir: Path, engine: Any, owner_id: str | None, workspace_
         if run.get("status") in {"queued", "running"}:
             # Nothing is executing it any more; say so rather than leave it active.
             run.update({"status": "failed", "current_stage": None, "error": "imported while active"})
-        run.setdefault("owner_id", owner_id)
+        if not run.get("owner_id"):
+            run["owner_id"] = owner_id
         count += 1
         if dry_run:
             continue
+        # A run imported before its owner had an account is claimed on a
+        # later pass with --owner-email, in the column and in the record the
+        # API reads; a run that already has an owner is left alone.
         with engine.begin() as conn:
             conn.execute(
                 text(
                     """
                     INSERT INTO pipeline_runs (run_id, workspace_id, topic_key, owner_id, status, record)
                     VALUES (:run_id, :workspace_id, :topic_key, CAST(:owner_id AS uuid), :status, CAST(:record AS jsonb))
-                    ON CONFLICT (run_id) DO NOTHING
+                    ON CONFLICT (run_id) DO UPDATE
+                    SET owner_id = COALESCE(pipeline_runs.owner_id, EXCLUDED.owner_id),
+                        record = CASE
+                            WHEN pipeline_runs.owner_id IS NULL AND EXCLUDED.owner_id IS NOT NULL
+                            THEN pipeline_runs.record || jsonb_build_object('owner_id', CAST(EXCLUDED.owner_id AS text))
+                            ELSE pipeline_runs.record END,
+                        updated_at = now()
                     """
                 ),
                 {
