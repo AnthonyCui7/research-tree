@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { TreeEdge } from "./TreeEdge";
-import { PathCaption, TreeNode } from "./TreeNode";
+import { TreeNode } from "./TreeNode";
 import { normalizeWorkspaceForTree, type MeasuredNodeHeights } from "../../lib/workspaceAdapter";
 import { cx } from "../../lib/cx";
 import { FitIcon, ZoomInIcon, ZoomOutIcon } from "../ui/icons";
@@ -266,9 +266,6 @@ export function TreeCanvas({ tree, workspace, selectedNodeId, onSelectNode }: Tr
                 />
               ))}
             </svg>
-            {displayTree.pathLabels.map((label) => (
-              <PathCaption key={label.id} label={label} />
-            ))}
             {displayTree.nodes.map((node) => (
               <TreeNode
                 key={node.id}
