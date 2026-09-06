@@ -19,6 +19,14 @@ dependencies = [
   "pypdf>=5.0.0",
   "pydantic>=2.0.0",
   "uvicorn>=0.30.0",
+  "fastapi-users[oauth,sqlalchemy]>=15.0",
+  "sqlalchemy>=2.0",
+  "psycopg[binary,pool]>=3.2",
+  "alembic>=1.13",
+  "langgraph-checkpoint-postgres>=2.0",
+  "azure-storage-blob>=12.20",
+  "azure-identity>=1.17",
+  "httpx>=0.28.0",
 ]
 
 [project.scripts]
@@ -29,6 +37,10 @@ research-tree-enrich-similar-papers = "research_tree.cli.enrich_workspace_simila
 research-tree-hydrate-papers = "research_tree.cli.hydrate_workspace_papers:main"
 research-tree-restore-workspace-version = "research_tree.cli.restore_workspace_version:main"
 research-tree-run-pipeline = "research_tree.cli.run_workspace_pipeline:main"
+research-tree-users = "research_tree.cli.manage_users:main"
+research-tree-import-data = "research_tree.cli.import_data_to_postgres:main"
+research-tree-backup = "research_tree.cli.backup_database:main"
+research-tree-migrate = "research_tree.cli.migrate:main"
 
 [project.optional-dependencies]
 dev = [
@@ -38,6 +50,9 @@ dev = [
 
 pipeline = [
   "sentence-transformers>=3.0.0",
+  # Listed directly so the [tool.uv.sources] entry below applies: uv only honours
+  # sources for the project's own dependencies, not transitive ones.
+  "torch>=2.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -45,3 +60,13 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+# The container image is CPU-only. PyPI's Linux torch wheels pull the CUDA
+# toolkit (several GB); the PyTorch CPU index ships the same version without it.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]

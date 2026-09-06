@@ -1044,7 +1044,7 @@ class WorkspaceBackendTest(unittest.TestCase):
             repository_dir = Path(directory) / "repository"
             first = _workspace()
             first_result = publish_workspace_version(
-                repository_dir=repository_dir,
+                repository=LocalJsonWorkspaceRepository(repository_dir),
                 workspace=first,
                 reason="first construction",
                 event_type="workspace_constructed",
@@ -1052,7 +1052,7 @@ class WorkspaceBackendTest(unittest.TestCase):
             )
             rebuilt = {**first, "title": "Rebuilt RAG Workspace"}
             rebuilt_result = publish_workspace_version(
-                repository_dir=repository_dir,
+                repository=LocalJsonWorkspaceRepository(repository_dir),
                 workspace=rebuilt,
                 reason="reconstructed from existing candidates",
                 event_type="workspace_constructed",
@@ -1080,7 +1080,7 @@ class WorkspaceBackendTest(unittest.TestCase):
             rebuilt = {**legacy, "title": "Rebuilt RAG Workspace"}
 
             result = publish_workspace_version(
-                repository_dir=repository_dir,
+                repository=LocalJsonWorkspaceRepository(repository_dir),
                 workspace=rebuilt,
                 reason="reconstructed from existing candidates",
                 event_type="workspace_constructed",

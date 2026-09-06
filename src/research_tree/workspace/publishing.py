@@ -1,27 +1,26 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from research_tree.workspace.context import workspace_version_hash
-from research_tree.workspace.repository import LocalJsonWorkspaceRepository
+from research_tree.workspace.repository import WorkspaceRepository
 
 
 def publish_workspace_version(
     *,
-    repository_dir: Path,
+    repository: WorkspaceRepository,
     workspace: dict[str, Any],
     reason: str,
     event_type: str,
     event_payload: dict[str, Any],
     expected_parent_version_hash: str | None = None,
     pipeline_run_id: str | None = None,
+    owner_id: str | None = None,
 ) -> dict[str, Any]:
     workspace_id = str(workspace.get("workspace_id") or "").strip()
     if not workspace_id:
         raise ValueError("workspace_id is required to publish a workspace version.")
 
-    repository = LocalJsonWorkspaceRepository(repository_dir)
     try:
         current_workspace = repository.get_current_workspace(workspace_id)
         parent_hash = workspace_version_hash(current_workspace)
@@ -55,13 +54,15 @@ def publish_workspace_version(
     if version_hash == parent_hash:
         return {
             "workspace_id": workspace_id,
-            "repository_dir": str(repository_dir),
             "parent_version_hash": parent_hash,
             "version_hash": version_hash,
             "event_id": None,
             "published": False,
         }
 
+    # The pre-check above is a courtesy; the repository re-checks the parent
+    # inside its own transaction, which is what makes a concurrent publish
+    # lose cleanly instead of overwriting.
     version_hash = repository.save_workspace_version(
         workspace_id,
         workspace,
@@ -69,6 +70,8 @@ def publish_workspace_version(
         parent_version_hash=parent_hash,
         reason=reason,
         pipeline_run_id=pipeline_run_id,
+        expected_version_hash=parent_hash,
+        owner_id=owner_id,
     )
     event_id = repository.append_workspace_event(
         workspace_id,
@@ -85,7 +88,6 @@ def publish_workspace_version(
     )
     return {
         "workspace_id": workspace_id,
-        "repository_dir": str(repository_dir),
         "parent_version_hash": parent_hash,
         "version_hash": version_hash,
         "event_id": event_id,

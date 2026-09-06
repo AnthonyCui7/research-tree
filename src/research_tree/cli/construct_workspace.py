@@ -24,6 +24,7 @@ from research_tree.workspace.construction import (
 )
 from research_tree.workspace.prompts import WORKSPACE_CONSTRUCTION_PROMPT_VERSION
 from research_tree.workspace.publishing import publish_workspace_version
+from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 from research_tree.paths import data_root, semantic_scholar_cache_dir
 from research_tree.paths import workspaces_dir
 
@@ -206,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Wrote validation: {result.output_paths['validation']}")
     if args.publish_to_repository:
         publish_result = publish_workspace_version(
-            repository_dir=_repository_dir(args.repository_dir),
+            repository=LocalJsonWorkspaceRepository(_repository_dir(args.repository_dir)),
             workspace=result.workspace,
             reason=args.publish_reason,
             event_type="workspace_constructed",

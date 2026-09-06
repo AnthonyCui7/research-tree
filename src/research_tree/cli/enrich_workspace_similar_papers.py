@@ -6,6 +6,7 @@ from pathlib import Path
 
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.workspace.publishing import publish_workspace_version
+from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 from research_tree.workspace.serialization import load_json_artifact
 from research_tree.paths import workspaces_dir
 from research_tree.workspace.similar_papers import (
@@ -63,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Wrote workspace with related papers: {output_path}")
     if args.publish_to_repository:
         result = publish_workspace_version(
-            repository_dir=repository_dir,
+            repository=LocalJsonWorkspaceRepository(repository_dir),
             workspace=enriched,
             reason="enriched workspace with candidate-pool similar papers",
             event_type="workspace_similar_papers_enriched",

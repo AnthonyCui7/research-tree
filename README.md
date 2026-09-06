@@ -20,7 +20,7 @@ passage at a time, marks the claims, implications, and terms worth a reader's
 attention, and each annotation is placed on the exact words it quotes. A paper
 is annotated once and cached, so only the first open waits for it.
 
-## Running
+## Running locally
 
 Backend (FastAPI, Python ≥ 3.11, [uv](https://docs.astral.sh/uv/)):
 
@@ -33,13 +33,28 @@ cp .env.example .env           # fill in OPENAI_API_KEY (S2_API_KEY recommended)
 Frontend (React + Vite + TypeScript):
 
 ```sh
-cd apps/web
 npm install
-npm run dev
+npm run dev                    # proxies /api to the backend
 ```
 
-Research Tree currently runs as a **local single-user app**: it persists to JSON
-on disk, has no authentication, and binds to localhost.
+Without a database URL the app keeps workspaces as JSON files under `data/`
+and runs as one implicit local user (`RESEARCH_TREE_AUTH_MODE=none`). Only run
+it that way on loopback or behind a proxy that does its own sign-in.
+
+## With Docker
+
+`docker compose up --build` runs the production image against a scratch
+Postgres, applying the schema first. `.env.example` documents every variable,
+including the ones that turn on accounts (email + password and Google sign-in),
+Postgres, and blob storage.
+
+## Deploying
+
+Pushes to `main` deploy to Azure through `.github/workflows/ci.yml`: the tests
+and a vulnerability audit must pass, then the image is built, the database is
+migrated, and the container app is rolled forward. Self-hosters can run the same
+image anywhere; set `RESEARCH_TREE_AUTH_MODE=accounts` with a Postgres URL and a
+`SESSION_SECRET`, or `none` behind a reverse proxy that authenticates for you.
 
 ## Verifying changes
 
@@ -48,8 +63,10 @@ uv run pytest -q       # passes without API keys (deterministic LLM fallback)
 npm run typecheck
 ```
 
+Setting `RESEARCH_TREE_TEST_DATABASE_URL` to a scratch Postgres runs every
+repository test a second time against the schema the migrations build.
+
 ## Notes
 
 - Semantic Scholar allows ~1 request/second across all endpoints; the retrieval code is built around few, dense requests and a shared file cache. Treat every external API as unreliable — stages degrade with warnings instead of failing the run.
 - All LLM calls go through the OpenAI Responses API with reasoning models; requests never set `temperature` (the models reject it) — behavior is tuned via `reasoning.effort`.
-- Hosting, a job queue, and deploys from CI are planned rather than built; `DEPLOYMENT.md` records the shape they will take.

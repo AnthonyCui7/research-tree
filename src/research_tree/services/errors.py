@@ -45,3 +45,36 @@ class ReviewConflictError(WorkspaceServiceError):
 class StaleWorkspaceError(ReviewConflictError):
     error_code = "stale_workspace"
 
+
+class UnauthenticatedError(WorkspaceServiceError):
+    status_code = 401
+    error_code = "unauthenticated"
+
+
+class ForbiddenError(WorkspaceServiceError):
+    """Signed in, but not allowed here: the email is not on the allowlist."""
+
+    status_code = 403
+    error_code = "not_allowed"
+
+
+class RateLimitedError(WorkspaceServiceError):
+    status_code = 429
+    error_code = "rate_limited"
+
+
+class NoLlmCredentialsError(WorkspaceServiceError):
+    """The account has no OpenAI key of its own and no allowance on the platform key."""
+
+    status_code = 402
+    error_code = "no_llm_credentials"
+
+
+class AllowanceExhaustedError(WorkspaceServiceError):
+    status_code = 402
+    error_code = "allowance_exhausted"
+
+
+class ApiKeyInvalidError(WorkspaceServiceError):
+    status_code = 400
+    error_code = "api_key_invalid"

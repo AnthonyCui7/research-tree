@@ -12,7 +12,9 @@ from research_tree.api.schemas import (
     BugReportResponse,
     SaveApiKeyRequest,
     SaveApiKeyResponse,
+    SessionResponse,
 )
+from research_tree.principal import LOCAL_PRINCIPAL, auth_mode, current_principal
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -31,6 +33,30 @@ BUG_REPORT_UNAVAILABLE = (
     "Bug reports are written to the server log for now. Persistent reports arrive "
     "with accounts and a database."
 )
+
+
+@router.get("/me", response_model=SessionResponse)
+def get_session() -> dict[str, object]:
+    """Who is signed in, and how sign-in works on this deployment."""
+
+    principal = current_principal() or LOCAL_PRINCIPAL
+    google_enabled = False
+    if auth_mode() == "accounts":
+        from research_tree.auth.routes import google_sign_in_enabled
+
+        google_enabled = google_sign_in_enabled()
+    return {
+        "auth_mode": auth_mode(),
+        "google_sign_in": google_enabled,
+        "user": {
+            "id": principal.user_id,
+            "email": principal.email,
+            "name": principal.name,
+            "avatar_url": principal.avatar_url,
+            "is_admin": principal.is_admin,
+            "is_verified": principal.is_verified,
+        },
+    }
 
 
 @router.get("/api-keys", response_model=ApiKeysResponse)

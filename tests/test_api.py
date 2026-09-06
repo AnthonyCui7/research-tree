@@ -25,11 +25,10 @@ from research_tree.services.pipeline import WorkspacePipelineService
 from research_tree.services.topics import TopicReviewService
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.publishing import publish_workspace_version
-from research_tree.workspace.repository import LocalJsonWorkspaceRepository
+from research_tree.workspace.repository import WorkspaceRepository
 
 
-def test_health() -> None:
-    client, _repository = _client_with_repository()
+def test_health(client) -> None:
 
     response = client.get("/health")
 
@@ -37,8 +36,7 @@ def test_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_topic_review_approval_is_single_use() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_topic_review_approval_is_single_use(repository) -> None:
     service = TopicReviewService(repository)
     reviewed = {
         "normalized_topic": "Prompting",
@@ -61,8 +59,7 @@ def test_topic_review_approval_is_single_use() -> None:
     assert service.consume_approved_topic(token=token, topic="Prompting") is None
 
 
-def test_paper_content_is_stored_outside_versioned_workspace_json() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_paper_content_is_stored_outside_versioned_workspace_json(repository) -> None:
     _seed_current(repository)
 
     content_key = repository.save_paper_content(
@@ -76,8 +73,7 @@ def test_paper_content_is_stored_outside_versioned_workspace_json() -> None:
     assert "full_text" not in str(repository.get_current_workspace("workspace-1"))
 
 
-def test_paper_content_endpoint_serves_the_stored_extract() -> None:
-    client, repository = _client_with_repository()
+def test_paper_content_endpoint_serves_the_stored_extract(client, repository) -> None:
     _seed_current(repository)
     repository.save_paper_content(
         "workspace-1",
@@ -106,8 +102,7 @@ def test_paper_content_endpoint_serves_the_stored_extract() -> None:
     assert payload["truncated"] is False
 
 
-def test_paper_content_endpoint_answers_404_for_a_paper_with_no_extract() -> None:
-    client, repository = _client_with_repository()
+def test_paper_content_endpoint_answers_404_for_a_paper_with_no_extract(client, repository) -> None:
     _seed_current(repository)
 
     response = client.get(
@@ -118,8 +113,7 @@ def test_paper_content_endpoint_answers_404_for_a_paper_with_no_extract() -> Non
     assert response.status_code == 404
 
 
-def test_workspace_current_versions_events_and_reviews() -> None:
-    client, repository = _client_with_repository()
+def test_workspace_current_versions_events_and_reviews(client, repository) -> None:
     base_hash = _seed_current(repository)
     event_id = repository.append_workspace_event(
         "workspace-1",
@@ -148,8 +142,7 @@ def test_workspace_current_versions_events_and_reviews() -> None:
     assert reviews_response.json()["reviews"][0]["review_id"] == "review-1"
 
 
-def test_list_workspaces_returns_repository_summaries() -> None:
-    client, repository = _client_with_repository()
+def test_list_workspaces_returns_repository_summaries(client, repository) -> None:
     base_hash = _seed_current(repository)
 
     response = client.get("/workspaces")
@@ -172,8 +165,7 @@ def test_list_workspaces_returns_repository_summaries() -> None:
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
-def test_topic_review_fails_closed_without_an_llm_key() -> None:
-    client, repository = _client_with_repository()
+def test_topic_review_fails_closed_without_an_llm_key(client, repository) -> None:
     _seed_current(repository)
 
     response = client.post("/workspaces/topic-review", json={"topic": "  Test   Topic "})
@@ -185,8 +177,7 @@ def test_topic_review_fails_closed_without_an_llm_key() -> None:
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": "configured-for-test"})
-def test_topic_review_uses_model_duplicate_selection() -> None:
-    client, repository = _client_with_repository()
+def test_topic_review_uses_model_duplicate_selection(client, repository) -> None:
     _seed_current(repository)
 
     with patch(
@@ -209,8 +200,7 @@ def test_topic_review_uses_model_duplicate_selection() -> None:
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": "configured-for-test"})
-def test_topic_review_rejects_an_unreadable_paper_link() -> None:
-    client, _repository = _client_with_repository()
+def test_topic_review_rejects_an_unreadable_paper_link(client) -> None:
 
     with patch(
         "research_tree.services.topics._linked_paper_metadata",
@@ -227,8 +217,7 @@ def test_topic_review_rejects_an_unreadable_paper_link() -> None:
     review_model.assert_not_called()
 
 
-def test_restore_and_delete_workspace_lifecycle() -> None:
-    client, repository = _client_with_repository()
+def test_restore_and_delete_workspace_lifecycle(client, repository) -> None:
     first_hash = _seed_current(repository)
     second = {**repository.get_current_workspace("workspace-1"), "title": "Second"}
     second_hash = repository.save_workspace_version(
@@ -255,8 +244,7 @@ def test_restore_and_delete_workspace_lifecycle() -> None:
     assert client.get("/workspaces/workspace-1").status_code == 404
 
 
-def test_deleting_workspace_cancels_active_pipeline_and_blocks_late_publication() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_deleting_workspace_cancels_active_pipeline_and_blocks_late_publication(repository) -> None:
     _seed_current(repository)
     stale_workspace = repository.get_current_workspace("workspace-1")
     repository.save_pipeline_run(
@@ -274,7 +262,7 @@ def test_deleting_workspace_cancels_active_pipeline_and_blocks_late_publication(
     assert repository.get_pipeline_run("pipeline-active")["status"] == "cancelled"
     with pytest.raises(RuntimeError, match="no longer owns"):
         publish_workspace_version(
-            repository_dir=repository.base_dir,
+            repository=repository,
             workspace=stale_workspace,
             reason="late pipeline publication",
             event_type="workspace_pipeline_completed",
@@ -286,8 +274,7 @@ def test_deleting_workspace_cancels_active_pipeline_and_blocks_late_publication(
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
-def test_chat_agent_request_returns_completed() -> None:
-    client, repository = _client_with_repository()
+def test_chat_agent_request_returns_completed(client, repository) -> None:
     _seed_current(repository)
 
     response = client.post(
@@ -302,8 +289,7 @@ def test_chat_agent_request_returns_completed() -> None:
     assert payload["review_id"] is None
 
 
-def test_agent_request_passes_bounded_conversation_history() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_agent_request_passes_bounded_conversation_history(repository) -> None:
     _seed_current(repository)
     captured: dict[str, Any] = {}
 
@@ -351,7 +337,7 @@ def test_agent_request_passes_bounded_conversation_history() -> None:
     ]
 
 
-def test_remove_paper_request_persists_a_review_without_calling_the_model() -> None:
+def test_remove_paper_request_persists_a_review_without_calling_the_model(repository) -> None:
     """Paper removal is deterministic, but it still goes through the graph.
 
     The model declares `edit_kind: remove_papers` with explicit target ids on
@@ -359,10 +345,9 @@ def test_remove_paper_request_persists_a_review_without_calling_the_model() -> N
     writes the patch.
     """
 
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
     _seed_current(repository)
 
-    def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
+    def graph_factory(active_repository: WorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
             llm_client=DeterministicWorkspaceAgentLlmClient(
                 tool_turns=[
@@ -410,11 +395,10 @@ def _unexpected_constructor(**_kwargs: Any) -> dict[str, Any]:
     raise AssertionError("deterministic paper removal must not call the constructor")
 
 
-def test_noop_workspace_modification_does_not_persist_review() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_noop_workspace_modification_does_not_persist_review(repository) -> None:
     _seed_current(repository)
 
-    def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
+    def graph_factory(active_repository: WorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
             llm_client=DeterministicWorkspaceAgentLlmClient(
                 tool_turns=[_edit_tool_turn("No matching paper exists.")]
@@ -445,8 +429,7 @@ def test_noop_workspace_modification_does_not_persist_review() -> None:
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
-def test_modify_agent_request_returns_pending_review_and_persists_review() -> None:
-    client, repository = _client_with_repository()
+def test_modify_agent_request_returns_pending_review_and_persists_review(client, repository) -> None:
     _seed_current(repository)
 
     response = client.post(
@@ -470,8 +453,7 @@ def test_modify_agent_request_returns_pending_review_and_persists_review() -> No
     assert review["interrupt_payload"]["skeptic_notes"] == []
 
 
-def test_get_persisted_review() -> None:
-    client, repository = _client_with_repository()
+def test_get_persisted_review(client, repository) -> None:
     _save_pending_review(repository, review_id="review-1")
 
     response = client.get("/workspaces/workspace-1/reviews/review-1")
@@ -480,8 +462,7 @@ def test_get_persisted_review() -> None:
     assert response.json()["review"]["review_id"] == "review-1"
 
 
-def test_approve_applies_current_workspace() -> None:
-    client, repository = _client_with_repository()
+def test_approve_applies_current_workspace(client, repository) -> None:
     _save_pending_review(repository, review_id="review-approve")
 
     response = client.post("/workspaces/workspace-1/reviews/review-approve/approve")
@@ -494,8 +475,7 @@ def test_approve_applies_current_workspace() -> None:
     assert payload["workspace_version_hash"] == workspace_version_hash(current)
 
 
-def test_reject_keeps_current_workspace_unchanged() -> None:
-    client, repository = _client_with_repository()
+def test_reject_keeps_current_workspace_unchanged(client, repository) -> None:
     _save_pending_review(repository, review_id="review-reject")
     before = repository.get_current_workspace("workspace-1")
 
@@ -509,8 +489,7 @@ def test_reject_keeps_current_workspace_unchanged() -> None:
     assert repository.get_current_workspace("workspace-1") == before
 
 
-def test_double_approve_and_reject_are_idempotent() -> None:
-    client, repository = _client_with_repository()
+def test_double_approve_and_reject_are_idempotent(client, repository) -> None:
     _save_pending_review(repository, review_id="review-approve")
     first_approve = client.post("/workspaces/workspace-1/reviews/review-approve/approve")
     second_approve = client.post("/workspaces/workspace-1/reviews/review-approve/approve")
@@ -533,8 +512,7 @@ def test_double_approve_and_reject_are_idempotent() -> None:
     assert second_reject.json()["idempotent"] is True
 
 
-def test_terminal_review_transition_conflicts() -> None:
-    client, repository = _client_with_repository()
+def test_terminal_review_transition_conflicts(client, repository) -> None:
     _save_pending_review(repository, review_id="review-rejected")
     client.post("/workspaces/workspace-1/reviews/review-rejected/reject")
     approve_after_reject = client.post(
@@ -555,8 +533,7 @@ def test_terminal_review_transition_conflicts() -> None:
     assert reject_after_approve.status_code == 409
 
 
-def test_stale_approval_returns_conflict_and_preserves_current_workspace() -> None:
-    client, repository = _client_with_repository()
+def test_stale_approval_returns_conflict_and_preserves_current_workspace(client, repository) -> None:
     base_hash = _save_pending_review(repository, review_id="review-stale")
     user_changed = {**_workspace(), "title": "User Changed Topic"}
     repository.save_workspace_version(
@@ -574,8 +551,7 @@ def test_stale_approval_returns_conflict_and_preserves_current_workspace() -> No
     assert current["title"] == "User Changed Topic"
 
 
-def test_edit_review_revalidates_and_persists_new_pending_review() -> None:
-    client, repository = _client_with_repository()
+def test_edit_review_revalidates_and_persists_new_pending_review(client, repository) -> None:
     _save_pending_review(repository, review_id="review-edit")
     edited_workspace = {**repository.get_current_workspace("workspace-1"), "title": "Edited Topic"}
 
@@ -592,8 +568,7 @@ def test_edit_review_revalidates_and_persists_new_pending_review() -> None:
     assert repository.get_pending_review("workspace-1", payload["new_review_id"])
 
 
-def test_edit_review_validation_failure_returns_failed_validation() -> None:
-    client, repository = _client_with_repository()
+def test_edit_review_validation_failure_returns_failed_validation(client, repository) -> None:
     _save_pending_review(repository, review_id="review-edit-invalid")
     invalid_workspace = {**repository.get_current_workspace("workspace-1"), "paper_cards": {}}
 
@@ -610,11 +585,10 @@ def test_edit_review_validation_failure_returns_failed_validation() -> None:
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
-def test_guardrail_rejection_returns_failed_guardrail_and_starts_nothing() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_guardrail_rejection_returns_failed_guardrail_and_starts_nothing(repository) -> None:
     _seed_current(repository)
 
-    def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
+    def graph_factory(active_repository: WorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
             llm_client=DeterministicWorkspaceAgentLlmClient(
                 tool_turns=[
@@ -644,11 +618,10 @@ def test_guardrail_rejection_returns_failed_guardrail_and_starts_nothing() -> No
     assert repository.list_pipeline_runs("workspace-1") == []
 
 
-def test_invalid_workspace_proposal_returns_failed_validation_status() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_invalid_workspace_proposal_returns_failed_validation_status(repository) -> None:
     _seed_current(repository)
 
-    def graph_factory(active_repository: LocalJsonWorkspaceRepository) -> Any:
+    def graph_factory(active_repository: WorkspaceRepository) -> Any:
         return build_workspace_agent_graph(
             llm_client=DeterministicWorkspaceAgentLlmClient(
                 tool_turns=[_edit_tool_turn("Return invalid workspace.")]
@@ -697,8 +670,7 @@ def test_route_modules_do_not_perform_low_level_file_writes() -> None:
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
-def test_failed_pipeline_does_not_publish_a_partial_workspace() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_failed_pipeline_does_not_publish_a_partial_workspace(repository) -> None:
     service = WorkspacePipelineService(
         repository,
         repo_root=_temp_dir(),
@@ -719,8 +691,7 @@ def test_failed_pipeline_does_not_publish_a_partial_workspace() -> None:
         repository.get_current_workspace(run["workspace_id"])
 
 
-def test_workspace_pipeline_always_uses_luna_for_construction() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_workspace_pipeline_always_uses_luna_for_construction(repository) -> None:
     service = WorkspacePipelineService(
         repository,
         repo_root=_temp_dir(),
@@ -737,8 +708,7 @@ def test_workspace_pipeline_always_uses_luna_for_construction() -> None:
     assert saved_run["model"] == "gpt-5.6-luna"
 
 
-def test_failed_partial_rerun_keeps_source_artifacts_unchanged() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_failed_partial_rerun_keeps_source_artifacts_unchanged(repository) -> None:
     current_hash = _seed_current(repository)
     # Artifact paths are confined to the data root, so the fixture lives there.
     repo_root = _temp_dir()
@@ -784,20 +754,22 @@ def test_failed_partial_rerun_keeps_source_artifacts_unchanged() -> None:
     assert candidate_json.read_text(encoding="utf-8") == "{}"
 
 
-def test_unpublished_paper_content_does_not_block_workspace_retry_id() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_unpublished_paper_content_does_not_block_workspace_retry_id(repository) -> None:
     service = WorkspacePipelineService(repository, repo_root=_temp_dir())
-    (repository.base_dir / "retrieval-augmented-generation" / "paper_content").mkdir(
-        parents=True
+    # Failed hydration can leave cached paper content without ever publishing
+    # a workspace. Only a current workspace reserves its ID.
+    repository.save_paper_content(
+        "retrieval-augmented-generation", "paper-1", {"status": "available", "full_text": "x"}
     )
 
     assert service._available_workspace_id("retrieval-augmented-generation") == (
         "retrieval-augmented-generation"
     )
+    _seed_current(repository)
+    assert service._available_workspace_id("workspace-1") == "workspace-1-2"
 
 
-def test_pipeline_rerun_rejects_another_active_run_for_the_workspace() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+def test_pipeline_rerun_rejects_another_active_run_for_the_workspace(repository) -> None:
     _seed_current(repository)
     repository.save_pipeline_run(
         {
@@ -823,8 +795,8 @@ def test_pipeline_rerun_rejects_another_active_run_for_the_workspace() -> None:
         service.rerun("workspace-1", start_stage="related")
 
 
-def test_dead_pipeline_owner_is_reclaimed_before_a_new_run_is_reserved() -> None:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
+@pytest.mark.json_only
+def test_dead_pipeline_owner_is_reclaimed_before_a_new_run_is_reserved(repository) -> None:
     stale_run = {
         "run_id": "pipeline_stale",
         "workspace_id": "workspace-1",
@@ -851,7 +823,8 @@ def test_dead_pipeline_owner_is_reclaimed_before_a_new_run_is_reserved() -> None
     assert repository.get_pipeline_run("pipeline_new")["status"] == "queued"
 
 
-def test_pipeline_run_from_another_host_is_never_reclaimed() -> None:
+@pytest.mark.json_only
+def test_pipeline_run_from_another_host_is_never_reclaimed(repository) -> None:
     """A PID probe only means anything on the machine that owns the PID.
 
     On a shared volume, a run written by another host must be left alone even
@@ -859,7 +832,6 @@ def test_pipeline_run_from_another_host_is_never_reclaimed() -> None:
     collision fails a healthy run.
     """
 
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
     repository.save_pipeline_run(
         {
             "run_id": "pipeline_remote",
@@ -878,13 +850,6 @@ def test_pipeline_run_from_another_host_is_never_reclaimed() -> None:
         run = repository.get_pipeline_run("pipeline_remote")
 
     assert run["status"] == "running"
-
-
-def _client_with_repository() -> tuple[TestClient, LocalJsonWorkspaceRepository]:
-    repository = LocalJsonWorkspaceRepository(_temp_dir())
-    app = create_app()
-    app.dependency_overrides[get_repository] = lambda: repository
-    return TestClient(app), repository
 
 
 def _edit_tool_turn(instruction: str, **extra: Any) -> AgentTurn:
@@ -948,7 +913,7 @@ def _temp_dir() -> Path:
 
 def _start_approved(
     service: WorkspacePipelineService,
-    repository: LocalJsonWorkspaceRepository,
+    repository: WorkspaceRepository,
     topic: str,
 ) -> dict[str, Any]:
     """Start a build through the real topic-approval gate, model stubbed out."""
@@ -971,7 +936,7 @@ def _start_approved(
     )
 
 
-def _seed_current(repository: LocalJsonWorkspaceRepository) -> str:
+def _seed_current(repository: WorkspaceRepository) -> str:
     return repository.save_workspace_version(
         "workspace-1",
         _workspace(),
@@ -982,7 +947,7 @@ def _seed_current(repository: LocalJsonWorkspaceRepository) -> str:
 
 
 def _save_pending_review(
-    repository: LocalJsonWorkspaceRepository,
+    repository: WorkspaceRepository,
     *,
     review_id: str,
     proposed_workspace: dict[str, Any] | None = None,

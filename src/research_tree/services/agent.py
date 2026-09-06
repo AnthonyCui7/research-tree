@@ -7,6 +7,7 @@ from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.llm import DEFAULT_MODEL
 from research_tree.agents.workspace.run import run_workspace_agent
 from research_tree.services.errors import ReviewConflictError, WorkspaceNotFoundError
+from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id
 from research_tree.workspace.repository import WorkspaceRepository
 
@@ -40,6 +41,7 @@ class WorkspaceAgentService:
         model: str = DEFAULT_MODEL,
     ) -> dict[str, Any]:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
+        require_owned(self.repository, safe_workspace_id)
         try:
             workspace = self.repository.get_current_workspace(safe_workspace_id)
         except FileNotFoundError as error:

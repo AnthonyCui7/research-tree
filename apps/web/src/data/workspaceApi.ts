@@ -29,10 +29,21 @@ type WorkspaceVersionsResponse = {
   versions: WorkspaceVersion[];
 };
 
-const API_BASE_URL = (import.meta.env.VITE_RESEARCH_TREE_API_BASE_URL ?? "/api").replace(
+export const API_BASE_URL = (import.meta.env.VITE_RESEARCH_TREE_API_BASE_URL ?? "/api").replace(
   /\/$/,
   "",
 );
+
+/**
+ * Told once whenever any request comes back 401. The session store listens and
+ * drops back to the sign-in screen, so no caller has to handle an expired
+ * session itself.
+ */
+let unauthenticatedListener: (() => void) | null = null;
+
+export function onUnauthenticated(listener: (() => void) | null): void {
+  unauthenticatedListener = listener;
+}
 
 export const workspaceEventsUrl = `${API_BASE_URL}/workspaces/events/stream`;
 
@@ -239,22 +250,33 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const AGENT_REQUEST_TIMEOUT_MS = 300_000;
 const ANNOTATION_REQUEST_TIMEOUT_MS = 900_000;
 
-async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
+  const response = await requestRaw(path, init);
+  return (await response.json()) as T;
+}
+
+/** A request whose body the caller reads itself (or ignores, for a 204). */
+export async function requestRaw(path: string, init: RequestInit): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+      credentials: "same-origin",
       ...init,
       headers: {
         Accept: "application/json",
-        "Content-Type": "application/json",
+        ...(init.body instanceof URLSearchParams
+          ? { "Content-Type": "application/x-www-form-urlencoded" }
+          : { "Content-Type": "application/json" }),
+        ...(init.headers ?? {}),
       },
     });
   } catch (error) {
     throw ApiError.fromNetworkFailure(error);
   }
   if (!response.ok) {
+    if (response.status === 401) unauthenticatedListener?.();
     throw await ApiError.fromResponse(response);
   }
-  return (await response.json()) as T;
+  return response;
 }

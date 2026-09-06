@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { ApiKeysDialog } from "./ApiKeysDialog";
-import { AuthScreens } from "./AuthScreens";
 import { HelpDialog } from "./HelpDialog";
 import { ReportBugDialog } from "./ReportBugDialog";
 import { SettingsDialog } from "./SettingsDialog";
@@ -44,11 +43,6 @@ export function AccountScreens({
   }
   if (screen === "report-bug") {
     return <ReportBugDialog onClose={onClose} />;
-  }
-  if (screen === "sign-in" || screen === "create-account") {
-    // The mode is the starting point only; the screen swaps between the two
-    // itself, so remounting on every toggle would lose the typed email.
-    return <AuthScreens key={screen} initialMode={screen} onClose={onClose} />;
   }
   return null;
 }

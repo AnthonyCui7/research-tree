@@ -7,7 +7,7 @@ import socket
 from concurrent.futures import Future
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -18,13 +18,15 @@ from research_tree.retrieval.candidate_preparation import (
 )
 from research_tree.paths import data_root, pipeline_runs_dir, semantic_scholar_cache_dir
 from research_tree.retrieval.semantic_scholar import SemanticScholarClient, s2_api_key
+from research_tree.principal import LOCAL_PRINCIPAL, Principal, bind_principal, current_owner_id
 from research_tree.services.errors import InvalidPayloadError, WorkspaceNotFoundError
+from research_tree.services.tenancy import require_owned, require_run_owned
 from research_tree.services.topics import TopicReviewService, topic_slug
 from research_tree.llm import DEFAULT_MODEL
 from research_tree.workspace.construction import construct_workspace_from_candidates
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.publishing import publish_workspace_version
-from research_tree.workspace.repository import LocalJsonWorkspaceRepository
+from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.enrichment import (
     hydrate_workspace_papers,
     prefetch_paper_content,
@@ -55,7 +57,7 @@ PIPELINE_STAGES = ("candidates", "construct", "hydrate", "related")
 class WorkspacePipelineService:
     def __init__(
         self,
-        repository: LocalJsonWorkspaceRepository,
+        repository: WorkspaceRepository,
         *,
         repo_root: Path,
         dispatch: Callable[[Callable[[], None], str], None] | None = None,
@@ -99,6 +101,7 @@ class WorkspacePipelineService:
     ) -> dict[str, Any]:
         if start_stage not in PIPELINE_STAGES:
             raise InvalidPayloadError(f"start_stage must be one of {PIPELINE_STAGES}.")
+        require_owned(self.repository, workspace_id)
         try:
             workspace = self.repository.get_current_workspace(workspace_id)
         except FileNotFoundError as error:
@@ -135,9 +138,11 @@ class WorkspacePipelineService:
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         try:
-            return self.repository.get_pipeline_run(run_id)
+            run = self.repository.get_pipeline_run(run_id)
         except FileNotFoundError as error:
             raise WorkspaceNotFoundError(f"pipeline run does not exist: {run_id}") from error
+        require_run_owned(run)
+        return run
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         run = self.get_run(run_id)
@@ -147,6 +152,7 @@ class WorkspacePipelineService:
         return run
 
     def list_runs(self, workspace_id: str) -> dict[str, Any]:
+        require_owned(self.repository, workspace_id)
         return {
             "workspace_id": workspace_id,
             "pipeline_runs": self.repository.list_pipeline_runs(workspace_id),
@@ -182,6 +188,9 @@ class WorkspacePipelineService:
             "requested_stages": list(PIPELINE_STAGES[start_index:]),
             "source_run_id": source_run.get("run_id") if source_run else None,
             "source_workspace_version_hash": source_version_hash,
+            # The account this run builds for; the workspace it publishes is
+            # owned by the same account. None for the local user.
+            "owner_id": current_owner_id(),
             "runner_pid": os.getpid(),
             # PID liveness only means anything on the machine that owns the
             # PID, so the reclaimer checks the host before trusting the probe.
@@ -207,18 +216,39 @@ class WorkspacePipelineService:
 
     def _execute(self, run_id: str, source_run: dict[str, Any] | None) -> None:
         run = self.repository.get_pipeline_run(run_id)
+        # The thread (or worker) that runs this has no request context, so the
+        # run's owner is bound here: everything downstream that records an
+        # actor or resolves credentials sees the account that asked for it.
+        with bind_principal(principal_for_owner_id(run.get("owner_id")), feature="pipeline"):
+            self._execute_bound(run_id, run, source_run)
+
+    def _execute_bound(
+        self, run_id: str, run: dict[str, Any], source_run: dict[str, Any] | None
+    ) -> None:
         logger.info(
             "workspace pipeline started run_id=%s workspace_id=%s stages=%s",
             run_id,
             run["workspace_id"],
             ",".join(run["requested_stages"]),
         )
-        if self._run_was_cancelled(run_id):
-            logger.info("workspace pipeline cancelled before start run_id=%s", run_id)
+        if run.get("status") != "queued":
+            # Redelivered or already handled: the record says what happened.
+            logger.info(
+                "workspace pipeline not started run_id=%s status=%s", run_id, run.get("status")
+            )
             return
         run["status"] = "running"
         run["updated_at"] = _now()
         self.repository.save_pipeline_run(run)
+        heartbeat = _Heartbeat.start(self.repository, run_id)
+        try:
+            self._run_stages(run_id, run, source_run)
+        finally:
+            heartbeat.stop()
+
+    def _run_stages(
+        self, run_id: str, run: dict[str, Any], source_run: dict[str, Any] | None
+    ) -> None:
         artifacts = self._execution_artifacts(run, source_run)
         warnings: list[str] = []
         prefetch: _ConstructPrefetch | None = None
@@ -310,7 +340,7 @@ class WorkspacePipelineService:
                     outputs={"workspace_json": str(hydrated_path)},
                 )
                 publish = publish_workspace_version(
-                    repository_dir=self.repository.base_dir,
+                    repository=self.repository,
                     workspace=workspace,
                     reason=f"pipeline run {run_id} core workspace ready",
                     event_type="workspace_pipeline_core_ready",
@@ -325,6 +355,7 @@ class WorkspacePipelineService:
                     },
                     expected_parent_version_hash=published_parent_hash,
                     pipeline_run_id=run_id,
+                    owner_id=run.get("owner_id"),
                 )
                 published_parent_hash = publish["version_hash"]
                 artifacts["core_workspace_version_hash"] = publish["version_hash"]
@@ -384,13 +415,14 @@ class WorkspacePipelineService:
                 }
                 provenance["updated_at"] = _now()
             publish = publish_workspace_version(
-                repository_dir=self.repository.base_dir,
+                repository=self.repository,
                 workspace=workspace,
                 reason=f"pipeline run {run_id} completed",
                 event_type="workspace_pipeline_completed",
                 event_payload={"pipeline_run_id": run_id, "stages": run["requested_stages"]},
                 expected_parent_version_hash=published_parent_hash,
                 pipeline_run_id=run_id,
+                owner_id=run.get("owner_id"),
             )
             artifacts["workspace_version_hash"] = publish["version_hash"]
             run.update(
@@ -519,9 +551,7 @@ class WorkspacePipelineService:
     def _available_workspace_id(self, base_id: str) -> str:
         candidate = base_id
         suffix = 2
-        # Failed hydration can leave cached paper content without ever
-        # publishing a workspace. Only a current workspace reserves its ID.
-        while (self.repository.base_dir / candidate / "current.json").exists():
+        while self.repository.workspace_id_is_taken(candidate):
             candidate = f"{base_id}-{suffix}"
             suffix += 1
         return candidate
@@ -636,6 +666,47 @@ class _ConstructPrefetch:
             # only costs the time it would have saved.
             logger.warning("construct %s failed: %s", label, error)
             return None
+
+
+class _Heartbeat:
+    """Touches the run record every 30 s so a crashed runner is noticed.
+
+    The Postgres repository fails a running run whose heartbeat is older than
+    three minutes; the JSON repository ignores the touch and probes the PID.
+    """
+
+    INTERVAL_SECONDS = 30.0
+
+    def __init__(self, repository: WorkspaceRepository, run_id: str) -> None:
+        self._repository = repository
+        self._run_id = run_id
+        self._stop = Event()
+        self._thread = Thread(target=self._loop, name=f"heartbeat-{run_id}", daemon=True)
+
+    @classmethod
+    def start(cls, repository: WorkspaceRepository, run_id: str) -> "_Heartbeat":
+        heartbeat = cls(repository, run_id)
+        heartbeat._thread.start()
+        return heartbeat
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.INTERVAL_SECONDS):
+            try:
+                self._repository.touch_pipeline_run(self._run_id)
+            except Exception as error:  # noqa: BLE001 - a missed beat is not fatal
+                logger.warning("pipeline heartbeat failed run_id=%s: %s", self._run_id, error)
+
+
+def principal_for_owner_id(owner_id: Any) -> Principal:
+    if not owner_id:
+        return LOCAL_PRINCIPAL
+    from research_tree.auth.accounts import principal_for_user_id
+
+    principal = principal_for_user_id(str(owner_id))
+    return principal if principal is not None else LOCAL_PRINCIPAL
 
 
 MAX_INSTRUCTIONS_CHARS = 2_000

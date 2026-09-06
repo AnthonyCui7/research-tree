@@ -1,0 +1,119 @@
+import { useSyncExternalStore } from "react";
+import { ApiError } from "../lib/apiError";
+import type { SessionInfo } from "../lib/types";
+import { API_BASE_URL, onUnauthenticated, requestJson, requestRaw } from "./workspaceApi";
+
+/**
+ * The one signed-in state the whole app reads.
+ *
+ * `loading` until the first `/account/me` answers; `ready` with the session
+ * after that; `signed-out` when there is none or one expires (every 401 lands
+ * here); `unreachable` when the server could not be asked at all, which is a
+ * different problem from not being signed in and gets a different screen.
+ */
+export type SessionState =
+  | { status: "loading" }
+  | { status: "ready"; session: SessionInfo }
+  | { status: "signed-out"; notice: string | null }
+  | { status: "unreachable"; message: string };
+
+let state: SessionState = { status: "loading" };
+const listeners = new Set<() => void>();
+
+function setState(next: SessionState): void {
+  state = next;
+  listeners.forEach((listener) => listener());
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function useSession(): SessionState {
+  return useSyncExternalStore(subscribe, () => state);
+}
+
+/** The session when signed in, or null; for components that render either way. */
+export function useSessionInfo(): SessionInfo | null {
+  const current = useSession();
+  return current.status === "ready" ? current.session : null;
+}
+
+onUnauthenticated(() => {
+  if (state.status === "ready" && state.session.auth_mode === "accounts") {
+    setState({ status: "signed-out", notice: "Your session ended. Sign in again to continue." });
+  }
+});
+
+export async function loadSession(): Promise<void> {
+  try {
+    const session = await requestJson<SessionInfo>("/account/me", { method: "GET" });
+    setState({ status: "ready", session });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      setState({ status: "signed-out", notice: consumeAuthErrorFromUrl() });
+      return;
+    }
+    if (error instanceof ApiError && error.status === 403) {
+      setState({ status: "signed-out", notice: error.message });
+      return;
+    }
+    setState({
+      status: "unreachable",
+      message:
+        error instanceof Error && error.message
+          ? error.message
+          : "We could not reach the server.",
+    });
+  }
+}
+
+export async function signIn(email: string, password: string): Promise<void> {
+  const form = new URLSearchParams({ username: email.trim(), password });
+  await requestRaw("/auth/login", { method: "POST", body: form });
+  await loadSession();
+}
+
+export async function register(email: string, password: string): Promise<void> {
+  await requestRaw("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ email: email.trim(), password }),
+  });
+  await signIn(email, password);
+}
+
+export async function signInWithGoogle(): Promise<void> {
+  const payload = await requestJson<{ authorization_url: string }>("/auth/google/authorize", {
+    method: "GET",
+  });
+  window.location.assign(payload.authorization_url);
+}
+
+export async function signOut(): Promise<void> {
+  try {
+    await requestRaw("/auth/logout", { method: "POST" });
+  } finally {
+    setState({ status: "signed-out", notice: null });
+  }
+}
+
+/** Where the Google round trip lands when it fails: a reason in the URL. */
+function consumeAuthErrorFromUrl(): string | null {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("auth_error");
+  if (!code) return null;
+  url.searchParams.delete("auth_error");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  switch (code) {
+    case "not_allowed":
+      return "Research Tree is in a private preview. Ask the person who invited you to add your email, then sign in again.";
+    case "google_sign_in_failed":
+      return "Google sign-in did not complete. Try again, or use your email and password.";
+    default:
+      return "Sign-in did not complete. Please try again.";
+  }
+}
+
+/** Absolute URL of the API, for links that leave the app (none today). */
+export const apiBaseUrl = API_BASE_URL;

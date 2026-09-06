@@ -328,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         try:
             publish_result = publish_workspace_version(
-                repository_dir=repository_dir,
+                repository=LocalJsonWorkspaceRepository(repository_dir),
                 workspace=workspace_with_similar_papers,
                 reason="pipeline workspace generation completed",
                 event_type="workspace_pipeline_completed",
@@ -347,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dir,
             "publish_workspace",
             "completed",
-            artifacts={"repository_dir": str(publish_result["repository_dir"])},
+            artifacts={"repository_dir": str(repository_dir)},
         )
 
     print(f"Run directory: {run_dir}")

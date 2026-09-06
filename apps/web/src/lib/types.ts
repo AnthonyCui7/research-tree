@@ -405,3 +405,20 @@ export type NodeSize = {
   width: number;
   height: number;
 };
+
+/** Who is signed in, as the server reports it. */
+export type SessionUser = {
+  id: string;
+  email: string;
+  name: string | null;
+  avatar_url: string | null;
+  is_admin: boolean;
+  is_verified: boolean;
+};
+
+export type SessionInfo = {
+  /** `accounts` behind sign-in; `none` for the single-user local build. */
+  auth_mode: "accounts" | "none";
+  google_sign_in: boolean;
+  user: SessionUser;
+};

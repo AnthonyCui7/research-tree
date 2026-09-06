@@ -5,27 +5,109 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  IMAGE: researchtree7.azurecr.io/research-tree
+
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: research_tree
+          POSTGRES_PASSWORD: research_tree
+          POSTGRES_DB: research_tree_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U research_tree"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
-      - run: uv sync --extra dev
+      - run: uv sync --frozen --extra dev
       # No API keys: the deterministic LLM fallback must keep the suite green
-      # without network access. A test that needs a key is a test that breaks CI.
+      # without network access. The Postgres lane runs every repository test a
+      # second time against the schema the real migration builds.
       - run: uv run python -m pytest tests/ -q
+        env:
+          RESEARCH_TREE_TEST_DATABASE_URL: postgresql+psycopg://research_tree:research_tree@localhost:5432/research_tree_test
 
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: uv export --frozen --no-dev --no-emit-project --extra pipeline --format requirements-txt > requirements.txt
+      - run: uvx pip-audit --requirement requirements.txt --strict
+      - run: npm ci
+      - run: npm audit --audit-level=high
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend, audit]
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency: deploy-production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: az acr login --name ${{ vars.AZURE_CONTAINER_REGISTRY }}
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+      # Schema first, then the app that expects it.
+      - name: Apply migrations
+        run: |
+          set -euo pipefail
+          az containerapp job update -n migrate -g ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.IMAGE }}:${{ github.sha }} --output none
+          execution=$(az containerapp job start -n migrate -g ${{ vars.AZURE_RESOURCE_GROUP }} --query name -o tsv)
+          for _ in $(seq 1 90); do
+            status=$(az containerapp job execution show -n migrate -g ${{ vars.AZURE_RESOURCE_GROUP }} \
+              --job-execution-name "$execution" --query properties.status -o tsv)
+            case "$status" in
+              Succeeded) echo "migration $execution succeeded"; exit 0 ;;
+              Failed|Stopped) echo "migration $execution $status"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "migration $execution did not finish in time"; exit 1
+      - name: Roll out the API
+        run: |
+          az containerapp update -n api -g ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.IMAGE }}:${{ github.sha }} --output none

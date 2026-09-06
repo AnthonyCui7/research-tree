@@ -4,6 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 from research_tree.agents.workspace.models import WorkspaceValidationSummary
+from research_tree.principal import acting_user_id
 from research_tree.services.errors import (
     ReviewConflictError,
     ReviewNotFoundError,
@@ -11,6 +12,7 @@ from research_tree.services.errors import (
     WorkspaceNotFoundError,
     WorkspaceServiceError,
 )
+from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import (
     as_mapping,
     validate_resource_id,
@@ -71,7 +73,7 @@ class WorkspaceReviewService:
                 safe_workspace_id,
                 safe_review_id,
                 actor_type="user",
-                actor_id="local_user",
+                actor_id=acting_user_id(),
                 reason=reason,
                 approval_decision=approval_decision or {},
             )
@@ -116,7 +118,7 @@ class WorkspaceReviewService:
                 safe_workspace_id,
                 safe_review_id,
                 actor_type="user",
-                actor_id="local_user",
+                actor_id=acting_user_id(),
                 reason=reason,
                 approval_decision=approval_decision or {},
             )
@@ -170,7 +172,7 @@ class WorkspaceReviewService:
             safe_review_id,
             edited_workspace=proposed,
             actor_type="user",
-            actor_id="local_user",
+            actor_id=acting_user_id(),
             target_ids=operation_target_ids(operations),
             approval_decision=approval_decision or {},
         )
@@ -271,7 +273,7 @@ class WorkspaceReviewService:
             workspace_id,
             actor="user",
             actor_type="user",
-            actor_id="local_user",
+            actor_id=acting_user_id(),
             event_type="pipeline_rerun_approved",
             target_ids={},
             before_hash=review.get("base_workspace_version_hash"),
@@ -290,7 +292,7 @@ class WorkspaceReviewService:
             applied_workspace_version_hash="",
             event_id=event_id,
             actor_type="user",
-            actor_id="local_user",
+            actor_id=acting_user_id(),
         )
         return self._rerun_action_result(
             workspace_id,
@@ -328,6 +330,7 @@ class WorkspaceReviewService:
         )
 
     def _load_current(self, workspace_id: str) -> dict[str, Any]:
+        require_owned(self.repository, workspace_id)
         try:
             return self.repository.get_current_workspace(workspace_id)
         except FileNotFoundError as error:

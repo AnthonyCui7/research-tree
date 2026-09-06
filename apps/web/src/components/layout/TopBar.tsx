@@ -2,6 +2,8 @@ import { cx } from "../../lib/cx";
 import { pluralize } from "../../lib/format";
 import { outlineIconButtonClass } from "../../lib/controlClasses";
 import { ClockIcon, SearchIcon, SidebarIcon } from "../ui/icons";
+import { Avatar } from "./Avatar";
+import type { SessionUser } from "../../lib/types";
 
 type TopBarProps = {
   workspaceTitle: string;
@@ -16,6 +18,7 @@ type TopBarProps = {
   historyDisabled: boolean;
   onToggleProfile: (trigger: HTMLElement) => void;
   profileOpen: boolean;
+  user: SessionUser;
 };
 
 export function TopBar({
@@ -31,6 +34,7 @@ export function TopBar({
   historyDisabled,
   onToggleProfile,
   profileOpen,
+  user,
 }: TopBarProps) {
   const counts =
     branchCount === null || paperCount === null
@@ -96,7 +100,7 @@ export function TopBar({
       <span className="h-5 w-px flex-none bg-border" aria-hidden="true" />
 
       <button
-        className="grid h-[30px] w-[30px] flex-none place-items-center rounded-full border-0 bg-accent-subtle p-0 text-[11px] font-semibold text-accent-deep transition-[box-shadow] duration-150 hover:shadow-[0_0_0_2px_var(--color-accent-border)] aria-expanded:shadow-[0_0_0_2px_var(--color-accent-border)]"
+        className="grid h-[30px] w-[30px] flex-none place-items-center rounded-full border-0 bg-transparent p-0 transition-[box-shadow] duration-150 hover:shadow-[0_0_0_2px_var(--color-accent-border)] aria-expanded:shadow-[0_0_0_2px_var(--color-accent-border)]"
         type="button"
         onClick={(event) => onToggleProfile(event.currentTarget)}
         aria-haspopup="menu"
@@ -104,7 +108,7 @@ export function TopBar({
         aria-label="Account"
         title="Account"
       >
-        RT
+        <Avatar user={user} size={30} />
       </button>
     </header>
   );

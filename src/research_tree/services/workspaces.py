@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from research_tree.principal import acting_user_id, current_owner_id
 from research_tree.services.errors import (
     InvalidResourceIdError,
     ReviewConflictError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
 )
+from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id, validate_version_hash
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.repository import WorkspaceRepository
@@ -18,10 +20,11 @@ class WorkspaceQueryService:
         self.repository = repository
 
     def list_workspaces(self) -> dict[str, Any]:
-        return {"workspaces": self.repository.list_workspaces()}
+        return {"workspaces": self.repository.list_workspaces(owner_id=current_owner_id())}
 
     def get_current_workspace(self, workspace_id: str) -> dict[str, Any]:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
+        require_owned(self.repository, safe_workspace_id)
         try:
             workspace = self.repository.get_current_workspace(safe_workspace_id)
         except FileNotFoundError as error:
@@ -137,6 +140,7 @@ class WorkspaceQueryService:
                 safe_version_hash,
                 actor="user",
                 actor_type="user",
+                actor_id=acting_user_id(),
                 reason=reason,
             )
         except FileNotFoundError as error:
@@ -154,6 +158,7 @@ class WorkspaceQueryService:
         expected_version_hash: str | None,
     ) -> dict[str, Any]:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
+        require_owned(self.repository, safe_workspace_id)
         try:
             result = self.repository.delete_workspace(
                 safe_workspace_id,

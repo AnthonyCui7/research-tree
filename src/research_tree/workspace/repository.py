@@ -7,10 +7,11 @@ import re
 import socket
 import tempfile
 import uuid
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterator, Mapping, Protocol
 
 from research_tree.workspace.context import atomic_branch_count, workspace_version_hash
 
@@ -27,7 +28,13 @@ _REPOSITORY_LOCKS_GUARD = RLock()
 
 
 class WorkspaceRepository(Protocol):
-    def list_workspaces(self) -> list[dict[str, Any]]:
+    def list_workspaces(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
+        ...
+
+    def workspace_id_is_taken(self, workspace_id: str) -> bool:
+        ...
+
+    def get_workspace_owner_id(self, workspace_id: str) -> str | None:
         ...
 
     def get_current_workspace(self, workspace_id: str) -> dict[str, Any]:
@@ -52,6 +59,8 @@ class WorkspaceRepository(Protocol):
         reason: str,
         agent_run_id: str | None = None,
         pipeline_run_id: str | None = None,
+        expected_version_hash: str | None = None,
+        owner_id: str | None = None,
     ) -> str:
         ...
 
@@ -218,6 +227,9 @@ class WorkspaceRepository(Protocol):
     def cancel_pipeline_runs(self, workspace_id: str) -> list[str]:
         ...
 
+    def touch_pipeline_run(self, run_id: str) -> None:
+        ...
+
     def save_paper_content(
         self, workspace_id: str, paper_id: str, content: Mapping[str, Any]
     ) -> str:
@@ -252,85 +264,140 @@ class WorkspaceRepository(Protocol):
         ...
 
 
-class LocalJsonWorkspaceRepository:
-    def __init__(self, base_dir: Path | str) -> None:
-        self.base_dir = Path(base_dir)
-        lock_key = str(self.base_dir.resolve())
-        with _REPOSITORY_LOCKS_GUARD:
-            self._lock = _REPOSITORY_LOCKS.setdefault(lock_key, RLock())
+class StaleVersionError(RuntimeError):
+    """The workspace's current version is not the one the caller published against."""
 
-    def list_workspaces(self) -> list[dict[str, Any]]:
-        if not self.base_dir.is_dir():
-            return []
 
-        summaries: list[dict[str, Any]] = []
-        for workspace_dir in sorted(self.base_dir.iterdir()):
-            if not workspace_dir.is_dir():
-                continue
-            current_path = workspace_dir / "current.json"
-            if not current_path.is_file():
-                continue
-            try:
-                workspace = _read_json(current_path)
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            if not isinstance(workspace, dict):
-                continue
-            workspace_id = str(workspace.get("workspace_id") or workspace_dir.name)
-            tree = workspace.get("tree")
-            tree_nodes = tree.get("nodes") if isinstance(tree, Mapping) else []
-            summaries.append(
-                {
-                    "workspace_id": workspace_id,
-                    "workspace_version_hash": workspace_version_hash(workspace),
-                    "title": str(workspace.get("title") or workspace_id),
-                    "topic": str(workspace.get("topic") or ""),
-                    "paper_count": len(_mapping(workspace.get("paper_cards"))),
-                    "branch_count": atomic_branch_count(tree_nodes),
-                    "paper_path_count": len(_list(workspace.get("paper_paths"))),
-                    "updated_at": _workspace_updated_at(workspace),
-                }
-            )
-        ordered = sorted(
-            summaries,
-            key=lambda summary: str(summary.get("updated_at") or ""),
-            reverse=True,
-        )
-        # Older pipeline runs could publish the same normalized topic under
-        # different IDs. Keep the newest visible without deleting either copy.
-        visible: list[dict[str, Any]] = []
-        seen_topics: set[str] = set()
-        for summary in ordered:
-            topic_key = _topic_key(str(summary.get("topic") or summary.get("title") or ""))
-            if topic_key and topic_key in seen_topics:
-                continue
-            if topic_key:
-                seen_topics.add(topic_key)
-            visible.append(summary)
-        return visible
+def workspace_summary(workspace_id: str, workspace: Mapping[str, Any]) -> dict[str, Any]:
+    """The sidebar's view of a workspace, computed the same way by every store."""
+
+    tree = workspace.get("tree")
+    tree_nodes = tree.get("nodes") if isinstance(tree, Mapping) else []
+    return {
+        "workspace_id": workspace_id,
+        "workspace_version_hash": workspace_version_hash(workspace),
+        "title": str(workspace.get("title") or workspace_id),
+        "topic": str(workspace.get("topic") or ""),
+        "paper_count": len(_mapping(workspace.get("paper_cards"))),
+        "branch_count": atomic_branch_count(tree_nodes),
+        "paper_path_count": len(_list(workspace.get("paper_paths"))),
+        "updated_at": _workspace_updated_at(workspace),
+    }
+
+
+def dedupe_workspace_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Newest first; one entry per normalized topic.
+
+    Older pipeline runs could publish the same normalized topic under
+    different IDs. Keep the newest visible without deleting either copy.
+    """
+
+    ordered = sorted(
+        summaries,
+        key=lambda summary: str(summary.get("updated_at") or ""),
+        reverse=True,
+    )
+    visible: list[dict[str, Any]] = []
+    seen_topics: set[str] = set()
+    for summary in ordered:
+        topic_key = _topic_key(str(summary.get("topic") or summary.get("title") or ""))
+        if topic_key and topic_key in seen_topics:
+            continue
+        if topic_key:
+            seen_topics.add(topic_key)
+        visible.append(summary)
+    return visible
+
+
+class WorkspaceRepositoryBase:
+    """Decision logic shared by every repository implementation.
+
+    Subclasses provide the storage primitives (the ``_``-prefixed methods
+    that take a ``ctx``); everything about *when* a review may be approved,
+    which events a decision records, and how an idempotent retry behaves
+    lives here once. Every public method runs inside one ``_transaction``:
+    the JSON repository's process lock, or a Postgres transaction holding the
+    workspace's advisory lock. Nested calls reuse the same ``ctx``.
+    """
+
+    # ---- storage primitives (implemented by subclasses) -------------------
+
+    def _transaction(self, workspace_id: str | None = None) -> AbstractContextManager[Any]:
+        raise NotImplementedError
+
+    def _get_current_workspace(self, ctx: Any, workspace_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _get_workspace_version(
+        self, ctx: Any, workspace_id: str, version_hash: str
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _save_workspace_version(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        workspace: dict[str, Any],
+        *,
+        actor: str,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        parent_version_hash: str | None,
+        reason: str,
+        agent_run_id: str | None = None,
+        pipeline_run_id: str | None = None,
+        expected_version_hash: str | None = None,
+        owner_id: str | None = None,
+    ) -> str:
+        raise NotImplementedError
+
+    def _set_current_version(
+        self, ctx: Any, workspace_id: str, version_hash: str, workspace: dict[str, Any]
+    ) -> None:
+        raise NotImplementedError
+
+    def _record_workspace_event(self, ctx: Any, workspace_id: str, event: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def _record_agent_run_event(self, ctx: Any, workspace_id: str, event: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def _existing_review_event_id(
+        self, ctx: Any, workspace_id: str, review_id: str, event_type: str
+    ) -> str | None:
+        raise NotImplementedError
+
+    def _get_review(self, ctx: Any, workspace_id: str, review_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _write_review(self, ctx: Any, workspace_id: str, review: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    # ---- reads ------------------------------------------------------------
 
     def get_current_workspace(self, workspace_id: str) -> dict[str, Any]:
-        path = self._workspace_dir(workspace_id) / "current.json"
-        if not path.is_file():
-            raise FileNotFoundError(f"current workspace does not exist: {path}")
-        payload = _read_json(path)
-        if not isinstance(payload, dict):
-            raise ValueError(f"current workspace must be a JSON object: {path}")
-        return payload
+        with self._transaction() as ctx:
+            return self._get_current_workspace(ctx, workspace_id)
 
-    def get_workspace_version(
-        self,
-        workspace_id: str,
-        version_hash: str,
-    ) -> dict[str, Any]:
-        safe_version_hash = _safe_version_hash(version_hash)
-        path = self._workspace_dir(workspace_id) / "versions" / f"{safe_version_hash}.json"
-        if not path.is_file():
-            raise FileNotFoundError(f"workspace version does not exist: {path}")
-        payload = _read_json(path)
-        if not isinstance(payload, dict):
-            raise ValueError(f"workspace version must be a JSON object: {path}")
-        return payload
+    def get_workspace_version(self, workspace_id: str, version_hash: str) -> dict[str, Any]:
+        with self._transaction() as ctx:
+            return self._get_workspace_version(ctx, workspace_id, version_hash)
+
+    def get_review(self, workspace_id: str, review_id: str) -> dict[str, Any]:
+        with self._transaction() as ctx:
+            return self._get_review(ctx, workspace_id, review_id)
+
+    def get_pending_review(self, workspace_id: str, review_id: str) -> dict[str, Any]:
+        with self._transaction() as ctx:
+            return self._get_pending_review(ctx, workspace_id, review_id)
+
+    def _get_pending_review(self, ctx: Any, workspace_id: str, review_id: str) -> dict[str, Any]:
+        review = self._get_review(ctx, workspace_id, review_id)
+        if review.get("status") != "pending":
+            raise ValueError(f"review is not pending: {review_id}")
+        return review
+
+    # ---- versions and events ---------------------------------------------
 
     def save_workspace_version(
         self,
@@ -344,42 +411,26 @@ class LocalJsonWorkspaceRepository:
         reason: str,
         agent_run_id: str | None = None,
         pipeline_run_id: str | None = None,
+        expected_version_hash: str | None = None,
+        owner_id: str | None = None,
     ) -> str:
-        if actor not in {"user", "agent", "system"}:
+        if actor not in ALLOWED_ACTOR_TYPES:
             raise ValueError(f"unsupported workspace actor: {actor!r}")
-        actor_fields = _actor_fields(actor_type or actor, actor_id)
-        with self._lock:
-            if pipeline_run_id:
-                active_run = self.get_pipeline_run(pipeline_run_id)
-                if active_run.get("status") != "running":
-                    raise RuntimeError("pipeline run no longer owns this workspace publication.")
-            workspace_dir = self._workspace_dir(workspace_id)
-            versions_dir = workspace_dir / "versions"
-            versions_dir.mkdir(parents=True, exist_ok=True)
-
-            version_hash = workspace_version_hash(workspace)
-            version_path = versions_dir / f"{version_hash}.json"
-            metadata_path = versions_dir / f"{version_hash}.metadata.json"
-            metadata = {
-                "schema_version": "research_tree.workspace_version_metadata.v1",
-                "workspace_id": workspace_id,
-                "version_hash": version_hash,
-                "parent_version_hash": parent_version_hash,
-                "actor": actor,
-                **actor_fields,
-                "reason": reason,
-                "agent_run_id": agent_run_id,
-                "created_at": _now(),
-            }
-            # Content-addressed snapshots are immutable. Browser-style navigation
-            # is stored separately so restoring a snapshot never rewrites lineage.
-            if not version_path.is_file():
-                _write_json_atomic(version_path, workspace)
-            if not metadata_path.is_file():
-                _write_json_atomic(metadata_path, metadata)
-            _write_json_atomic(workspace_dir / "current.json", workspace)
-            self._record_new_navigation_head(workspace_id, version_hash)
-            return version_hash
+        with self._transaction(workspace_id) as ctx:
+            return self._save_workspace_version(
+                ctx,
+                workspace_id,
+                workspace,
+                actor=actor,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                parent_version_hash=parent_version_hash,
+                reason=reason,
+                agent_run_id=agent_run_id,
+                pipeline_run_id=pipeline_run_id,
+                expected_version_hash=expected_version_hash,
+                owner_id=owner_id,
+            )
 
     def append_workspace_event(
         self,
@@ -394,7 +445,35 @@ class LocalJsonWorkspaceRepository:
         after_hash: str | None,
         payload: dict[str, Any],
     ) -> str:
-        if actor not in {"user", "agent", "system"}:
+        with self._transaction(workspace_id) as ctx:
+            return self._append_workspace_event(
+                ctx,
+                workspace_id,
+                actor=actor,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                event_type=event_type,
+                target_ids=target_ids,
+                before_hash=before_hash,
+                after_hash=after_hash,
+                payload=payload,
+            )
+
+    def _append_workspace_event(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        *,
+        actor: str,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        event_type: str,
+        target_ids: dict[str, Any],
+        before_hash: str | None,
+        after_hash: str | None,
+        payload: dict[str, Any],
+    ) -> str:
+        if actor not in ALLOWED_ACTOR_TYPES:
             raise ValueError(f"unsupported workspace actor: {actor!r}")
         if not event_type.strip():
             raise ValueError("event_type cannot be empty.")
@@ -413,74 +492,37 @@ class LocalJsonWorkspaceRepository:
             "payload": payload,
             "created_at": _now(),
         }
-        self._append_jsonl(self._workspace_dir(workspace_id) / "events.jsonl", event)
+        self._record_workspace_event(ctx, workspace_id, event)
         return event_id
-
-    def restore_workspace_version(
-        self,
-        workspace_id: str,
-        version_hash: str,
-        *,
-        actor: str,
-        actor_type: str | None = None,
-        actor_id: str | None = None,
-        reason: str,
-    ) -> dict[str, Any]:
-        if actor not in {"user", "agent", "system"}:
-            raise ValueError(f"unsupported workspace actor: {actor!r}")
-        target_workspace = self.get_workspace_version(workspace_id, version_hash)
-        target_hash = workspace_version_hash(target_workspace)
-        try:
-            current_workspace = self.get_current_workspace(workspace_id)
-            current_hash = workspace_version_hash(current_workspace)
-        except FileNotFoundError:
-            current_hash = None
-
-        if current_hash == target_hash:
-            return {
-                "workspace_id": workspace_id,
-                "before_hash": current_hash,
-                "version_hash": target_hash,
-                "event_id": None,
-                "restored": False,
-            }
-
-        with self._lock:
-            navigation = self._workspace_navigation(workspace_id)
-            if target_hash not in navigation["version_hashes"]:
-                navigation["version_hashes"].append(target_hash)
-            navigation["current_index"] = max(
-                index
-                for index, item in enumerate(navigation["version_hashes"])
-                if item == target_hash
-            )
-            navigation["updated_at"] = _now()
-            _write_json_atomic(self._navigation_path(workspace_id), navigation)
-            _write_json_atomic(
-                self._workspace_dir(workspace_id) / "current.json",
-                target_workspace,
-            )
-            event_id = self.append_workspace_event(
-                workspace_id,
-                actor=actor,
-                actor_type=actor_type,
-                actor_id=actor_id,
-                event_type="workspace_restored",
-                target_ids={"workspace_id": workspace_id, "version_hash": target_hash},
-                before_hash=current_hash,
-                after_hash=target_hash,
-                payload={"reason": reason, "restored_version_hash": target_hash},
-            )
-        return {
-            "workspace_id": workspace_id,
-            "before_hash": current_hash,
-            "version_hash": target_hash,
-            "event_id": event_id,
-            "restored": True,
-        }
 
     def append_agent_run_event(
         self,
+        workspace_id: str,
+        *,
+        agent_run_id: str,
+        status: str,
+        payload: dict[str, Any],
+        actor_type: str = "system",
+        actor_id: str | None = None,
+        error_message: str | None = None,
+        errors: list[str] | None = None,
+    ) -> str:
+        with self._transaction(workspace_id) as ctx:
+            return self._append_agent_run_event(
+                ctx,
+                workspace_id,
+                agent_run_id=agent_run_id,
+                status=status,
+                payload=payload,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                error_message=error_message,
+                errors=errors,
+            )
+
+    def _append_agent_run_event(
+        self,
+        ctx: Any,
         workspace_id: str,
         *,
         agent_run_id: str,
@@ -505,8 +547,61 @@ class LocalJsonWorkspaceRepository:
             "payload": payload,
             "created_at": _now(),
         }
-        self._append_jsonl(self._workspace_dir(workspace_id) / "agent_runs.jsonl", event)
+        self._record_agent_run_event(ctx, workspace_id, event)
         return run_event_id
+
+    def restore_workspace_version(
+        self,
+        workspace_id: str,
+        version_hash: str,
+        *,
+        actor: str,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        reason: str,
+    ) -> dict[str, Any]:
+        if actor not in ALLOWED_ACTOR_TYPES:
+            raise ValueError(f"unsupported workspace actor: {actor!r}")
+        with self._transaction(workspace_id) as ctx:
+            target_workspace = self._get_workspace_version(ctx, workspace_id, version_hash)
+            target_hash = workspace_version_hash(target_workspace)
+            try:
+                current_workspace = self._get_current_workspace(ctx, workspace_id)
+                current_hash: str | None = workspace_version_hash(current_workspace)
+            except FileNotFoundError:
+                current_hash = None
+
+            if current_hash == target_hash:
+                return {
+                    "workspace_id": workspace_id,
+                    "before_hash": current_hash,
+                    "version_hash": target_hash,
+                    "event_id": None,
+                    "restored": False,
+                }
+
+            self._set_current_version(ctx, workspace_id, target_hash, target_workspace)
+            event_id = self._append_workspace_event(
+                ctx,
+                workspace_id,
+                actor=actor,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                event_type="workspace_restored",
+                target_ids={"workspace_id": workspace_id, "version_hash": target_hash},
+                before_hash=current_hash,
+                after_hash=target_hash,
+                payload={"reason": reason, "restored_version_hash": target_hash},
+            )
+        return {
+            "workspace_id": workspace_id,
+            "before_hash": current_hash,
+            "version_hash": target_hash,
+            "event_id": event_id,
+            "restored": True,
+        }
+
+    # ---- reviews ----------------------------------------------------------
 
     def save_pending_review(
         self,
@@ -532,72 +627,60 @@ class LocalJsonWorkspaceRepository:
             )
         actor_fields = _actor_fields(actor_type, actor_id)
         active_review_id = review_id or f"review_{uuid.uuid4().hex}"
-        review_path = self._review_path(workspace_id, active_review_id)
-        now = _now()
-        created_at = now
-        status_history: list[dict[str, Any]] = [
-            {
-                "status": "pending",
-                **actor_fields,
-                "created_at": now,
-                "reason": "workspace proposal created",
-            }
-        ]
-        if review_path.is_file():
-            existing = _read_json(review_path)
-            if not isinstance(existing, dict):
-                raise ValueError(f"review must be a JSON object: {review_path}")
-            if existing.get("status") != "pending":
-                raise ValueError(
-                    f"cannot overwrite non-pending review: {active_review_id}"
+        with self._transaction(workspace_id) as ctx:
+            now = _now()
+            created_at = now
+            status_history: list[dict[str, Any]] = [
+                {
+                    "status": "pending",
+                    **actor_fields,
+                    "created_at": now,
+                    "reason": "workspace proposal created",
+                }
+            ]
+            try:
+                existing: dict[str, Any] | None = self._get_review(
+                    ctx, workspace_id, active_review_id
                 )
-            created_at = str(existing.get("created_at") or now)
-            existing_history = existing.get("status_history")
-            if isinstance(existing_history, list):
-                status_history = [
-                    item for item in existing_history if isinstance(item, dict)
-                ]
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                if existing.get("status") != "pending":
+                    raise ValueError(
+                        f"cannot overwrite non-pending review: {active_review_id}"
+                    )
+                created_at = str(existing.get("created_at") or now)
+                existing_history = existing.get("status_history")
+                if isinstance(existing_history, list):
+                    status_history = [
+                        item for item in existing_history if isinstance(item, dict)
+                    ]
 
-        payload = {
-            "schema_version": "research_tree.workspace_review.v1",
-            "review_id": active_review_id,
-            "agent_run_id": agent_run_id,
-            "workspace_id": workspace_id,
-            "status": "pending",
-            # "workspace_patch" applies a proposed workspace on approval;
-            # "pipeline_rerun" starts a pipeline stage instead.
-            "review_type": review_type,
-            "pipeline_rerun": pipeline_rerun or {},
-            **actor_fields,
-            "base_workspace_version_hash": base_workspace_version_hash,
-            "proposed_workspace_version_hash": workspace_version_hash(proposed_workspace),
-            "created_at": created_at,
-            "updated_at": now,
-            "user_message": user_message,
-            "proposed_workspace": proposed_workspace,
-            "proposed_operations": proposed_operations,
-            "diff_summary": diff_summary,
-            "validation_summary": validation_summary,
-            "interrupt_payload": interrupt_payload,
-            "status_history": status_history,
-        }
-        _write_json_atomic(review_path, payload)
+            payload = {
+                "schema_version": "research_tree.workspace_review.v1",
+                "review_id": active_review_id,
+                "agent_run_id": agent_run_id,
+                "workspace_id": workspace_id,
+                "status": "pending",
+                # "workspace_patch" applies a proposed workspace on approval;
+                # "pipeline_rerun" starts a pipeline stage instead.
+                "review_type": review_type,
+                "pipeline_rerun": pipeline_rerun or {},
+                **actor_fields,
+                "base_workspace_version_hash": base_workspace_version_hash,
+                "proposed_workspace_version_hash": workspace_version_hash(proposed_workspace),
+                "created_at": created_at,
+                "updated_at": now,
+                "user_message": user_message,
+                "proposed_workspace": proposed_workspace,
+                "proposed_operations": proposed_operations,
+                "diff_summary": diff_summary,
+                "validation_summary": validation_summary,
+                "interrupt_payload": interrupt_payload,
+                "status_history": status_history,
+            }
+            self._write_review(ctx, workspace_id, payload)
         return active_review_id
-
-    def get_pending_review(self, workspace_id: str, review_id: str) -> dict[str, Any]:
-        review = self.get_review(workspace_id, review_id)
-        if review.get("status") != "pending":
-            raise ValueError(f"review is not pending: {review_id}")
-        return review
-
-    def get_review(self, workspace_id: str, review_id: str) -> dict[str, Any]:
-        review_path = self._review_path(workspace_id, review_id)
-        if not review_path.is_file():
-            raise FileNotFoundError(f"workspace review does not exist: {review_path}")
-        review = _read_json(review_path)
-        if not isinstance(review, dict):
-            raise ValueError(f"workspace review must be a JSON object: {review_path}")
-        return review
 
     def mark_review_approved(
         self,
@@ -609,7 +692,30 @@ class LocalJsonWorkspaceRepository:
         actor_type: str = "user",
         actor_id: str | None = None,
     ) -> dict[str, Any]:
+        with self._transaction(workspace_id) as ctx:
+            return self._mark_review_approved(
+                ctx,
+                workspace_id,
+                review_id,
+                applied_workspace_version_hash=applied_workspace_version_hash,
+                event_id=event_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
+            )
+
+    def _mark_review_approved(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        review_id: str,
+        *,
+        applied_workspace_version_hash: str,
+        event_id: str | None = None,
+        actor_type: str = "user",
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
         return self._mark_review_status(
+            ctx,
             workspace_id,
             review_id,
             status="approved_applied",
@@ -618,6 +724,104 @@ class LocalJsonWorkspaceRepository:
                 "approval_event_id": event_id,
                 "approved_at": _now(),
             },
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+
+    def mark_review_rejected(
+        self,
+        workspace_id: str,
+        review_id: str,
+        *,
+        event_id: str | None = None,
+        reason: str | None = None,
+        actor_type: str = "user",
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._transaction(workspace_id) as ctx:
+            return self._mark_review_rejected(
+                ctx,
+                workspace_id,
+                review_id,
+                event_id=event_id,
+                reason=reason,
+                actor_type=actor_type,
+                actor_id=actor_id,
+            )
+
+    def _mark_review_rejected(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        review_id: str,
+        *,
+        event_id: str | None = None,
+        reason: str | None = None,
+        actor_type: str = "user",
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._mark_review_status(
+            ctx,
+            workspace_id,
+            review_id,
+            status="rejected",
+            extra={
+                "rejection_event_id": event_id,
+                "rejection_reason": reason,
+                "rejected_at": _now(),
+            },
+            actor_type=actor_type,
+            actor_id=actor_id,
+            reason=reason,
+        )
+
+    def mark_review_edited(
+        self,
+        workspace_id: str,
+        review_id: str,
+        *,
+        edited_workspace: dict[str, Any] | None = None,
+        event_id: str | None = None,
+        actor_type: str = "user",
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._transaction(workspace_id) as ctx:
+            return self._mark_review_edited(
+                ctx,
+                workspace_id,
+                review_id,
+                edited_workspace=edited_workspace,
+                event_id=event_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
+            )
+
+    def _mark_review_edited(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        review_id: str,
+        *,
+        edited_workspace: dict[str, Any] | None = None,
+        event_id: str | None = None,
+        actor_type: str = "user",
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        extra: dict[str, Any] = {
+            "edit_event_id": event_id,
+            "edited_at": _now(),
+        }
+        if edited_workspace is not None:
+            extra["edited_workspace_version_hash"] = workspace_version_hash(
+                edited_workspace
+            )
+            extra["edited_workspace"] = edited_workspace
+        return self._mark_review_status(
+            ctx,
+            workspace_id,
+            review_id,
+            status="edited",
+            extra=extra,
             actor_type=actor_type,
             actor_id=actor_id,
         )
@@ -633,15 +837,39 @@ class LocalJsonWorkspaceRepository:
         target_ids: dict[str, Any] | None = None,
         approval_decision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        with self._transaction(workspace_id) as ctx:
+            return self._approve_review_once(
+                ctx,
+                workspace_id,
+                review_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                reason=reason,
+                target_ids=target_ids,
+                approval_decision=approval_decision,
+            )
+
+    def _approve_review_once(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        review_id: str,
+        *,
+        actor_type: str,
+        actor_id: str | None,
+        reason: str | None,
+        target_ids: dict[str, Any] | None,
+        approval_decision: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         actor_fields = _actor_fields(actor_type, actor_id)
-        review = self.get_review(workspace_id, review_id)
+        review = self._get_review(ctx, workspace_id, review_id)
         status = str(review.get("status") or "")
         if status == "approved_applied":
             return _review_action_result(
                 review,
                 ok=True,
                 idempotent=True,
-                updated_workspace=self.get_current_workspace(workspace_id),
+                updated_workspace=self._get_current_workspace(ctx, workspace_id),
             )
         if status != "pending":
             return _review_action_result(
@@ -654,6 +882,7 @@ class LocalJsonWorkspaceRepository:
         proposed_workspace = review.get("proposed_workspace")
         if not isinstance(proposed_workspace, dict):
             return self._fail_pending_review(
+                ctx,
                 workspace_id,
                 review,
                 status="failed_exception",
@@ -666,14 +895,16 @@ class LocalJsonWorkspaceRepository:
             review.get("proposed_workspace_version_hash")
             or workspace_version_hash(proposed_workspace)
         )
-        current_workspace = self.get_current_workspace(workspace_id)
+        current_workspace = self._get_current_workspace(ctx, workspace_id)
         current_hash = workspace_version_hash(current_workspace)
         if current_hash == proposed_hash:
             event_id = self._existing_review_event_id(
+                ctx,
                 workspace_id,
                 review_id,
                 "workspace_patch_approved_applied",
-            ) or self.append_workspace_event(
+            ) or self._append_workspace_event(
+                ctx,
                 workspace_id,
                 actor="user",
                 actor_type=actor_type,
@@ -687,7 +918,8 @@ class LocalJsonWorkspaceRepository:
                     approval_decision=approval_decision,
                 ),
             )
-            updated_review = self.mark_review_approved(
+            updated_review = self._mark_review_approved(
+                ctx,
                 workspace_id,
                 review_id,
                 applied_workspace_version_hash=proposed_hash,
@@ -705,10 +937,12 @@ class LocalJsonWorkspaceRepository:
 
         if current_hash != base_hash:
             event_id = self._existing_review_event_id(
+                ctx,
                 workspace_id,
                 review_id,
                 "workspace_patch_stale_approval_rejected",
-            ) or self.append_workspace_event(
+            ) or self._append_workspace_event(
+                ctx,
                 workspace_id,
                 actor="system",
                 actor_type="system",
@@ -730,6 +964,7 @@ class LocalJsonWorkspaceRepository:
                 },
             )
             updated_review = self._mark_review_status(
+                ctx,
                 workspace_id,
                 review_id,
                 status="failed_stale_base",
@@ -747,7 +982,8 @@ class LocalJsonWorkspaceRepository:
                 actor_id="workspace_agent",
                 reason="stale base workspace",
             )
-            run_event_id = self.append_agent_run_event(
+            run_event_id = self._append_agent_run_event(
+                ctx,
                 workspace_id,
                 agent_run_id=str(review.get("agent_run_id") or ""),
                 status="failed_stale_base",
@@ -769,7 +1005,8 @@ class LocalJsonWorkspaceRepository:
                 error_message=str(updated_review.get("error_message") or ""),
             )
 
-        version_hash = self.save_workspace_version(
+        version_hash = self._save_workspace_version(
+            ctx,
             workspace_id,
             proposed_workspace,
             actor="agent",
@@ -779,8 +1016,10 @@ class LocalJsonWorkspaceRepository:
             reason=reason
             or str(review.get("user_message") or "approved workspace agent patch"),
             agent_run_id=str(review.get("agent_run_id") or ""),
+            expected_version_hash=base_hash,
         )
-        event_id = self.append_workspace_event(
+        event_id = self._append_workspace_event(
+            ctx,
             workspace_id,
             actor="user",
             actor_type=actor_type,
@@ -794,7 +1033,8 @@ class LocalJsonWorkspaceRepository:
                 approval_decision=approval_decision,
             ),
         )
-        updated_review = self.mark_review_approved(
+        updated_review = self._mark_review_approved(
+            ctx,
             workspace_id,
             review_id,
             applied_workspace_version_hash=version_hash,
@@ -802,7 +1042,8 @@ class LocalJsonWorkspaceRepository:
             actor_type=actor_type,
             actor_id=actor_fields["actor_id"],
         )
-        run_event_id = self.append_agent_run_event(
+        run_event_id = self._append_agent_run_event(
+            ctx,
             workspace_id,
             agent_run_id=str(review.get("agent_run_id") or ""),
             status="approved_applied",
@@ -833,8 +1074,32 @@ class LocalJsonWorkspaceRepository:
         target_ids: dict[str, Any] | None = None,
         approval_decision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        with self._transaction(workspace_id) as ctx:
+            return self._reject_review_once(
+                ctx,
+                workspace_id,
+                review_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                reason=reason,
+                target_ids=target_ids,
+                approval_decision=approval_decision,
+            )
+
+    def _reject_review_once(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        review_id: str,
+        *,
+        actor_type: str,
+        actor_id: str | None,
+        reason: str | None,
+        target_ids: dict[str, Any] | None,
+        approval_decision: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         actor_fields = _actor_fields(actor_type, actor_id)
-        review = self.get_review(workspace_id, review_id)
+        review = self._get_review(ctx, workspace_id, review_id)
         status = str(review.get("status") or "")
         if status == "rejected":
             return _review_action_result(review, ok=True, idempotent=True)
@@ -847,10 +1112,12 @@ class LocalJsonWorkspaceRepository:
             )
 
         event_id = self._existing_review_event_id(
+            ctx,
             workspace_id,
             review_id,
             "workspace_patch_rejected",
-        ) or self.append_workspace_event(
+        ) or self._append_workspace_event(
+            ctx,
             workspace_id,
             actor="user",
             actor_type=actor_type,
@@ -867,7 +1134,8 @@ class LocalJsonWorkspaceRepository:
                 "reason": reason or "user rejected workspace patch",
             },
         )
-        updated_review = self.mark_review_rejected(
+        updated_review = self._mark_review_rejected(
+            ctx,
             workspace_id,
             review_id,
             event_id=event_id,
@@ -875,7 +1143,8 @@ class LocalJsonWorkspaceRepository:
             actor_type=actor_type,
             actor_id=actor_fields["actor_id"],
         )
-        run_event_id = self.append_agent_run_event(
+        run_event_id = self._append_agent_run_event(
+            ctx,
             workspace_id,
             agent_run_id=str(review.get("agent_run_id") or ""),
             status="rejected",
@@ -901,9 +1170,33 @@ class LocalJsonWorkspaceRepository:
         target_ids: dict[str, Any] | None = None,
         approval_decision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        with self._transaction(workspace_id) as ctx:
+            return self._edit_review_once(
+                ctx,
+                workspace_id,
+                review_id,
+                edited_workspace=edited_workspace,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                target_ids=target_ids,
+                approval_decision=approval_decision,
+            )
+
+    def _edit_review_once(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        review_id: str,
+        *,
+        edited_workspace: dict[str, Any],
+        actor_type: str,
+        actor_id: str | None,
+        target_ids: dict[str, Any] | None,
+        approval_decision: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         actor_fields = _actor_fields(actor_type, actor_id)
         edited_hash = workspace_version_hash(edited_workspace)
-        review = self.get_review(workspace_id, review_id)
+        review = self._get_review(ctx, workspace_id, review_id)
         status = str(review.get("status") or "")
         if status == "edited":
             if review.get("edited_workspace_version_hash") == edited_hash:
@@ -923,10 +1216,12 @@ class LocalJsonWorkspaceRepository:
             )
 
         event_id = self._existing_review_event_id(
+            ctx,
             workspace_id,
             review_id,
             "workspace_patch_edited",
-        ) or self.append_workspace_event(
+        ) or self._append_workspace_event(
+            ctx,
             workspace_id,
             actor="user",
             actor_type=actor_type,
@@ -943,7 +1238,8 @@ class LocalJsonWorkspaceRepository:
                 "edited_workspace_version_hash": edited_hash,
             },
         )
-        updated_review = self.mark_review_edited(
+        updated_review = self._mark_review_edited(
+            ctx,
             workspace_id,
             review_id,
             edited_workspace=edited_workspace,
@@ -951,7 +1247,8 @@ class LocalJsonWorkspaceRepository:
             actor_type=actor_type,
             actor_id=actor_fields["actor_id"],
         )
-        run_event_id = self.append_agent_run_event(
+        run_event_id = self._append_agent_run_event(
+            ctx,
             workspace_id,
             agent_run_id=str(review.get("agent_run_id") or ""),
             status="edited",
@@ -966,56 +1263,290 @@ class LocalJsonWorkspaceRepository:
             event_ids=[event_id, run_event_id],
         )
 
-    def mark_review_rejected(
+    def _mark_review_status(
         self,
+        ctx: Any,
         workspace_id: str,
         review_id: str,
         *,
-        event_id: str | None = None,
+        status: str,
+        extra: dict[str, Any],
+        actor_type: str,
+        actor_id: str | None,
         reason: str | None = None,
-        actor_type: str = "user",
-        actor_id: str | None = None,
     ) -> dict[str, Any]:
-        return self._mark_review_status(
+        review = self._get_pending_review(ctx, workspace_id, review_id)
+        actor_fields = _actor_fields(actor_type, actor_id)
+        now = _now()
+        history = review.get("status_history")
+        if not isinstance(history, list):
+            history = []
+        history = [item for item in history if isinstance(item, dict)]
+        history.append(
+            {
+                "status": status,
+                **actor_fields,
+                "created_at": now,
+                "reason": reason,
+            }
+        )
+        review.update(extra)
+        review["status"] = status
+        review.update(actor_fields)
+        review["updated_at"] = now
+        review["status_history"] = history
+        self._write_review(ctx, workspace_id, review)
+        return review
+
+    def _fail_pending_review(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        review: dict[str, Any],
+        *,
+        status: str,
+        error_message: str,
+        target_ids: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        review_id = str(review.get("review_id") or "")
+        event_id = self._append_workspace_event(
+            ctx,
+            workspace_id,
+            actor="system",
+            actor_type="system",
+            event_type=f"workspace_patch_{status}",
+            target_ids=target_ids or {},
+            before_hash=review.get("base_workspace_version_hash"),
+            after_hash=None,
+            payload={
+                **self._review_event_payload(review),
+                "error_message": error_message,
+            },
+        )
+        updated_review = self._mark_review_status(
+            ctx,
             workspace_id,
             review_id,
-            status="rejected",
+            status=status,
             extra={
-                "rejection_event_id": event_id,
-                "rejection_reason": reason,
-                "rejected_at": _now(),
+                "failure_event_id": event_id,
+                "error_message": error_message,
+                "failed_at": _now(),
             },
-            actor_type=actor_type,
-            actor_id=actor_id,
-            reason=reason,
+            actor_type="system",
+            actor_id="workspace_agent",
+            reason=error_message,
+        )
+        run_event_id = self._append_agent_run_event(
+            ctx,
+            workspace_id,
+            agent_run_id=str(review.get("agent_run_id") or ""),
+            status=status,
+            payload={"review_id": review_id, "event_id": event_id},
+            actor_type="system",
+            error_message=error_message,
+            errors=[error_message],
+        )
+        return _review_action_result(
+            updated_review,
+            ok=False,
+            idempotent=False,
+            event_ids=[event_id, run_event_id],
+            error_message=error_message,
         )
 
-    def mark_review_edited(
+    def _review_event_payload(
         self,
-        workspace_id: str,
-        review_id: str,
+        review: dict[str, Any],
         *,
-        edited_workspace: dict[str, Any] | None = None,
-        event_id: str | None = None,
-        actor_type: str = "user",
-        actor_id: str | None = None,
+        approval_decision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        extra: dict[str, Any] = {
-            "edit_event_id": event_id,
-            "edited_at": _now(),
+        return {
+            "review_id": review.get("review_id"),
+            "agent_run_id": review.get("agent_run_id"),
+            "user_message": review.get("user_message"),
+            "proposed_operations": review.get("proposed_operations") or [],
+            "diff_summary": review.get("diff_summary") or {},
+            "validation_summary": review.get("validation_summary") or {},
+            "approval_decision": approval_decision or {},
         }
-        if edited_workspace is not None:
-            extra["edited_workspace_version_hash"] = workspace_version_hash(
-                edited_workspace
+
+
+class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
+    def __init__(self, base_dir: Path | str) -> None:
+        self.base_dir = Path(base_dir)
+        lock_key = str(self.base_dir.resolve())
+        with _REPOSITORY_LOCKS_GUARD:
+            self._lock = _REPOSITORY_LOCKS.setdefault(lock_key, RLock())
+
+    @contextmanager
+    def _transaction(self, workspace_id: str | None = None) -> Iterator[None]:
+        with self._lock:
+            yield None
+
+    # ---- workspaces -------------------------------------------------------
+
+    def list_workspaces(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
+        # Files carry no owner; a single-user data directory is all one tenant.
+        del owner_id
+        if not self.base_dir.is_dir():
+            return []
+
+        summaries: list[dict[str, Any]] = []
+        for workspace_dir in sorted(self.base_dir.iterdir()):
+            if not workspace_dir.is_dir():
+                continue
+            current_path = workspace_dir / "current.json"
+            if not current_path.is_file():
+                continue
+            try:
+                workspace = _read_json(current_path)
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(workspace, dict):
+                continue
+            workspace_id = str(workspace.get("workspace_id") or workspace_dir.name)
+            summaries.append(workspace_summary(workspace_id, workspace))
+        return dedupe_workspace_summaries(summaries)
+
+    def workspace_id_is_taken(self, workspace_id: str) -> bool:
+        # Failed hydration can leave cached paper content without ever
+        # publishing a workspace. Only a current workspace reserves its ID.
+        return (self._workspace_dir(workspace_id) / "current.json").exists()
+
+    def get_workspace_owner_id(self, workspace_id: str) -> str | None:
+        return None
+
+    def _get_current_workspace(self, ctx: Any, workspace_id: str) -> dict[str, Any]:
+        path = self._workspace_dir(workspace_id) / "current.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"current workspace does not exist: {path}")
+        payload = _read_json(path)
+        if not isinstance(payload, dict):
+            raise ValueError(f"current workspace must be a JSON object: {path}")
+        return payload
+
+    def _get_workspace_version(
+        self, ctx: Any, workspace_id: str, version_hash: str
+    ) -> dict[str, Any]:
+        safe_version_hash = _safe_version_hash(version_hash)
+        path = self._workspace_dir(workspace_id) / "versions" / f"{safe_version_hash}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"workspace version does not exist: {path}")
+        payload = _read_json(path)
+        if not isinstance(payload, dict):
+            raise ValueError(f"workspace version must be a JSON object: {path}")
+        return payload
+
+    def _save_workspace_version(
+        self,
+        ctx: Any,
+        workspace_id: str,
+        workspace: dict[str, Any],
+        *,
+        actor: str,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        parent_version_hash: str | None,
+        reason: str,
+        agent_run_id: str | None = None,
+        pipeline_run_id: str | None = None,
+        expected_version_hash: str | None = None,
+        owner_id: str | None = None,
+    ) -> str:
+        del owner_id  # files carry no owner
+        actor_fields = _actor_fields(actor_type or actor, actor_id)
+        if pipeline_run_id:
+            active_run = self.get_pipeline_run(pipeline_run_id)
+            if active_run.get("status") != "running":
+                raise RuntimeError("pipeline run no longer owns this workspace publication.")
+        workspace_dir = self._workspace_dir(workspace_id)
+        if expected_version_hash is not None:
+            current_path = workspace_dir / "current.json"
+            current_hash = (
+                workspace_version_hash(_read_json(current_path))
+                if current_path.is_file()
+                else None
             )
-            extra["edited_workspace"] = edited_workspace
-        return self._mark_review_status(
-            workspace_id,
-            review_id,
-            status="edited",
-            extra=extra,
-            actor_type=actor_type,
-            actor_id=actor_id,
+            if current_hash != expected_version_hash:
+                raise StaleVersionError(
+                    "workspace current version changed before publish: "
+                    f"expected {expected_version_hash}, found {current_hash}."
+                )
+        versions_dir = workspace_dir / "versions"
+        versions_dir.mkdir(parents=True, exist_ok=True)
+
+        version_hash = workspace_version_hash(workspace)
+        version_path = versions_dir / f"{version_hash}.json"
+        metadata_path = versions_dir / f"{version_hash}.metadata.json"
+        metadata = {
+            "schema_version": "research_tree.workspace_version_metadata.v1",
+            "workspace_id": workspace_id,
+            "version_hash": version_hash,
+            "parent_version_hash": parent_version_hash,
+            "actor": actor,
+            **actor_fields,
+            "reason": reason,
+            "agent_run_id": agent_run_id,
+            "created_at": _now(),
+        }
+        # Content-addressed snapshots are immutable. Browser-style navigation
+        # is stored separately so restoring a snapshot never rewrites lineage.
+        if not version_path.is_file():
+            _write_json_atomic(version_path, workspace)
+        if not metadata_path.is_file():
+            _write_json_atomic(metadata_path, metadata)
+        _write_json_atomic(workspace_dir / "current.json", workspace)
+        self._record_new_navigation_head(workspace_id, version_hash)
+        return version_hash
+
+    def _set_current_version(
+        self, ctx: Any, workspace_id: str, version_hash: str, workspace: dict[str, Any]
+    ) -> None:
+        navigation = self._workspace_navigation(workspace_id)
+        if version_hash not in navigation["version_hashes"]:
+            navigation["version_hashes"].append(version_hash)
+        navigation["current_index"] = max(
+            index
+            for index, item in enumerate(navigation["version_hashes"])
+            if item == version_hash
+        )
+        navigation["updated_at"] = _now()
+        _write_json_atomic(self._navigation_path(workspace_id), navigation)
+        _write_json_atomic(self._workspace_dir(workspace_id) / "current.json", workspace)
+
+    def _record_workspace_event(self, ctx: Any, workspace_id: str, event: dict[str, Any]) -> None:
+        self._append_jsonl(self._workspace_dir(workspace_id) / "events.jsonl", event)
+
+    def _record_agent_run_event(self, ctx: Any, workspace_id: str, event: dict[str, Any]) -> None:
+        self._append_jsonl(self._workspace_dir(workspace_id) / "agent_runs.jsonl", event)
+
+    def _existing_review_event_id(
+        self, ctx: Any, workspace_id: str, review_id: str, event_type: str
+    ) -> str | None:
+        for event in self.list_workspace_events(workspace_id):
+            payload = event.get("payload")
+            if (
+                event.get("event_type") == event_type
+                and isinstance(payload, dict)
+                and payload.get("review_id") == review_id
+            ):
+                return str(event.get("event_id") or "")
+        return None
+
+    def _get_review(self, ctx: Any, workspace_id: str, review_id: str) -> dict[str, Any]:
+        review_path = self._review_path(workspace_id, review_id)
+        if not review_path.is_file():
+            raise FileNotFoundError(f"workspace review does not exist: {review_path}")
+        review = _read_json(review_path)
+        if not isinstance(review, dict):
+            raise ValueError(f"workspace review must be a JSON object: {review_path}")
+        return review
+
+    def _write_review(self, ctx: Any, workspace_id: str, review: dict[str, Any]) -> None:
+        _write_json_atomic(
+            self._review_path(workspace_id, str(review.get("review_id") or "")),
+            review,
         )
 
     def list_workspace_events(self, workspace_id: str) -> list[dict[str, Any]]:
@@ -1028,35 +1559,13 @@ class LocalJsonWorkspaceRepository:
         versions_dir = self._workspace_dir(workspace_id) / "versions"
         if not versions_dir.is_dir():
             return []
-        current_hash = None
-        current_path = self._workspace_dir(workspace_id) / "current.json"
-        if current_path.is_file():
-            current = _read_json(current_path)
-            if isinstance(current, dict):
-                current_hash = workspace_version_hash(current)
         metadata_by_hash: dict[str, dict[str, Any]] = {}
         for metadata_path in sorted(versions_dir.glob("*.metadata.json")):
             metadata = _read_json(metadata_path)
             if isinstance(metadata, dict):
                 metadata_by_hash[str(metadata.get("version_hash") or "")] = metadata
         navigation = self._workspace_navigation(workspace_id)
-        versions: list[dict[str, Any]] = []
-        for index, version_hash in enumerate(navigation["version_hashes"]):
-            metadata = dict(metadata_by_hash.get(version_hash) or {
-                "schema_version": "research_tree.workspace_version_metadata.v1",
-                "workspace_id": workspace_id,
-                "version_hash": version_hash,
-                "parent_version_hash": None,
-                "actor": "system",
-                "actor_type": "system",
-                "actor_id": "workspace_agent",
-                "reason": "saved workspace",
-                "created_at": None,
-            })
-            metadata["navigation_index"] = index
-            metadata["is_current"] = index == navigation["current_index"]
-            versions.append(metadata)
-        return versions
+        return _versions_from_navigation(workspace_id, navigation, metadata_by_hash)
 
     def delete_workspace(
         self,
@@ -1086,6 +1595,8 @@ class LocalJsonWorkspaceRepository:
                 "deleted": True,
                 "deleted_at": _now(),
             }
+
+    # ---- pipeline runs ----------------------------------------------------
 
     def save_pipeline_run(self, pipeline_run: Mapping[str, Any]) -> None:
         run_id = _safe_workspace_id(str(pipeline_run.get("run_id") or ""))
@@ -1172,6 +1683,11 @@ class LocalJsonWorkspaceRepository:
         with self._lock:
             return self._cancel_pipeline_runs_locked(workspace_id)
 
+    def touch_pipeline_run(self, run_id: str) -> None:
+        # The PID probe in `_reclaim_dead_pipeline_run` is this store's
+        # liveness signal; there is no heartbeat to refresh.
+        return None
+
     def _cancel_pipeline_runs_locked(self, workspace_id: str) -> list[str]:
         runs_dir = self.base_dir / ".pipeline_runs"
         if not runs_dir.is_dir():
@@ -1195,6 +1711,8 @@ class LocalJsonWorkspaceRepository:
             _write_json_atomic(path, run)
             cancelled.append(str(run.get("run_id") or ""))
         return cancelled
+
+    # ---- reviews and paper artifacts -------------------------------------
 
     def list_workspace_reviews(self, workspace_id: str) -> list[dict[str, Any]]:
         reviews_dir = self._workspace_dir(workspace_id) / "reviews"
@@ -1255,6 +1773,8 @@ class LocalJsonWorkspaceRepository:
             raise ValueError(f"invalid paper annotations artifact: {path}")
         return payload
 
+    # ---- files ------------------------------------------------------------
+
     def _workspace_dir(self, workspace_id: str) -> Path:
         safe_workspace_id = _safe_workspace_id(workspace_id)
         return self.base_dir / safe_workspace_id
@@ -1314,126 +1834,6 @@ class LocalJsonWorkspaceRepository:
             / f"{_safe_workspace_id(review_id)}.json"
         )
 
-    def _mark_review_status(
-        self,
-        workspace_id: str,
-        review_id: str,
-        *,
-        status: str,
-        extra: dict[str, Any],
-        actor_type: str,
-        actor_id: str | None,
-        reason: str | None = None,
-    ) -> dict[str, Any]:
-        review_path = self._review_path(workspace_id, review_id)
-        review = self.get_pending_review(workspace_id, review_id)
-        actor_fields = _actor_fields(actor_type, actor_id)
-        now = _now()
-        history = review.get("status_history")
-        if not isinstance(history, list):
-            history = []
-        history = [item for item in history if isinstance(item, dict)]
-        history.append(
-            {
-                "status": status,
-                **actor_fields,
-                "created_at": now,
-                "reason": reason,
-            }
-        )
-        review.update(extra)
-        review["status"] = status
-        review.update(actor_fields)
-        review["updated_at"] = now
-        review["status_history"] = history
-        _write_json_atomic(review_path, review)
-        return review
-
-    def _fail_pending_review(
-        self,
-        workspace_id: str,
-        review: dict[str, Any],
-        *,
-        status: str,
-        error_message: str,
-        target_ids: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        review_id = str(review.get("review_id") or "")
-        event_id = self.append_workspace_event(
-            workspace_id,
-            actor="system",
-            actor_type="system",
-            event_type=f"workspace_patch_{status}",
-            target_ids=target_ids or {},
-            before_hash=review.get("base_workspace_version_hash"),
-            after_hash=None,
-            payload={
-                **self._review_event_payload(review),
-                "error_message": error_message,
-            },
-        )
-        updated_review = self._mark_review_status(
-            workspace_id,
-            review_id,
-            status=status,
-            extra={
-                "failure_event_id": event_id,
-                "error_message": error_message,
-                "failed_at": _now(),
-            },
-            actor_type="system",
-            actor_id="workspace_agent",
-            reason=error_message,
-        )
-        run_event_id = self.append_agent_run_event(
-            workspace_id,
-            agent_run_id=str(review.get("agent_run_id") or ""),
-            status=status,
-            payload={"review_id": review_id, "event_id": event_id},
-            actor_type="system",
-            error_message=error_message,
-            errors=[error_message],
-        )
-        return _review_action_result(
-            updated_review,
-            ok=False,
-            idempotent=False,
-            event_ids=[event_id, run_event_id],
-            error_message=error_message,
-        )
-
-    def _existing_review_event_id(
-        self,
-        workspace_id: str,
-        review_id: str,
-        event_type: str,
-    ) -> str | None:
-        for event in self.list_workspace_events(workspace_id):
-            payload = event.get("payload")
-            if (
-                event.get("event_type") == event_type
-                and isinstance(payload, dict)
-                and payload.get("review_id") == review_id
-            ):
-                return str(event.get("event_id") or "")
-        return None
-
-    def _review_event_payload(
-        self,
-        review: dict[str, Any],
-        *,
-        approval_decision: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "review_id": review.get("review_id"),
-            "agent_run_id": review.get("agent_run_id"),
-            "user_message": review.get("user_message"),
-            "proposed_operations": review.get("proposed_operations") or [],
-            "diff_summary": review.get("diff_summary") or {},
-            "validation_summary": review.get("validation_summary") or {},
-            "approval_decision": approval_decision or {},
-        }
-
     def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as file:
@@ -1450,6 +1850,51 @@ class LocalJsonWorkspaceRepository:
             if isinstance(payload, dict):
                 events.append(payload)
         return events
+
+
+def build_workspace_repository(*, artifacts: Any = None) -> WorkspaceRepository:
+    """The repository the process should use, chosen by configuration.
+
+    Postgres when `RESEARCH_TREE_DATABASE_URL` is set, otherwise the JSON files
+    under the data directory. Imported lazily so a file-based deployment never
+    loads the database driver.
+    """
+
+    from research_tree.db import database_url, get_engine
+    from research_tree.paths import workspaces_dir
+
+    if database_url():
+        from research_tree.artifact_store import default_artifact_store
+        from research_tree.workspace.postgres_repository import PostgresWorkspaceRepository
+
+        return PostgresWorkspaceRepository(
+            get_engine(), artifacts=artifacts or default_artifact_store()
+        )
+    return LocalJsonWorkspaceRepository(workspaces_dir())
+
+
+def _versions_from_navigation(
+    workspace_id: str,
+    navigation: Mapping[str, Any],
+    metadata_by_hash: Mapping[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    versions: list[dict[str, Any]] = []
+    for index, version_hash in enumerate(navigation["version_hashes"]):
+        metadata = dict(metadata_by_hash.get(version_hash) or {
+            "schema_version": "research_tree.workspace_version_metadata.v1",
+            "workspace_id": workspace_id,
+            "version_hash": version_hash,
+            "parent_version_hash": None,
+            "actor": "system",
+            "actor_type": "system",
+            "actor_id": "workspace_agent",
+            "reason": "saved workspace",
+            "created_at": None,
+        })
+        metadata["navigation_index"] = index
+        metadata["is_current"] = index == navigation["current_index"]
+        versions.append(metadata)
+    return versions
 
 
 def _read_json(path: Path) -> Any:

@@ -12,6 +12,7 @@ from urllib.parse import quote, urlparse
 from typing import Any
 
 from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
+from research_tree.principal import current_owner_id
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
     SEMANTIC_SCHOLAR_RATE_LIMITER,
@@ -38,7 +39,7 @@ class TopicReviewService:
         if not raw_topic:
             return _result(raw_topic, raw_topic, False, "Enter a research topic.")
 
-        workspaces = self.repository.list_workspaces()
+        workspaces = self.repository.list_workspaces(owner_id=current_owner_id())
         source_paper = _linked_paper_metadata(raw_topic)
         if _is_web_link(raw_topic) and source_paper is None:
             result = _result(

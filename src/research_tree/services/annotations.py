@@ -23,6 +23,7 @@ from research_tree.services.errors import (
     WorkspaceNotFoundError,
     WorkspaceServiceError,
 )
+from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id
 from research_tree.workspace.repository import WorkspaceRepository
 
@@ -131,6 +132,7 @@ class PaperAnnotationService:
         safe_paper_id = paper_id.strip()
         if not safe_paper_id or len(safe_paper_id) > 512:
             raise InvalidResourceIdError("paper_id must be between 1 and 512 characters.")
+        require_owned(self.repository, safe_workspace_id)
         try:
             workspace = self.repository.get_current_workspace(safe_workspace_id)
         except FileNotFoundError as error:

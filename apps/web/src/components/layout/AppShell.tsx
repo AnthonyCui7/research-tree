@@ -17,6 +17,19 @@ import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } 
 import { ClockIcon, TrashIcon } from "../ui/icons";
 import { cx } from "../../lib/cx";
 import { useAgentSession } from "../../data/useAgentSession";
+import { signOut, useSessionInfo } from "../../data/session";
+import type { SessionUser } from "../../lib/types";
+
+// The shell only renders behind the session gate, so this is never shown; it
+// keeps the top bar's prop total when the store is mid-update.
+const LOCAL_USER: SessionUser = {
+  id: "local_user",
+  email: "",
+  name: "Local profile",
+  avatar_url: null,
+  is_admin: true,
+  is_verified: true,
+};
 import { PANEL_EXIT_MS, useExitAnimation } from "../../lib/animation";
 import { isRunActive } from "../../lib/pipelineStages";
 import type {
@@ -113,6 +126,7 @@ export function AppShell({
   const refreshError = status !== "error" && error && error !== dismissedError ? error : null;
   const session = useAgentSession(activeWorkspace?.workspace_id ?? null, onWorkspaceChanged);
   const apiKeyLabel = useApiKeyLabel();
+  const sessionInfo = useSessionInfo();
 
   // A refresh that succeeds re-arms the strip, so the same failure returning
   // after a good refresh is reported again rather than silently swallowed.
@@ -213,6 +227,7 @@ export function AppShell({
             setProfileAnchor((current) => (current ? null : anchorFromEvent(trigger, "right")))
           }
           profileOpen={profileAnchor !== null}
+          user={sessionInfo?.user ?? LOCAL_USER}
         />
 
         <div className="relative flex min-h-0 flex-1">
@@ -329,11 +344,16 @@ export function AppShell({
         />
       ) : null}
 
-      {profileAnchor ? (
+      {profileAnchor && sessionInfo ? (
         <ProfileMenu
           anchor={profileAnchor}
+          session={sessionInfo}
           onClose={() => setProfileAnchor(null)}
           onOpenScreen={setAccountScreen}
+          onSignOut={() => {
+            setProfileAnchor(null);
+            void signOut();
+          }}
           apiKeyLabel={apiKeyLabel}
         />
       ) : null}

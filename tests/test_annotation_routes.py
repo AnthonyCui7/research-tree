@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from research_tree.annotation.models import BoundingBox, PaperAnnotation
 from research_tree.api.dependencies import get_paper_annotation_service
 from research_tree.services.annotations import PaperAnnotationService
-from research_tree.workspace.repository import LocalJsonWorkspaceRepository
+from research_tree.workspace.repository import WorkspaceRepository
 
 
 PAPER_ID = "10.48550/arxiv.2207.05221"
@@ -66,7 +66,7 @@ def downloads() -> dict[str, bytes]:
 @pytest.fixture
 def annotated_client(
     client: TestClient,
-    repository: LocalJsonWorkspaceRepository,
+    repository: WorkspaceRepository,
     annotator: Annotator,
     downloads: dict[str, bytes],
 ) -> TestClient:
@@ -80,7 +80,7 @@ def annotated_client(
 
 
 def seed_paper_workspace(
-    repository: LocalJsonWorkspaceRepository,
+    repository: WorkspaceRepository,
     *,
     workspace_id: str = "sampling",
     card: dict[str, Any] | None = None,
@@ -120,7 +120,7 @@ class TestPaperAnnotations:
     def test_annotations_come_back_and_are_cached(
         self,
         annotated_client: TestClient,
-        repository: LocalJsonWorkspaceRepository,
+        repository: WorkspaceRepository,
         annotator: Annotator,
     ) -> None:
         response = annotated_client.get(annotations_url())
@@ -185,7 +185,7 @@ class TestPaperAnnotations:
         assert annotator.calls == 2
 
     def test_a_failing_annotator_reports_the_paper_as_unavailable(
-        self, client: TestClient, repository: LocalJsonWorkspaceRepository
+        self, client: TestClient, repository: WorkspaceRepository
     ) -> None:
         seed_paper_workspace(repository)
 
@@ -203,7 +203,7 @@ class TestPaperAnnotations:
         assert response.json()["error_code"] == "paper_unavailable"
 
     def test_a_failing_download_reports_the_paper_as_unavailable(
-        self, client: TestClient, repository: LocalJsonWorkspaceRepository
+        self, client: TestClient, repository: WorkspaceRepository
     ) -> None:
         seed_paper_workspace(repository)
 
@@ -219,7 +219,7 @@ class TestPaperAnnotations:
         assert response.json()["error_code"] == "paper_unavailable"
 
     def test_a_paper_without_a_pdf_is_a_bad_request(
-        self, client: TestClient, repository: LocalJsonWorkspaceRepository
+        self, client: TestClient, repository: WorkspaceRepository
     ) -> None:
         seed_paper_workspace(
             repository,

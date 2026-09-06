@@ -1,44 +1,47 @@
 import { MenuItem, MenuSection, PopoverMenu, type MenuAnchor } from "../ui/PopoverMenu";
 import { BugIcon, GearIcon, HelpIcon, KeyIcon, SignOutIcon } from "../ui/icons";
+import { Avatar, displayName } from "./Avatar";
+import type { SessionInfo } from "../../lib/types";
 
 /** The screens this menu opens; the shell owns which one is showing. */
-export type AccountScreen =
-  | "settings"
-  | "api-keys"
-  | "help"
-  | "report-bug"
-  | "sign-in"
-  | "create-account";
+export type AccountScreen = "settings" | "api-keys" | "help" | "report-bug";
 
 type ProfileMenuProps = {
   anchor: MenuAnchor;
+  session: SessionInfo;
   onClose: () => void;
   onOpenScreen: (screen: AccountScreen) => void;
+  onSignOut: () => void;
   /** Last four characters of the configured key, or null when there is none. */
   apiKeyLabel: string | null;
 };
 
 /**
- * The account menu. There are no accounts in this build — no auth, no database —
- * so the identity is the local one and signing out is shown but inert rather
- * than invented; see PROJECT.md "Next Steps".
+ * The account menu. Behind sign-in it shows the account the session belongs
+ * to and ends that session; the local build shows its one implicit profile and
+ * has no session to end.
  */
-export function ProfileMenu({ anchor, onClose, onOpenScreen, apiKeyLabel }: ProfileMenuProps) {
+export function ProfileMenu({
+  anchor,
+  session,
+  onClose,
+  onOpenScreen,
+  onSignOut,
+  apiKeyLabel,
+}: ProfileMenuProps) {
+  const local = session.auth_mode === "none";
+  const { user } = session;
+
   return (
     <PopoverMenu anchor={anchor} onClose={onClose} label="Account" width={256}>
       <div className="flex items-center gap-2.5 border-b border-hairline-soft px-3.5 py-3">
-        <span
-          className="grid h-9 w-9 flex-none place-items-center rounded-full bg-accent-subtle text-[13px] font-bold text-accent-deep"
-          aria-hidden="true"
-        >
-          RT
-        </span>
+        <Avatar user={user} size={36} />
         <span className="min-w-0">
           <span className="block truncate text-[13.5px] font-bold text-text-primary">
-            Local profile
+            {displayName(user)}
           </span>
           <span className="block truncate text-[12px] text-text-muted">
-            Signed in on this device
+            {local ? "Signed in on this device" : user.email}
           </span>
         </span>
       </div>
@@ -73,17 +76,11 @@ export function ProfileMenu({ anchor, onClose, onOpenScreen, apiKeyLabel }: Prof
 
       <MenuSection>
         <MenuItem
-          icon={<SignOutIcon className="h-[15px] w-[15px] -scale-x-100" />}
-          onClick={() => onOpenScreen("sign-in")}
-        >
-          Sign in / create account
-        </MenuItem>
-        <MenuItem
           tone="danger"
           icon={<SignOutIcon className="h-[15px] w-[15px]" />}
-          disabled
-          title="There is no account to sign out of in this build"
-          onClick={() => {}}
+          disabled={local}
+          title={local ? "This build runs without accounts, so there is no session to end" : undefined}
+          onClick={onSignOut}
         >
           Sign out
         </MenuItem>

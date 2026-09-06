@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { repositoryWorkspaceGateway, workspaceEventsUrl } from "./workspaceApi";
 import { messageFrom } from "../lib/apiError";
+import { loadSession } from "./session";
 import type { WorkspaceSummary } from "../lib/types";
 
 type WorkspaceCollectionState = {
@@ -62,6 +63,11 @@ export function useWorkspaceCollection(): WorkspaceCollectionState & {
       // EventSource reconnects on its own; surface the gap rather than fail.
       if (active && events.readyState !== EventSource.OPEN) {
         setState((current) => ({ ...current, live: false }));
+      }
+      // A stream the browser gives up on (CLOSED, not reconnecting) is what an
+      // expired session looks like from here: EventSource cannot read the 401.
+      if (active && events.readyState === EventSource.CLOSED) {
+        void loadSession();
       }
     };
 

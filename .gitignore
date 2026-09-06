@@ -28,6 +28,9 @@ dist/
 /experiments/
 /tests/output/
 
+# Local benchmark scripts and results — private, never commit
+/bench/
+
 # Stray root images
 /*.png
 /*.jpg

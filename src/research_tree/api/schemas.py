@@ -239,3 +239,18 @@ class ReviewEditResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     persisted_event_ids: list[str] = Field(default_factory=list)
+
+
+class SessionUser(BaseModel):
+    id: str
+    email: str
+    name: str | None = None
+    avatar_url: str | None = None
+    is_admin: bool = False
+    is_verified: bool = False
+
+
+class SessionResponse(BaseModel):
+    auth_mode: str
+    google_sign_in: bool = False
+    user: SessionUser
