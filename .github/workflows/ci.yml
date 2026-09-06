@@ -59,8 +59,13 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - run: uv export --frozen --no-dev --no-emit-project --extra pipeline --format requirements-txt > requirements.txt
-      - run: uvx pip-audit --requirement requirements.txt --strict
+      # The lock is the audited artifact: no resolver, no install. Linux pins
+      # torch from the PyTorch CPU index; the `+cpu` tag names the same code as
+      # the PyPI release, which is what the advisory databases know.
+      - run: |
+          uv export --frozen --no-dev --no-emit-project --no-hashes --extra pipeline --format requirements-txt \
+            | sed -E 's/^(torch==[0-9.]+)\+cpu/\1/' > requirements.txt
+          uvx pip-audit --requirement requirements.txt --no-deps --disable-pip --strict
       - run: npm ci
       - run: npm audit --audit-level=high
 
