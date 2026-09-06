@@ -1,18 +1,24 @@
 import type {
   BranchNode,
   BranchTreeNode,
+  PaperAnalysisEntry,
   PaperCard,
   PaperContentSummary,
   PaperDetails,
   PaperPath,
+  PaperReference,
   PaperStep,
   PaperTreeNode,
+  PathLabelViewModel,
   Point,
+  ReadingOrderEntry,
   RootTreeNode,
   TreeEdgeViewModel,
+  TreeNodeId,
   TreeNodeViewModel,
   TreeViewModel,
   WorkspaceDocument,
+  WorkspaceScopeSummary,
 } from "./types";
 
 const ROOT_POSITION_X = 32;
@@ -28,6 +34,8 @@ const NODE_PADDING = 14;
 const NODE_BORDER = 2;
 const NODE_GAP = 6;
 const NODE_VERTICAL_GUARD = 12;
+/** Room over a timeline row for its caption: one kicker line and a gap. */
+const PATH_LABEL_HEIGHT = 20;
 
 /** Real card heights measured from the DOM, keyed by tree node id. */
 export type MeasuredNodeHeights = Record<string, number>;
@@ -36,8 +44,15 @@ type LayoutState = {
   nextY: number;
   nodes: TreeNodeViewModel[];
   edges: TreeEdgeViewModel[];
+  pathLabels: PathLabelViewModel[];
   pathStarts: { branchId: string; paperNodeId: string }[];
   maxRight: number;
+};
+
+type PlacedPath = {
+  path: PaperPath;
+  centerY: number;
+  paperNodeIds: TreeNodeId[];
 };
 
 /**
@@ -74,6 +89,7 @@ export function normalizeWorkspaceForTree(
     nextY: TOP_PADDING,
     nodes: [],
     edges: [],
+    pathLabels: [],
     pathStarts: [],
     maxRight: ROOT_POSITION_X + rootSize.width,
   };
@@ -150,6 +166,22 @@ export function normalizeWorkspaceForTree(
   }
 
   const currentVersion = workspace.current_workspace_version_hash ?? null;
+  const nodesById = Object.fromEntries(state.nodes.map((node) => [node.id, node]));
+  // A paper on several paths has several cards; references and the reading
+  // order point at the first one laid out.
+  const nodeIdByPaperId = new Map<string, TreeNodeId>();
+  for (const node of state.nodes) {
+    if (node.kind === "paper" && !nodeIdByPaperId.has(node.paperId)) {
+      nodeIdByPaperId.set(node.paperId, node.id);
+    }
+  }
+  for (const node of state.nodes) {
+    if (node.kind === "paper") {
+      const card = workspace.paper_cards[node.paperId];
+      node.readBefore = paperReferences(workspace, card?.read_before, nodeIdByPaperId);
+      node.readAfter = paperReferences(workspace, card?.read_after, nodeIdByPaperId);
+    }
+  }
 
   return {
     workspaceId: workspace.workspace_id,
@@ -167,9 +199,70 @@ export function normalizeWorkspaceForTree(
     },
     root: rootNode,
     nodes: state.nodes,
-    nodesById: Object.fromEntries(state.nodes.map((node) => [node.id, node])),
+    nodesById,
     edges: state.edges,
+    scope: scopeSummary(workspace),
+    readingOrder: readingOrderEntries(workspace, nodesById, nodeIdByPaperId),
+    pathLabels: state.pathLabels,
   };
+}
+
+function scopeSummary(workspace: WorkspaceDocument): WorkspaceScopeSummary | null {
+  const scope = workspace.scope;
+  const label = typeof scope?.scope_label === "string" ? scope.scope_label.trim() : "";
+  const rationale = typeof scope?.scope_rationale === "string" ? scope.scope_rationale.trim() : "";
+  if (!label && !rationale) {
+    return null;
+  }
+  return { label, rationale };
+}
+
+function readingOrderEntries(
+  workspace: WorkspaceDocument,
+  nodesById: Record<TreeNodeId, TreeNodeViewModel>,
+  nodeIdByPaperId: Map<string, TreeNodeId>,
+): ReadingOrderEntry[] {
+  const items = Array.isArray(workspace.reading_order) ? workspace.reading_order : [];
+  return items
+    .flatMap((item): ReadingOrderEntry[] => {
+      const card = workspace.paper_cards[item.paper_id];
+      if (!card) {
+        return [];
+      }
+      const nodeId = nodeIdByPaperId.get(item.paper_id) ?? null;
+      const node = nodeId ? nodesById[nodeId] : undefined;
+      return [
+        {
+          order: Number(item.order) || 0,
+          paperId: item.paper_id,
+          nodeId,
+          title: card.title,
+          authors: Array.isArray(card.authors) ? card.authors : [],
+          year: card.year ?? null,
+          publicationDate: card.publication_date ?? null,
+          branchTitle: node?.kind === "paper" ? node.branchTitle : "",
+        },
+      ];
+    })
+    .sort((left, right) => left.order - right.order);
+}
+
+/** Ids a card names, resolved to titles; ids without a card are dropped. */
+function paperReferences(
+  workspace: WorkspaceDocument,
+  paperIds: unknown,
+  nodeIdByPaperId: Map<string, TreeNodeId>,
+): PaperReference[] {
+  if (!Array.isArray(paperIds)) {
+    return [];
+  }
+  return paperIds.flatMap((paperId): PaperReference[] => {
+    const card = typeof paperId === "string" ? workspace.paper_cards[paperId] : undefined;
+    if (!card || typeof paperId !== "string") {
+      return [];
+    }
+    return [{ paperId, title: card.title, nodeId: nodeIdByPaperId.get(paperId) ?? null }];
+  });
 }
 
 function layoutBranch({
@@ -203,6 +296,7 @@ function layoutBranch({
   // can be nudged down as one once the branch card's own height is known.
   const subtreeNodeStart = state.nodes.length;
   const subtreeEdgeStart = state.edges.length;
+  const subtreeLabelStart = state.pathLabels.length;
   const spanTop = state.nextY;
   const childCenters = (childrenByParent.get(branch.node_id) ?? [])
     .map((childId) =>
@@ -219,11 +313,11 @@ function layoutBranch({
       }),
     )
     .filter((center): center is number => center !== null);
-  const paths = pathsByBranch.get(branch.node_id) ?? [];
-  const pathCenters = paths
-    .map((path) => layoutPath({ workspace, branch, branchX, path, familyByBranch, measuredHeights, state }))
-    .filter((center): center is number => center !== null);
-  const childOrPathCenters = [...childCenters, ...pathCenters];
+  const placedPaths = (pathsByBranch.get(branch.node_id) ?? []).flatMap((path) => {
+    const placed = layoutPath({ workspace, branch, branchX, path, familyByBranch, measuredHeights, state });
+    return placed ? [placed] : [];
+  });
+  const childOrPathCenters = [...childCenters, ...placedPaths.map((placed) => placed.centerY)];
   const branchAnchor = anchorPaper(
     workspace,
     branch.survey_anchor_paper_id ? [branch.survey_anchor_paper_id] : [],
@@ -242,6 +336,7 @@ function layoutBranch({
     spanTop,
     subtreeNodeStart,
     subtreeEdgeStart,
+    subtreeLabelStart,
   });
   const branchNode: BranchTreeNode = {
     id: branch.node_id,
@@ -259,6 +354,13 @@ function layoutBranch({
     openQuestions: branch.open_questions,
     anchorPaper: branchAnchor,
     paperCount: branchPaperCount,
+    paths: placedPaths.map(({ path, paperNodeIds }) => ({
+      pathId: path.path_id,
+      label: path.label?.trim() ?? "",
+      description: path.description?.trim() ?? "",
+      rationale: path.rationale?.trim() ?? "",
+      paperNodeIds,
+    })),
     position: {
       x: branchX,
       y: centerY - branchSize.height / 2,
@@ -287,6 +389,7 @@ function reserveBranchRow({
   spanTop,
   subtreeNodeStart,
   subtreeEdgeStart,
+  subtreeLabelStart,
 }: {
   state: LayoutState;
   branchHeight: number;
@@ -294,6 +397,7 @@ function reserveBranchRow({
   spanTop: number;
   subtreeNodeStart: number;
   subtreeEdgeStart: number;
+  subtreeLabelStart: number;
 }): number {
   if (childOrPathCenters.length === 0) {
     state.nextY = spanTop + branchHeight + ROW_GAP;
@@ -303,7 +407,7 @@ function reserveBranchRow({
   const rawCenterY = average(childOrPathCenters, spanTop + branchHeight / 2);
   const overhangAbove = Math.max(0, spanTop - (rawCenterY - branchHeight / 2));
   if (overhangAbove > 0) {
-    shiftPlacedSubtree(state, subtreeNodeStart, subtreeEdgeStart, overhangAbove);
+    shiftPlacedSubtree(state, subtreeNodeStart, subtreeEdgeStart, subtreeLabelStart, overhangAbove);
   }
   const centerY = rawCenterY + overhangAbove;
   state.nextY =
@@ -312,14 +416,16 @@ function reserveBranchRow({
 }
 
 /**
- * Moves everything a subtree has already placed. Timeline edges carry resolved
- * points rather than node references, so they have to travel with their nodes;
- * tree edges are derived from final positions once layout is done.
+ * Moves everything a subtree has already placed. Timeline edges and path
+ * captions carry resolved points rather than node references, so they have to
+ * travel with their nodes; tree edges are derived from final positions once
+ * layout is done.
  */
 function shiftPlacedSubtree(
   state: LayoutState,
   nodeStart: number,
   edgeStart: number,
+  labelStart: number,
   distance: number,
 ): void {
   for (let index = nodeStart; index < state.nodes.length; index += 1) {
@@ -329,6 +435,9 @@ function shiftPlacedSubtree(
     const edge = state.edges[index]!;
     edge.from.y += distance;
     edge.to.y += distance;
+  }
+  for (let index = labelStart; index < state.pathLabels.length; index += 1) {
+    state.pathLabels[index]!.position.y += distance;
   }
 }
 
@@ -348,7 +457,7 @@ function layoutPath({
   familyByBranch: Map<string, number>;
   measuredHeights?: MeasuredNodeHeights;
   state: LayoutState;
-}): number | null {
+}): PlacedPath | null {
   const whyReadHereById = new Map(
     (Array.isArray(path.paper_steps) ? path.paper_steps : []).map((step) => [
       step.paper_id,
@@ -364,13 +473,17 @@ function layoutPath({
     return null;
   }
 
-  const paperY = state.nextY;
+  // The caption sits over the row, so the row starts below it.
+  const caption = path.label?.trim() ?? "";
+  const captionHeight = caption ? PATH_LABEL_HEIGHT : 0;
+  const paperY = state.nextY + captionHeight;
   const paperX = branchX + BRANCH_WIDTH + COLUMN_GAP;
   const family = familyByBranch.get(branch.node_id) ?? null;
   const paperNodes = stepPapers.map((paper, index) =>
     paperNodeViewModel({
       paper,
       path,
+      pathLabel: caption,
       branch,
       index,
       readingLength: stepPapers.length,
@@ -398,9 +511,19 @@ function layoutPath({
     state.edges.push(edgeBetween(paperNodes[index - 1]!, paperNodes[index]!, "timeline"));
   }
 
+  if (caption) {
+    state.pathLabels.push({
+      id: `path-label:${path.path_id}`,
+      pathId: path.path_id,
+      text: caption,
+      position: { x: paperX, y: state.nextY },
+      width: lastNode.position.x + lastNode.size.width - paperX,
+    });
+  }
+
   state.maxRight = Math.max(state.maxRight, lastNode.position.x + lastNode.size.width);
-  state.nextY += pathHeight + ROW_GAP;
-  return timelineCenterY;
+  state.nextY += captionHeight + pathHeight + ROW_GAP;
+  return { path, centerY: timelineCenterY, paperNodeIds: paperNodes.map((node) => node.id) };
 }
 
 function childBranches(
@@ -460,6 +583,7 @@ function legacyStepOrder(left: PaperStep, right: PaperStep): number {
 function paperNodeViewModel({
   paper,
   path,
+  pathLabel,
   branch,
   index,
   readingLength,
@@ -470,6 +594,7 @@ function paperNodeViewModel({
 }: {
   paper: PaperCard;
   path: PaperPath;
+  pathLabel: string;
   branch: BranchNode;
   index: number;
   readingLength: number;
@@ -488,6 +613,11 @@ function paperNodeViewModel({
     readingIndex: index + 1,
     readingLength,
     whyReadHere: whyReadHere.trim(),
+    pathId: path.path_id,
+    pathLabel,
+    // Resolved once every card is placed, so a reference can point at its card.
+    readBefore: [],
+    readAfter: [],
     ...paperDetails(paper),
     position,
     size: paperNodeSize(paper, measuredHeights?.[id]),
@@ -518,9 +648,32 @@ function paperDetails(paper: PaperCard): PaperDetails {
     tldr: paper.tldr?.trim() || null,
     importance: paper.importance?.trim() || "",
     abstract: paper.abstract || "",
+    secondaryTags: Array.isArray(paper.secondary_tags)
+      ? paper.secondary_tags.filter((tag): tag is string => typeof tag === "string" && tag.trim() !== "")
+      : [],
+    analysis: paperAnalysis(paper),
     similarPapers: Array.isArray(paper.similar_papers) ? paper.similar_papers : [],
     content: paperContentSummary(paper),
   };
+}
+
+const ANALYSIS_FIELDS: readonly (readonly [keyof PaperCard, string])[] = [
+  ["problem", "Problem"],
+  ["core_idea", "Core idea"],
+  ["method", "Method"],
+  ["assumptions", "Assumptions"],
+  ["datasets_or_benchmarks", "Datasets and benchmarks"],
+  ["results", "Results"],
+  ["limitations", "Limitations"],
+];
+
+/** The card's analysis fields that hold text, in the order they are read. */
+function paperAnalysis(paper: PaperCard): PaperAnalysisEntry[] {
+  return ANALYSIS_FIELDS.flatMap(([field, label]) => {
+    const value = paper[field];
+    const body = typeof value === "string" ? value.trim() : "";
+    return body ? [{ label, body }] : [];
+  });
 }
 
 /**
@@ -554,15 +707,20 @@ function isSurveyPaper(paper: PaperCard): boolean {
   return paper.paper_role.toLowerCase().includes("survey");
 }
 
+/**
+ * A branch with papers but no path still gets a row. The row has nothing to say
+ * for itself, so it carries no caption and the branch panel titles it generically
+ * rather than repeating the branch's own description under a second heading.
+ */
 function fallbackPath(branch: BranchNode): PaperPath {
   return {
     path_id: `fallback-${branch.node_id}`,
     branch_node_id: branch.node_id,
     path_type: "primary_timeline",
-    label: "Reading sequence",
-    description: branch.description,
+    label: "",
+    description: "",
     paper_ids: branch.primary_paper_ids,
-    rationale: branch.why_it_matters,
+    rationale: "",
   };
 }
 

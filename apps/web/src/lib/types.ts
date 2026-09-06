@@ -4,7 +4,7 @@ export type WorkspaceDocument = {
   current_workspace_version_hash?: string;
   topic: string;
   title: string;
-  scope: Record<string, unknown>;
+  scope: WorkspaceScope;
   source_candidate_artifact: Record<string, unknown>;
   root: WorkspaceRoot;
   tree: WorkspaceTree;
@@ -14,6 +14,13 @@ export type WorkspaceDocument = {
   comparison_tables: Record<string, unknown>[];
   discarded_candidates: Record<string, unknown>[];
   provenance: Record<string, unknown>;
+};
+
+/** The boundary the build committed to; the paper budget is the pipeline's own. */
+export type WorkspaceScope = {
+  scope_label?: string;
+  scope_rationale?: string;
+  visible_paper_budget?: Record<string, unknown>;
 };
 
 export type WorkspaceSummary = {
@@ -279,15 +286,21 @@ export type PaperCard = {
     page_count?: number | null;
     truncated?: boolean | null;
   } | null;
-  problem: string;
-  core_idea: string;
-  method: string;
-  assumptions: string;
-  datasets_or_benchmarks: string;
-  results: string;
-  limitations: string;
-  read_before: string[];
-  read_after: string[];
+  /**
+   * Analysis fields the schema declares but nothing fills: construction writes
+   * only placement, tags and importance, and the survey card builder leaves
+   * them empty. The inspector renders whichever are present.
+   */
+  problem?: string;
+  core_idea?: string;
+  method?: string;
+  assumptions?: string;
+  datasets_or_benchmarks?: string;
+  results?: string;
+  limitations?: string;
+  /** Paper ids the assistant may set; construction leaves both empty. */
+  read_before?: string[];
+  read_after?: string[];
   user_notes: string;
   similar_papers: SimilarPaper[];
 };
@@ -326,6 +339,60 @@ export type TreeViewModel = {
   nodes: TreeNodeViewModel[];
   nodesById: Record<TreeNodeId, TreeNodeViewModel>;
   edges: TreeEdgeViewModel[];
+  /** The document's scope block, when it says anything. */
+  scope: WorkspaceScopeSummary | null;
+  /** The document's global reading order, resolved to the cards on the canvas. */
+  readingOrder: ReadingOrderEntry[];
+  /** One caption over each timeline row whose reading path has a label. */
+  pathLabels: PathLabelViewModel[];
+};
+
+export type WorkspaceScopeSummary = {
+  label: string;
+  rationale: string;
+};
+
+export type ReadingOrderEntry = {
+  order: number;
+  paperId: string;
+  /** Null when the paper has no card on the canvas, as a survey has not. */
+  nodeId: TreeNodeId | null;
+  title: string;
+  authors: string[];
+  year: number | null;
+  publicationDate: string | null;
+  branchTitle: string;
+};
+
+export type PathLabelViewModel = {
+  id: string;
+  pathId: string;
+  text: string;
+  position: Point;
+  /** The row's width, which the caption truncates to. */
+  width: number;
+};
+
+/** Another paper in the workspace, named so a panel can link to it. */
+export type PaperReference = {
+  paperId: string;
+  title: string;
+  nodeId: TreeNodeId | null;
+};
+
+export type PaperAnalysisEntry = {
+  label: string;
+  body: string;
+};
+
+/** One reading path as the branch panel lists it. */
+export type BranchPathViewModel = {
+  pathId: string;
+  /** Empty for the sequence synthesised from a branch that has no paths. */
+  label: string;
+  description: string;
+  rationale: string;
+  paperNodeIds: TreeNodeId[];
 };
 
 export type TreeNodeViewModel = RootTreeNode | BranchTreeNode | PaperTreeNode;
@@ -383,6 +450,8 @@ export type PaperDetails = {
   tldr: string | null;
   importance: string;
   abstract: string;
+  secondaryTags: string[];
+  analysis: PaperAnalysisEntry[];
   similarPapers: SimilarPaper[];
   content: PaperContentSummary | null;
 };
@@ -415,6 +484,7 @@ export type BranchTreeNode = {
   anchorPaper: PaperDetails | null;
   /** Papers laid out on this branch's reading paths. */
   paperCount: number;
+  paths: BranchPathViewModel[];
   position: Point;
   size: NodeSize;
 };
@@ -430,6 +500,10 @@ export type PaperTreeNode = PaperDetails & {
   readingIndex: number;
   readingLength: number;
   whyReadHere: string;
+  pathId: string;
+  pathLabel: string;
+  readBefore: PaperReference[];
+  readAfter: PaperReference[];
   position: Point;
   size: NodeSize;
 };

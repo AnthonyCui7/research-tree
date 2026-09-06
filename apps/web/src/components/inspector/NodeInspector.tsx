@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { cx } from "../../lib/cx";
 import { DROPDOWN_EXIT_MS, useExitAnimation } from "../../lib/animation";
 import { longDateLabel } from "../../lib/format";
-import { authorLine, publicationDate } from "../tree/TreeNode";
+import { authorLine, kickerClass, publicationDate } from "../tree/TreeNode";
 import { PanelClose } from "../panel/RightPanel";
 
 // The reader carries a PDF engine, which is most of what the app would ship.
@@ -13,13 +13,18 @@ const AnnotatedPaperReader = lazy(() =>
   })),
 );
 import type {
+  BranchPathViewModel,
   BranchTreeNode,
+  PaperAnalysisEntry,
   PaperDetails,
+  PaperReference,
   PaperTreeNode,
+  ReadingOrderEntry,
   SimilarPaper,
   TreeNodeId,
   TreeNodeViewModel,
   TreeViewModel,
+  WorkspaceScopeSummary,
 } from "../../lib/types";
 
 type NodeInspectorProps = {
@@ -56,12 +61,19 @@ export function NodeInspector({
         className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pr-11 pb-7"
         key={node.id}
       >
-        {node.kind === "root" ? <RootView node={node} tree={tree} updatedAt={updatedAt} /> : null}
+        {node.kind === "root" ? (
+          <RootView node={node} tree={tree} updatedAt={updatedAt} onSelectNode={onSelectNode} />
+        ) : null}
         {node.kind === "branch" ? (
           <BranchView node={node} tree={tree} onSelectNode={onSelectNode} />
         ) : null}
         {node.kind === "paper" ? (
-          <PaperView node={node} workspaceId={tree.workspaceId} onOpenAssistant={onOpenAssistant} />
+          <PaperView
+            node={node}
+            workspaceId={tree.workspaceId}
+            onSelectNode={onSelectNode}
+            onOpenAssistant={onOpenAssistant}
+          />
         ) : null}
       </div>
     </>
@@ -73,10 +85,12 @@ export function NodeInspector({
 function PaperView({
   node,
   workspaceId,
+  onSelectNode,
   onOpenAssistant,
 }: {
   node: PaperTreeNode;
   workspaceId: string;
+  onSelectNode: (nodeId: TreeNodeId) => void;
   onOpenAssistant?: () => void;
 }) {
   return (
@@ -88,9 +102,94 @@ function PaperView({
       <SourceLinks paper={node} workspaceId={workspaceId} onOpenAssistant={onOpenAssistant} />
       <Section title="TLDR" body={node.tldr || "Unavailable"} />
       {node.importance ? <Section title="Why it matters" body={node.importance} /> : null}
+      {node.whyReadHere ? <PathStep node={node} /> : null}
       {node.abstract ? <Section title="Abstract" body={node.abstract} /> : null}
+      {node.analysis.length > 0 ? <Analysis entries={node.analysis} /> : null}
+      <PaperReferences title="Read before" references={node.readBefore} onSelectNode={onSelectNode} />
+      <PaperReferences title="Read after" references={node.readAfter} onSelectNode={onSelectNode} />
+      <Chips label="Tags" values={node.secondaryTags} />
       {node.similarPapers.length > 0 ? <SimilarPapers papers={node.similarPapers} /> : null}
     </>
+  );
+}
+
+/** Where the paper sits on its reading path, and the path's reason for it. */
+function PathStep({ node }: { node: PaperTreeNode }) {
+  const position = `Step ${node.readingIndex} of ${node.readingLength}`;
+  return (
+    <SectionShell title="Why read it here">
+      <p className="mt-[7px] mb-0 text-[11.5px] text-text-muted">
+        {node.pathLabel ? `${position} · ${node.pathLabel}` : position}
+      </p>
+      <p className="mt-1 mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.62] text-text-primary">
+        {node.whyReadHere}
+      </p>
+    </SectionShell>
+  );
+}
+
+function Analysis({ entries }: { entries: PaperAnalysisEntry[] }) {
+  return (
+    <SectionShell title="Analysis">
+      <dl className="mt-2 mb-0 grid w-[min(100%,62ch)] gap-2.5">
+        {entries.map((entry) => (
+          <div key={entry.label}>
+            <dt className={kickerClass}>{entry.label}</dt>
+            <dd className="mt-0.5 ml-0 text-[13px] leading-[1.62] text-text-primary">{entry.body}</dd>
+          </div>
+        ))}
+      </dl>
+    </SectionShell>
+  );
+}
+
+/** Papers the card names as prerequisites or follow-ups; a row links when the paper has a card. */
+function PaperReferences({
+  title,
+  references,
+  onSelectNode,
+}: {
+  title: string;
+  references: PaperReference[];
+  onSelectNode: (nodeId: TreeNodeId) => void;
+}) {
+  if (references.length === 0) {
+    return null;
+  }
+  return (
+    <SectionShell title={title}>
+      <ul className="m-0 mt-1 list-none p-0">
+        {references.map((reference) => (
+          <li key={reference.paperId}>
+            <ReferenceRow reference={reference} onSelectNode={onSelectNode} />
+          </li>
+        ))}
+      </ul>
+    </SectionShell>
+  );
+}
+
+function ReferenceRow({
+  reference,
+  onSelectNode,
+}: {
+  reference: PaperReference;
+  onSelectNode: (nodeId: TreeNodeId) => void;
+}) {
+  const nodeId = reference.nodeId;
+  const className =
+    "-mx-2.5 block w-[calc(100%+20px)] rounded-md px-2.5 py-[7px] text-left text-[12.5px] font-semibold leading-[1.4] text-text-primary [overflow-wrap:anywhere]";
+  if (!nodeId) {
+    return <span className={className}>{reference.title}</span>;
+  }
+  return (
+    <button
+      className={cx(className, "border-0 bg-transparent transition-[background-color] duration-150 hover:bg-surface-subtle")}
+      type="button"
+      onClick={() => onSelectNode(nodeId)}
+    >
+      {reference.title}
+    </button>
   );
 }
 
@@ -286,7 +385,7 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
       </div>
       {papers.length > 3 ? (
         <button
-          className="mt-3 w-full rounded-[7px] border border-border bg-surface px-3 py-2 text-center text-[11.5px] font-semibold text-text-primary transition-[background-color,border-color,color] duration-150 hover:border-accent hover:bg-surface-subtle hover:text-accent-deep"
+          className={showAllButtonClass}
           type="button"
           onClick={() => setShowAll((current) => !current)}
           aria-expanded={showAll}
@@ -317,52 +416,82 @@ function BranchView({
   tree: TreeViewModel;
   onSelectNode: (nodeId: TreeNodeId) => void;
 }) {
-  const readingPath = useMemo(() => papersForBranch(tree, node.branchNodeId), [tree, node.branchNodeId]);
+  const paths = useMemo(
+    () =>
+      node.paths.map((path) => ({
+        path,
+        papers: path.paperNodeIds.flatMap((nodeId) => {
+          const paper = tree.nodesById[nodeId];
+          return paper?.kind === "paper" ? [paper] : [];
+        }),
+      })),
+    [tree, node.paths],
+  );
+  const paperCount = paths.reduce((total, entry) => total + entry.papers.length, 0);
   return (
     <>
       <h2 className="m-0 max-w-[40ch] text-[17px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]">
         {node.title}
       </h2>
       <p className="mt-1.5 mb-0 text-xs text-text-secondary">
-        <b className="font-semibold text-text-primary">{readingPath.length}</b>{" "}
-        {readingPath.length === 1 ? "paper" : "papers"} in reading path
+        <b className="font-semibold text-text-primary">{paperCount}</b>{" "}
+        {paperCount === 1 ? "paper" : "papers"}{" "}
+        {paths.length > 1 ? `across ${paths.length} reading paths` : "in reading path"}
       </p>
       <Section title="Overview" body={node.description} />
       {node.whyItMatters ? <Section title="Why it matters" body={node.whyItMatters} /> : null}
       {node.anchorPaper ? <SurveyAnchor label="Branch survey" paper={node.anchorPaper} /> : null}
-      {readingPath.length > 0 ? (
-        <SectionShell title="Reading path">
-          <ol className="m-0 mt-2 flex list-none flex-col p-0">
-            {readingPath.map((paper, index) => (
-              <li key={paper.id}>
-                <button
-                  className="-mx-2.5 flex w-[calc(100%+20px)] gap-[11px] rounded-md border-0 bg-transparent px-2.5 py-[9px] text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
-                  type="button"
-                  onClick={() => onSelectNode(paper.id)}
-                >
-                  <span
-                    className="mt-px grid h-5 w-5 flex-none place-items-center rounded-full bg-accent-subtle text-[10.5px] font-semibold text-accent-deep"
-                    aria-hidden="true"
-                  >
-                    {index + 1}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[12.5px] font-semibold leading-[1.4] text-text-primary">
-                      {paper.title}
-                    </span>
-                    <span className="mt-0.5 block text-[11px] text-text-muted">
-                      {authorLine(paper.authors)} · {publicationDate(paper)}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ol>
-        </SectionShell>
-      ) : null}
+      {paths.map(({ path, papers }) =>
+        papers.length > 0 ? (
+          <ReadingPath key={path.pathId} path={path} papers={papers} onSelectNode={onSelectNode} />
+        ) : null,
+      )}
       <Chips label="Tags" values={node.tags} />
       <Questions questions={node.openQuestions} />
     </>
+  );
+}
+
+/**
+ * One reading path: what it covers, its papers in order, and why that order.
+ * The heading is the path's own label, which is also the caption over its row
+ * on the canvas.
+ */
+function ReadingPath({
+  path,
+  papers,
+  onSelectNode,
+}: {
+  path: BranchPathViewModel;
+  papers: PaperTreeNode[];
+  onSelectNode: (nodeId: TreeNodeId) => void;
+}) {
+  return (
+    <SectionShell title={path.label || "Reading path"}>
+      {path.description ? (
+        <p className="mt-[7px] mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.62] text-text-primary">
+          {path.description}
+        </p>
+      ) : null}
+      <ol className="m-0 mt-2 flex list-none flex-col p-0">
+        {papers.map((paper, index) => (
+          <li key={paper.id}>
+            <PaperRow
+              index={index + 1}
+              title={paper.title}
+              meta={`${authorLine(paper.authors)} · ${publicationDate(paper)}`}
+              onClick={() => onSelectNode(paper.id)}
+            />
+          </li>
+        ))}
+      </ol>
+      {path.rationale ? (
+        <p className="mt-2 mb-0 w-[min(100%,62ch)] text-[12.5px] leading-[1.6] text-text-secondary">
+          <b className="mr-1 font-semibold text-text-primary">Why this order</b>
+          {path.rationale}
+        </p>
+      ) : null}
+    </SectionShell>
   );
 }
 
@@ -372,10 +501,12 @@ function RootView({
   node,
   tree,
   updatedAt,
+  onSelectNode,
 }: {
   node: Extract<TreeNodeViewModel, { kind: "root" }>;
   tree: TreeViewModel;
   updatedAt: string | null;
+  onSelectNode: (nodeId: TreeNodeId) => void;
 }) {
   const updated = longDateLabel(updatedAt);
   return (
@@ -393,6 +524,7 @@ function RootView({
         {updated ? <span>updated {updated}</span> : null}
       </p>
       <Section title="Overview" body={node.overview} />
+      {tree.scope ? <Scope scope={tree.scope} title={node.title} /> : null}
       {node.whyItMatters && node.whyItMatters !== node.overview ? (
         <Section title="Why it matters" body={node.whyItMatters} />
       ) : null}
@@ -402,13 +534,138 @@ function RootView({
       {node.suggestedReadingDirection ? (
         <Section title="Where to start" body={node.suggestedReadingDirection} />
       ) : null}
+      {tree.readingOrder.length > 0 ? (
+        <ReadingOrder entries={tree.readingOrder} onSelectNode={onSelectNode} />
+      ) : null}
       <Chips label="Key terms" values={node.keyTerms} />
       <Questions questions={node.openQuestions} />
     </>
   );
 }
 
+/** The boundary the build committed to: what the topic includes and leaves out. */
+function Scope({ scope, title }: { scope: WorkspaceScopeSummary; title: string }) {
+  const label = scope.label !== title ? scope.label : "";
+  if (!label && !scope.rationale) {
+    return null;
+  }
+  return (
+    <SectionShell title="Scope">
+      {label ? (
+        <p className="mt-[7px] mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.5] font-semibold text-text-primary">
+          {label}
+        </p>
+      ) : null}
+      {scope.rationale ? (
+        <p
+          className={cx(
+            "mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.62] text-text-primary",
+            label ? "mt-1" : "mt-[7px]",
+          )}
+        >
+          {scope.rationale}
+        </p>
+      ) : null}
+    </SectionShell>
+  );
+}
+
+const READING_ORDER_PREVIEW = 6;
+
+/** Every path's papers in one sequence, as the document orders them. */
+function ReadingOrder({
+  entries,
+  onSelectNode,
+}: {
+  entries: ReadingOrderEntry[];
+  onSelectNode: (nodeId: TreeNodeId) => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? entries : entries.slice(0, READING_ORDER_PREVIEW);
+  return (
+    <SectionShell title="Reading order">
+      <ol className="m-0 mt-2 flex list-none flex-col p-0">
+        {visible.map((entry, index) => {
+          const nodeId = entry.nodeId;
+          return (
+            <li key={`${entry.order}:${entry.paperId}`}>
+              <PaperRow
+                index={index + 1}
+                title={entry.title}
+                meta={readingOrderMeta(entry)}
+                onClick={nodeId ? () => onSelectNode(nodeId) : undefined}
+              />
+            </li>
+          );
+        })}
+      </ol>
+      {entries.length > READING_ORDER_PREVIEW ? (
+        <button
+          className={showAllButtonClass}
+          type="button"
+          onClick={() => setShowAll((current) => !current)}
+          aria-expanded={showAll}
+        >
+          {showAll ? "Show fewer" : `Show all ${entries.length}`}
+        </button>
+      ) : null}
+    </SectionShell>
+  );
+}
+
+function readingOrderMeta(entry: ReadingOrderEntry): string {
+  const parts = [authorLine(entry.authors), publicationDate(entry)];
+  if (entry.branchTitle) {
+    parts.push(entry.branchTitle);
+  }
+  return parts.join(" · ");
+}
+
 /* -------------------------------------------------------------- shared --- */
+
+const showAllButtonClass =
+  "mt-3 w-full rounded-[7px] border border-border bg-surface px-3 py-2 text-center text-[11.5px] font-semibold text-text-primary transition-[background-color,border-color,color] duration-150 hover:border-accent hover:bg-surface-subtle hover:text-accent-deep";
+
+/** A numbered paper in a list; a button when the paper has a card to go to. */
+function PaperRow({
+  index,
+  title,
+  meta,
+  onClick,
+}: {
+  index: number;
+  title: string;
+  meta: string;
+  onClick?: () => void;
+}) {
+  const content = (
+    <>
+      <span
+        className="mt-px grid h-5 w-5 flex-none place-items-center rounded-full bg-accent-subtle text-[10.5px] font-semibold text-accent-deep"
+        aria-hidden="true"
+      >
+        {index}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-[12.5px] font-semibold leading-[1.4] text-text-primary">{title}</span>
+        <span className="mt-0.5 block text-[11px] text-text-muted">{meta}</span>
+      </span>
+    </>
+  );
+  const rowClass = "-mx-2.5 flex w-[calc(100%+20px)] gap-[11px] rounded-md px-2.5 py-[9px] text-left";
+  if (!onClick) {
+    return <div className={rowClass}>{content}</div>;
+  }
+  return (
+    <button
+      className={cx(rowClass, "border-0 bg-transparent transition-[background-color] duration-150 hover:bg-surface-subtle")}
+      type="button"
+      onClick={onClick}
+    >
+      {content}
+    </button>
+  );
+}
 
 /** Every panel — root, branch and paper — reads as the same run of sections. */
 function Section({ title, body }: { title: string; body: string }) {
@@ -506,14 +763,6 @@ function paperMeta(paper: PaperTreeNode): string {
 
 function compactCount(value: number): string {
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
-}
-
-function papersForBranch(tree: TreeViewModel, branchNodeId: string): PaperTreeNode[] {
-  return tree.nodes
-    .filter((node): node is PaperTreeNode => node.kind === "paper" && node.branchId === branchNodeId)
-    .sort(
-      (left, right) => left.position.y - right.position.y || left.readingIndex - right.readingIndex,
-    );
 }
 
 export function inspectorLabel(node: TreeNodeViewModel): string {

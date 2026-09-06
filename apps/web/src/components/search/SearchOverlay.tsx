@@ -255,9 +255,11 @@ function ResultRow({
 }
 
 function branchText(node: BranchTreeNode): string {
-  return `${node.title} ${node.description} ${node.whyItMatters} ${node.tags.join(" ")}`.toLowerCase();
+  const pathLabels = node.paths.map((path) => path.label).join(" ");
+  return `${node.title} ${node.description} ${node.whyItMatters} ${node.tags.join(" ")} ${pathLabels}`.toLowerCase();
 }
 
 function paperText(node: PaperTreeNode): string {
-  return `${node.title} ${node.authors.join(" ")} ${node.tldr ?? ""} ${node.importance} ${node.branchTitle}`.toLowerCase();
+  const tags = node.secondaryTags.join(" ");
+  return `${node.title} ${node.authors.join(" ")} ${node.tldr ?? ""} ${node.importance} ${node.branchTitle} ${node.pathLabel} ${tags}`.toLowerCase();
 }

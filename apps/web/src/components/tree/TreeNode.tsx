@@ -1,4 +1,4 @@
-import type { PaperDetails, TreeNodeId, TreeNodeViewModel } from "../../lib/types";
+import type { PaperDetails, PathLabelViewModel, TreeNodeId, TreeNodeViewModel } from "../../lib/types";
 import { cx } from "../../lib/cx";
 
 type TreeNodeProps = {
@@ -104,8 +104,24 @@ function AnchorSummary({ paper, label }: { paper: PaperDetails | null; label: st
   );
 }
 
+/**
+ * The caption over a timeline row: the reading path's label, set like the
+ * cards' eyebrows so it reads as the row's heading rather than another card.
+ */
+export function PathCaption({ label }: { label: PathLabelViewModel }) {
+  return (
+    <span
+      className={cx("absolute z-[1] block truncate", kickerClass)}
+      style={{ left: label.position.x, top: label.position.y, maxWidth: label.width }}
+      title={label.text}
+    >
+      {label.text}
+    </span>
+  );
+}
+
 /** The design's card kicker: uppercase, letter-spaced, one line. */
-const kickerClass =
+export const kickerClass =
   "text-[10.5px] font-semibold uppercase leading-[1.3] tracking-[0.05em] text-text-muted";
 
 /** Card padding per kind, matching the design's tighter rhythm on smaller cards. */
