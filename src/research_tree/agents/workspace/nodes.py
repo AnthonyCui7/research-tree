@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 from uuid import uuid4
 
+from langgraph.config import get_stream_writer
 from langgraph.types import Command
 
 from research_tree.agents.workspace.cache import needs_similar_paper_context
@@ -229,6 +230,7 @@ class WorkspaceAgentNodes:
         decision made once, by a model that can look things up first.
         """
 
+        _report_progress({"kind": "thinking"})
         rounds = int(state.get("tool_rounds", 0)) + 1
         max_rounds = int(state.get("max_tool_rounds", MAX_TOOL_ROUNDS))
         transcript = list(state.get("transcript_items") or [])
@@ -273,6 +275,9 @@ class WorkspaceAgentNodes:
         # reasoning model needs its own encrypted reasoning back alongside the
         # calls it made.
         transcript = [*transcript, *turn.output_items]
+        for item in turn.output_items:
+            if item.get("type") == "web_search_call":
+                _report_progress(_web_search_progress(item))
 
         terminal = next(
             (call for call in turn.tool_calls if ALL_TOOLS[call.name].terminal),
@@ -322,6 +327,7 @@ class WorkspaceAgentNodes:
         outputs: list[dict[str, Any]] = []
         executed: list[str] = []
         for call in _pending_tool_calls(state):
+            _report_progress(_tool_progress(call, state))
             outputs.append(
                 {
                     "type": "function_call_output",
@@ -357,6 +363,7 @@ class WorkspaceAgentNodes:
         calling a read tool.
         """
 
+        _report_progress({"kind": "stage", "stage": "reading_workspace"})
         workspace = _required_mapping(state.get("workspace"), "workspace")
         next_action = state.get("next_action") or {}
         target_branch_id = next_action.get("target_branch_id")
@@ -416,6 +423,7 @@ class WorkspaceAgentNodes:
         )
 
     def critique_workspace(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        _report_progress({"kind": "stage", "stage": "critiquing"})
         prompt = build_workspace_critique_prompt(
             user_message=state.get("user_message", ""),
             conversation_history=state.get("conversation_history") or [],
@@ -573,6 +581,7 @@ class WorkspaceAgentNodes:
         goes to the construction model.
         """
 
+        _report_progress({"kind": "stage", "stage": "constructing"})
         next_action = state.get("next_action") or {}
         edit_kind = str(next_action.get("edit_kind") or "structural")
         workspace = _required_mapping(state.get("workspace"), "workspace")
@@ -740,6 +749,7 @@ class WorkspaceAgentNodes:
         }
 
     def select_validators(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        _report_progress({"kind": "stage", "stage": "validating"})
         validation_round = int(state.get("validation_round", 0)) + 1
         selected = select_workspace_validators(
             proposed_operations=state.get("proposed_operations") or [],
@@ -835,6 +845,7 @@ class WorkspaceAgentNodes:
         enrichment, not a gate: a failed call never blocks the proposal.
         """
 
+        _report_progress({"kind": "stage", "stage": "skeptic"})
         prompt = build_proposal_skeptic_prompt(
             user_message=state.get("user_message", ""),
             instruction=str(
@@ -867,6 +878,7 @@ class WorkspaceAgentNodes:
         }
 
     def persist_pending_review(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        _report_progress({"kind": "stage", "stage": "saving_review"})
         review_id = state.get("review_id")
         if self.workspace_repository is not None:
             review_id = review_id or f"review_{uuid4().hex}"
@@ -916,6 +928,7 @@ class WorkspaceAgentNodes:
         }
 
     def repair_workspace_proposal(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        _report_progress({"kind": "stage", "stage": "repairing"})
         validation_summary = state.get("validation_summary") or {}
         next_action = state.get("next_action") or {}
         candidate_artifact = state.get("proposal_candidate_artifact")
@@ -1637,3 +1650,85 @@ def _required_mapping(value: Any, name: str) -> dict[str, Any]:
 
 def _trace(node_name: str) -> dict[str, Any]:
     return {"node": node_name}
+
+
+# --- progress -----------------------------------------------------------------
+#
+# A turn can run for minutes. The nodes that take time say what they are about
+# to do, and a caller streaming the graph (`run.py`) forwards those events to
+# the client. `thinking` is a model turn; `tool` names one read tool and what
+# it is being asked about; `stage` names a deterministic step of an edit or
+# critique. The copy lives in the frontend; this is only the fact.
+
+PROGRESS_SUBJECT_CHARACTERS = 160
+
+
+def _report_progress(event: dict[str, Any]) -> None:
+    try:
+        writer = get_stream_writer()
+    except RuntimeError:
+        # A node called outside a graph run (unit tests) has no listener.
+        return
+    writer(event)
+
+
+def _tool_progress(call: Mapping[str, Any], state: WorkspaceAgentState) -> dict[str, Any]:
+    name = str(call.get("name") or "")
+    arguments = call.get("arguments") or {}
+    workspace = state.get("workspace")
+    workspace = workspace if isinstance(workspace, Mapping) else {}
+    subject: str | None = None
+    if name in {"search_workspace", "search_semantic_scholar"}:
+        subject = str(arguments.get("query") or "")
+    elif name in {"get_paper", "get_paper_full_text"}:
+        paper_id = str(arguments.get("paper_id") or "")
+        cards = workspace.get("paper_cards")
+        card = cards.get(paper_id) if isinstance(cards, Mapping) else None
+        subject = _title_or(card, paper_id)
+    elif name == "get_semantic_scholar_paper":
+        paper_id = str(arguments.get("paper_id") or "")
+        found = (state.get("session_discovered_papers") or {}).get(paper_id)
+        subject = _title_or(found, paper_id)
+    elif name == "get_branch":
+        branch_id = str(arguments.get("branch_id") or "")
+        tree = workspace.get("tree")
+        nodes = tree.get("nodes") if isinstance(tree, Mapping) else None
+        branch = next(
+            (
+                node
+                for node in nodes or []
+                if isinstance(node, Mapping) and str(node.get("node_id")) == branch_id
+            ),
+            None,
+        )
+        subject = (
+            str(branch.get("label"))
+            if isinstance(branch, Mapping) and branch.get("label")
+            else branch_id
+        )
+    return {"kind": "tool", "name": name, "subject": _bounded_subject(subject)}
+
+
+def _web_search_progress(item: Mapping[str, Any]) -> dict[str, Any]:
+    action = item.get("action")
+    query = action.get("query") if isinstance(action, Mapping) else None
+    return {
+        "kind": "tool",
+        "name": "web_search",
+        "subject": _bounded_subject(str(query) if query else None),
+    }
+
+
+def _title_or(record: Any, fallback: str) -> str:
+    if isinstance(record, Mapping) and record.get("title"):
+        return str(record["title"])
+    return fallback
+
+
+def _bounded_subject(subject: str | None) -> str | None:
+    text = (subject or "").strip()
+    if not text:
+        return None
+    if len(text) > PROGRESS_SUBJECT_CHARACTERS:
+        return text[: PROGRESS_SUBJECT_CHARACTERS - 1].rstrip() + "…"
+    return text

@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.llm import DEFAULT_MODEL
-from research_tree.agents.workspace.run import run_workspace_agent
+from research_tree.agents.workspace.run import ProgressCallback, run_workspace_agent
 from research_tree.rate_limits import check_rate_limit
 from research_tree.services.errors import ReviewConflictError, WorkspaceNotFoundError
 from research_tree.services.tenancy import require_owned
@@ -69,6 +69,7 @@ class WorkspaceAgentService:
         thread_id: str | None = None,
         allow_pipeline_rerun: bool = False,
         model: str = DEFAULT_MODEL,
+        on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         safe_workspace_id = self.ensure_agent_available(workspace_id)
         check_rate_limit("agent_turns")
@@ -87,6 +88,7 @@ class WorkspaceAgentService:
                     "agent_model": model,
                 },
                 graph=graph,
+                on_progress=on_progress,
             )
         except Exception:  # API callers get a structured agent failure.
             # The traceback goes to the log, not to the client: exception text

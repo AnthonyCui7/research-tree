@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.agents.workspace.state import WorkspaceAgentInput
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -23,7 +26,14 @@ def run_workspace_agent(
     thread_id: str | None = None,
     graph: Any | None = None,
     workspace_repository: Any | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> WorkspaceAgentRunResult:
+    """Run one turn to its end state.
+
+    `on_progress` receives each progress event the nodes report (see
+    `nodes._report_progress`) on the calling thread, as it happens.
+    """
+
     # Callers own graph lifetime (the app builds one per process); building one
     # here is only for ad-hoc use such as scripts.
     active_graph = graph or build_workspace_agent_graph(
@@ -33,7 +43,13 @@ def run_workspace_agent(
     run_input = dict(input)
     run_input["thread_id"] = active_thread_id
     config = {"configurable": {"thread_id": active_thread_id}}
-    return _run_graph(active_graph, run_input, config, thread_id=active_thread_id)
+    return _run_graph(
+        active_graph,
+        run_input,
+        config,
+        thread_id=active_thread_id,
+        on_progress=on_progress,
+    )
 
 
 def _run_graph(
@@ -42,11 +58,23 @@ def _run_graph(
     config: dict[str, Any],
     *,
     thread_id: str,
+    on_progress: ProgressCallback | None = None,
 ) -> WorkspaceAgentRunResult:
     updates: list[dict[str, Any]] = []
     final_output: dict[str, Any] | None = None
     interrupts: list[dict[str, Any]] = []
-    for snapshot in graph.stream(graph_input, config=config, stream_mode="values"):
+    # With a listener the stream carries the nodes' progress events alongside
+    # the state snapshots, as (mode, chunk) pairs.
+    stream_mode: Any = ["values", "custom"] if on_progress is not None else "values"
+    for chunk in graph.stream(graph_input, config=config, stream_mode=stream_mode):
+        if isinstance(chunk, tuple) and len(chunk) == 2:
+            mode, snapshot = chunk
+            if mode == "custom":
+                if on_progress is not None and isinstance(snapshot, dict):
+                    on_progress(snapshot)
+                continue
+        else:
+            snapshot = chunk
         if not isinstance(snapshot, dict):
             continue
         updates.append(snapshot)

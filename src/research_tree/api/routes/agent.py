@@ -30,10 +30,13 @@ async def run_workspace_agent(
 ):
     """One assistant turn.
 
-    With `Accept: text/event-stream` the answer arrives as one `result` event
-    after keepalive comments, so a turn can outlast the proxy's idle timeout;
-    otherwise it is a plain JSON response. Refusals (unknown workspace, a
-    build in progress) are ordinary error responses either way.
+    With `Accept: text/event-stream` the turn is narrated as it runs: one
+    `progress` event per model turn, tool call, and stage of an edit (see
+    `agents/workspace/nodes.py`, "progress"), keepalive comments in the
+    silences, and the answer as one `result` event, so a turn can outlast the
+    proxy's idle timeout. Otherwise it is a plain JSON response. Refusals
+    (unknown workspace, a build in progress) are ordinary error responses
+    either way.
     """
 
     run = functools.partial(
@@ -51,11 +54,29 @@ async def run_workspace_agent(
     await asyncio.to_thread(service.ensure_agent_available, workspace_id)
 
     async def event_stream():
-        task = asyncio.ensure_future(asyncio.to_thread(run))
+        loop = asyncio.get_running_loop()
+        progress: asyncio.Queue[dict] = asyncio.Queue()
+
+        def on_progress(event: dict) -> None:
+            # Called on the turn's thread; the loop owns the queue.
+            loop.call_soon_threadsafe(progress.put_nowait, event)
+
+        task = asyncio.ensure_future(asyncio.to_thread(run, on_progress=on_progress))
         try:
             while True:
-                done, _ = await asyncio.wait({task}, timeout=KEEPALIVE_SECONDS)
-                if done:
+                next_event = asyncio.ensure_future(progress.get())
+                done, _ = await asyncio.wait(
+                    {task, next_event},
+                    timeout=KEEPALIVE_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if next_event in done:
+                    yield f"event: progress\ndata: {json.dumps(next_event.result())}\n\n"
+                    continue
+                next_event.cancel()
+                if task in done:
+                    # Every event the turn reported was queued before its
+                    # thread returned, so the queue is already drained here.
                     break
                 yield ": keepalive\n\n"
             try:

@@ -180,6 +180,18 @@ export type AgentInterruptPayload = {
   choices?: string[];
 };
 
+/**
+ * What the assistant is doing right now, streamed while a turn runs: a model
+ * turn, one read tool and what it was asked about, or a stage of an edit.
+ */
+export type AgentActivity =
+  | { kind: "thinking" }
+  | { kind: "tool"; name: string; subject: string | null }
+  | { kind: "stage"; stage: string };
+
+/** An activity worth keeping once the turn is over: everything but thinking. */
+export type AgentStep = Exclude<AgentActivity, { kind: "thinking" }>;
+
 export type AgentRunResult = {
   workspace_id: string;
   status: string;

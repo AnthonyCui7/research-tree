@@ -14,7 +14,13 @@ import { pluralize } from "../../lib/format";
 import { agentRunFailed, type AgentSession } from "../../data/useAgentSession";
 import { ArrowRightIcon, ChevronDownIcon, CheckIcon, CloseIcon, SendIcon } from "../ui/icons";
 import { ProposedRevision } from "./ProposedRevision";
-import type { AgentRunResult, BranchTreeNode, TreeViewModel } from "../../lib/types";
+import type {
+  AgentActivity,
+  AgentRunResult,
+  AgentStep,
+  BranchTreeNode,
+  TreeViewModel,
+} from "../../lib/types";
 
 type WorkspaceAgentProps = {
   session: AgentSession;
@@ -36,7 +42,17 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
   const conversationRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const activeModel = MODELS.find((option) => option.id === session.model) ?? MODELS[0];
-  const { busy, conversation, error, outcome, result, draft: message, setDraft: setMessage } = session;
+  const {
+    activity,
+    busy,
+    conversation,
+    error,
+    outcome,
+    result,
+    steps,
+    draft: message,
+    setDraft: setMessage,
+  } = session;
 
   useEffect(() => {
     function closeModelMenu(event: MouseEvent) {
@@ -52,7 +68,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
     const element = conversationRef.current;
     if (!element) return;
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-  }, [conversation.length, busy, result, outcome]);
+  }, [conversation.length, busy, result, outcome, steps.length]);
 
   useEffect(() => {
     const composer = composerRef.current;
@@ -122,6 +138,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
             </div>
           ) : (
             <div className="text-[13px] leading-[1.62] text-text-primary" key={`agent-${index}`}>
+              {item.steps?.length ? <StepsTaken steps={item.steps} /> : null}
               <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
                 {displayMarkdown(item.text)}
               </ReactMarkdown>
@@ -129,16 +146,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
           ),
         )}
 
-        {busy ? (
-          <div className="flex w-fit items-center gap-2 text-xs font-medium text-text-muted" role="status">
-            <span className="flex items-center gap-[3px]" aria-hidden="true">
-              <i className={thinkingDotClass} />
-              <i className={cx(thinkingDotClass, "[animation-delay:140ms]")} />
-              <i className={cx(thinkingDotClass, "[animation-delay:280ms]")} />
-            </span>
-            Analyzing
-          </div>
-        ) : null}
+        {busy ? <ActivityTrail steps={steps} activity={activity} /> : null}
 
         {result?.status === "pending_review" && result.review_id ? (
           <ProposedRevision
@@ -350,6 +358,144 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
     });
   }
   return openers;
+}
+
+/* ------------------------------------------------------------- activity --- */
+
+/**
+ * The turn as it runs: each step already taken, then what the assistant is
+ * doing now. A turn is a minute or more of model calls and lookups; this is
+ * what makes the wait legible.
+ */
+function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: AgentActivity | null }) {
+  const current = activity ?? { kind: "thinking" as const };
+  return (
+    <div className="grid gap-1.5 text-xs text-text-muted" role="status">
+      {steps.map((step, index) => (
+        <div className="flex items-baseline gap-2" key={`${index}:${stepKey(step)}`}>
+          <span className="relative top-[-2px] h-1 w-1 flex-none rounded-full bg-border-strong" aria-hidden="true" />
+          <span className="min-w-0 [overflow-wrap:anywhere]">{describe(step, "done")}</span>
+        </div>
+      ))}
+      <div className="flex w-fit items-center gap-2 font-medium">
+        <span className="flex items-center gap-[3px]" aria-hidden="true">
+          <i className={thinkingDotClass} />
+          <i className={cx(thinkingDotClass, "[animation-delay:140ms]")} />
+          <i className={cx(thinkingDotClass, "[animation-delay:280ms]")} />
+        </span>
+        {describe(current, "doing")}
+      </div>
+    </div>
+  );
+}
+
+/** What a finished reply was built from, folded to one line until opened. */
+function StepsTaken({ steps }: { steps: AgentStep[] }) {
+  return (
+    <details className="group mb-2.5 text-xs text-text-muted">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+        <ChevronDownIcon className="h-3 w-3 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
+        <span className="min-w-0 [overflow-wrap:anywhere]">{summarizeSteps(steps)}</span>
+      </summary>
+      <div className="mt-1.5 grid gap-1 pl-[18px]">
+        {steps.map((step, index) => (
+          <span className="[overflow-wrap:anywhere]" key={`${index}:${stepKey(step)}`}>
+            {describe(step, "done")}
+          </span>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+type Tense = "doing" | "done";
+
+/**
+ * The copy for each thing the assistant can be doing. `link` joins the verb
+ * to a quoted subject ("Searched Semantic Scholar for “…”"); a step without
+ * one names its subject directly ("Read “…”"). The folded summary drops
+ * subjects and counts repeats: `noun` is what got counted ("Read 3 papers"),
+ * `folded` overrides the whole phrase.
+ */
+type ToolCopy = {
+  doing: string;
+  done: string;
+  link?: string;
+  noun?: string;
+  folded?: (count: number) => string;
+};
+
+const TOOL_COPY: Record<string, ToolCopy> = {
+  search_workspace: { doing: "Searching the workspace", done: "Searched the workspace", link: "for" },
+  search_semantic_scholar: {
+    doing: "Searching Semantic Scholar",
+    done: "Searched Semantic Scholar",
+    link: "for",
+  },
+  web_search: { doing: "Searching the web", done: "Searched the web", link: "for" },
+  get_paper: { doing: "Reading", done: "Read", noun: "paper" },
+  get_paper_full_text: { doing: "Reading the full text of", done: "Read the full text of", noun: "paper" },
+  get_semantic_scholar_paper: { doing: "Looking up", done: "Looked up", noun: "paper" },
+  get_branch: {
+    doing: "Reading the branch",
+    done: "Read the branch",
+    folded: (count) => (count === 1 ? "Read a branch" : `Read ${count} branches`),
+  },
+  get_workspace_overview: { doing: "Reading the overview", done: "Read the overview" },
+  list_reading_order: { doing: "Reading the reading paths", done: "Read the reading paths" },
+  list_workspace_history: { doing: "Reading the history", done: "Read the history" },
+};
+
+const STAGE_COPY: Record<string, { doing: string; done: string }> = {
+  reading_workspace: { doing: "Reading the workspace", done: "Read the workspace" },
+  constructing: { doing: "Drafting the revision", done: "Drafted the revision" },
+  validating: { doing: "Checking the revision", done: "Checked the revision" },
+  skeptic: { doing: "Looking for objections", done: "Looked for objections" },
+  repairing: { doing: "Repairing the revision", done: "Repaired the revision" },
+  saving_review: { doing: "Saving the revision for review", done: "Saved the revision for review" },
+  critiquing: { doing: "Auditing the workspace", done: "Audited the workspace" },
+};
+
+function describe(activity: AgentActivity, tense: Tense): string {
+  if (activity.kind === "thinking") return "Thinking";
+  if (activity.kind === "stage") {
+    const copy = STAGE_COPY[activity.stage];
+    return copy ? copy[tense] : humanize(activity.stage);
+  }
+  const copy = TOOL_COPY[activity.name];
+  if (!copy) return `${tense === "doing" ? "Running" : "Ran"} ${humanize(activity.name)}`;
+  if (!activity.subject) return copy[tense];
+  return `${copy[tense]}${copy.link ? ` ${copy.link}` : ""} “${activity.subject}”`;
+}
+
+/** "Searched Semantic Scholar twice · Read 3 papers · Drafted the revision" */
+function summarizeSteps(steps: AgentStep[]): string {
+  const counts = new Map<string, { step: AgentStep; count: number }>();
+  for (const step of steps) {
+    const key = stepKey(step);
+    const entry = counts.get(key);
+    if (entry) entry.count += 1;
+    else counts.set(key, { step, count: 1 });
+  }
+  return [...counts.values()]
+    .map(({ step, count }) => {
+      const copy = step.kind === "tool" ? TOOL_COPY[step.name] : undefined;
+      if (copy?.folded) return copy.folded(count);
+      const done = describe({ ...step, ...(step.kind === "tool" ? { subject: null } : {}) }, "done");
+      if (copy?.noun) return `${done} ${count === 1 ? `a ${copy.noun}` : pluralize(count, copy.noun)}`;
+      if (count === 1) return done;
+      return `${done} ${count === 2 ? "twice" : `${count} times`}`;
+    })
+    .join(" · ");
+}
+
+function stepKey(step: AgentStep): string {
+  return step.kind === "tool" ? `tool:${step.name}` : `stage:${step.stage}`;
+}
+
+function humanize(identifier: string): string {
+  const words = identifier.replace(/_/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /* -------------------------------------------------------------- notices --- */

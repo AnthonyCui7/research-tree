@@ -42,6 +42,7 @@ if LANGGRAPH_AVAILABLE:
         ToolCall,
     )
     from research_tree.agents.workspace.graph import build_workspace_agent_graph
+    from research_tree.agents.workspace.run import run_workspace_agent
     from research_tree.agents.workspace.nodes import WorkspaceAgentNodes
     from research_tree.agents.workspace.state import WorkspaceAgentState
     from research_tree.workspace.repository import LocalJsonWorkspaceRepository
@@ -279,6 +280,70 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["final_response"], "Workspace answer.")
         self.assertNotIn("updated_workspace", result)
+
+    def test_a_streamed_run_reports_each_model_turn_and_tool(self) -> None:
+        """The listener hears what the loop is about to do, with the subject
+        resolved to something a reader recognises (a title, not an id)."""
+
+        graph = build_workspace_agent_graph(
+            llm_client=DeterministicWorkspaceAgentLlmClient(
+                tool_turns=[
+                    _tool_turn("search_workspace", {"query": "method"}, call_id="call_1"),
+                    _tool_turn("get_paper", {"paper_id": "p1"}, call_id="call_2"),
+                    _text_turn("Answer."),
+                ]
+            )
+        )
+        events: list[dict[str, object]] = []
+
+        result = run_workspace_agent(
+            {"workspace": _workspace(), "user_message": "What is the core method?"},
+            graph=graph,
+            on_progress=events.append,
+        )
+
+        self.assertEqual(result.final_output["final_response"], "Answer.")
+        self.assertEqual(
+            events,
+            [
+                {"kind": "thinking"},
+                {"kind": "tool", "name": "search_workspace", "subject": "method"},
+                {"kind": "thinking"},
+                {"kind": "tool", "name": "get_paper", "subject": "Core Method"},
+                {"kind": "thinking"},
+            ],
+        )
+
+    def test_a_streamed_edit_reports_its_stages_in_order(self) -> None:
+        graph = build_workspace_agent_graph(
+            llm_client=_modify_llm(),
+            workspace_constructor=lambda **_kwargs: _workspace(branch_label="Renamed Branch"),
+        )
+        events: list[dict[str, object]] = []
+
+        run_workspace_agent(
+            {
+                "workspace": _workspace(),
+                "candidate_artifact": _candidate_artifact(),
+                "user_message": "Rename the main branch.",
+            },
+            graph=graph,
+            on_progress=events.append,
+        )
+
+        self.assertEqual(
+            [event["stage"] for event in events if event["kind"] == "stage"],
+            ["reading_workspace", "constructing", "validating", "skeptic", "saving_review"],
+        )
+
+    def test_an_unstreamed_run_reports_nothing_and_still_works(self) -> None:
+        graph = build_workspace_agent_graph(llm_client=_chat_llm("Quiet answer."))
+
+        result = run_workspace_agent(
+            {"workspace": _workspace(), "user_message": "Explain."}, graph=graph
+        )
+
+        self.assertEqual(result.final_output["final_response"], "Quiet answer.")
 
     def test_modification_path_calls_construct_workspace_mode(self) -> None:
         calls: list[dict[str, object]] = []

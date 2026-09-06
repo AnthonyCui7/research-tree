@@ -124,9 +124,12 @@ def test_agent_turn_can_stream_keepalives_then_the_result(client: TestClient, se
         ) as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
-            frames = read_sse_events(response, limit=1)
-    assert frames and frames[0].startswith("event: result\n")
-    assert '"status": "completed"' in frames[0]
+            frames = read_sse_events(response, limit=2)
+    # The turn is narrated before it is answered: the first frame is the
+    # model turn starting, the last the answer.
+    assert frames[0] == 'event: progress\ndata: {"kind": "thinking"}'
+    assert frames[1].startswith("event: result\n")
+    assert '"status": "completed"' in frames[1]
 
 
 def test_agent_refusals_are_plain_errors_even_when_streaming(client: TestClient) -> None:

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { repositoryWorkspaceGateway } from "./workspaceApi";
 import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../lib/apiError";
-import type { AgentRunResult, WorkspaceReview } from "../lib/types";
+import type { AgentActivity, AgentRunResult, AgentStep, WorkspaceReview } from "../lib/types";
 
 export type ConversationItem = {
   role: "user" | "agent";
   text: string;
+  /** What the assistant did before this reply, in order; only on replies. */
+  steps?: AgentStep[];
 };
 
 export type ReviewOutcome = "applied" | "rejected" | "rerun_started" | null;
@@ -20,6 +22,10 @@ export type AgentSession = {
   result: AgentRunResult | null;
   outcome: ReviewOutcome;
   busy: boolean;
+  /** What the running turn is doing right now; null when idle. */
+  activity: AgentActivity | null;
+  /** What the running turn has done so far. */
+  steps: AgentStep[];
   error: string | null;
   model: string;
   setModel: (model: string) => void;
@@ -39,6 +45,8 @@ type SessionState = {
   result: AgentRunResult | null;
   outcome: ReviewOutcome;
   busy: boolean;
+  activity: AgentActivity | null;
+  steps: AgentStep[];
   error: string | null;
   model: string;
   draft: string;
@@ -51,6 +59,8 @@ const NEW_SESSION: SessionState = {
   result: null,
   outcome: null,
   busy: false,
+  activity: null,
+  steps: [],
   error: null,
   model: "gpt-5.6-luna",
   draft: "",
@@ -121,6 +131,8 @@ export function useAgentSession(
       update(id, (state) => ({
         ...state,
         busy: true,
+        activity: { kind: "thinking" },
+        steps: [],
         error: null,
         outcome: null,
         // A previous failure is answered by this request; a pending review is not.
@@ -134,6 +146,13 @@ export function useAgentSession(
           current.model,
           history,
           current.threadId,
+          (activity) =>
+            update(id, (state) => ({
+              ...state,
+              activity,
+              // A model turn is the gap between steps, not a step itself.
+              steps: activity.kind === "thinking" ? state.steps : [...state.steps, activity],
+            })),
         );
         const response =
           meaningfulResponse(next.final_response) ||
@@ -149,12 +168,19 @@ export function useAgentSession(
           // as an assistant reply and leave it in the conversation history.
           conversation: agentRunFailed(next.status)
             ? state.conversation
-            : [...state.conversation, { role: "agent", text: response }],
+            : [
+                ...state.conversation,
+                {
+                  role: "agent",
+                  text: response,
+                  ...(state.steps.length > 0 ? { steps: state.steps } : {}),
+                },
+              ],
         }));
       } catch (requestError) {
         update(id, (state) => ({ ...state, error: messageFrom(requestError) }));
       } finally {
-        update(id, (state) => ({ ...state, busy: false }));
+        update(id, (state) => ({ ...state, busy: false, activity: null, steps: [] }));
       }
     },
     [sessions, update, workspaceId],
@@ -217,6 +243,8 @@ export function useAgentSession(
     result: session.result,
     outcome: session.outcome,
     busy: session.busy,
+    activity: session.activity,
+    steps: session.steps,
     error: session.error,
     model: session.model,
     setModel: useCallback((model: string) => change("model", model), [change]),

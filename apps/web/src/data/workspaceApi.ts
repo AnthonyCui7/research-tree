@@ -1,5 +1,6 @@
 import { ApiError } from "../lib/apiError";
 import type {
+  AgentActivity,
   AgentRunResult,
   AnnotationRetrievalMode,
   ApiKeysResult,
@@ -84,6 +85,7 @@ export type WorkspaceGateway = {
     model: string,
     conversationHistory?: Array<{ role: "user" | "assistant"; text: string }>,
     threadId?: string | null,
+    onActivity?: (activity: AgentActivity) => void,
   ) => Promise<AgentRunResult>;
   getWorkspaceReviews: (workspaceId: string) => Promise<WorkspaceReview[]>;
   approveReview: (workspaceId: string, reviewId: string) => Promise<ReviewActionResponse>;
@@ -160,11 +162,19 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     );
   },
 
-  async runAgent(workspaceId, message, model, conversationHistory = [], threadId = null) {
+  async runAgent(
+    workspaceId,
+    message,
+    model,
+    conversationHistory = [],
+    threadId = null,
+    onActivity,
+  ) {
     // An agent run is a tool loop over the whole workspace, and a single
     // reasoning turn in it can take half a minute on its own. The server
-    // streams keepalive comments while it works and the answer as one
-    // `result` event, so neither the proxy nor this client gives up early.
+    // narrates the turn as `progress` events, streams keepalive comments in
+    // the silences, and sends the answer as one `result` event, so neither
+    // the proxy nor this client gives up early.
     const response = await requestRaw(`/workspaces/${encodeURIComponent(workspaceId)}/agent`, {
       method: "POST",
       headers: { Accept: "text/event-stream" },
@@ -177,7 +187,9 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
       }),
       signal: AbortSignal.timeout(AGENT_REQUEST_TIMEOUT_MS),
     });
-    return readEventResult<AgentRunResult>(response);
+    return readEventResult<AgentRunResult>(response, (payload) => {
+      if (onActivity && isAgentActivity(payload)) onActivity(payload);
+    });
   },
 
   async getWorkspaceReviews(workspaceId) {
@@ -319,11 +331,24 @@ async function waitForAnnotationJob(
   throw new ApiError("Annotating this paper is taking too long. Try again later.", 0);
 }
 
+function isAgentActivity(payload: unknown): payload is AgentActivity {
+  if (!payload || typeof payload !== "object") return false;
+  const { kind } = payload as { kind?: unknown };
+  if (kind === "thinking") return true;
+  if (kind === "tool") return typeof (payload as { name?: unknown }).name === "string";
+  if (kind === "stage") return typeof (payload as { stage?: unknown }).stage === "string";
+  return false;
+}
+
 /**
- * Reads a one-shot event stream: keepalive comments, then either a `result`
- * event carrying the JSON answer or an `error` event carrying an API error.
+ * Reads a one-shot event stream: keepalive comments and `progress` events
+ * (handed to `onProgress`), then either a `result` event carrying the JSON
+ * answer or an `error` event carrying an API error.
  */
-async function readEventResult<T>(response: Response): Promise<T> {
+async function readEventResult<T>(
+  response: Response,
+  onProgress?: (payload: unknown) => void,
+): Promise<T> {
   if (!response.headers.get("content-type")?.includes("text/event-stream")) {
     return (await response.json()) as T;
   }
@@ -342,6 +367,10 @@ async function readEventResult<T>(response: Response): Promise<T> {
       boundary = buffer.indexOf("\n\n");
       const parsed = parseEventFrame(frame);
       if (!parsed) continue;
+      if (parsed.event === "progress") {
+        onProgress?.(JSON.parse(parsed.data));
+        continue;
+      }
       if (parsed.event === "result") return JSON.parse(parsed.data) as T;
       if (parsed.event === "error") {
         const payload = JSON.parse(parsed.data) as {
