@@ -41,27 +41,20 @@ Without a database URL the app keeps workspaces as JSON files under `data/`
 and runs as one implicit local user (`RESEARCH_TREE_AUTH_MODE=none`). Only run
 it that way on loopback or behind a proxy that does its own sign-in.
 
-## With Docker
+## Self-hosting for more than one person
 
-`docker compose up --build` runs the production image against a scratch
-Postgres and Redis, applying the schema first: an `api` container serving the
-site and a `worker` container (Celery) running workspace builds, paper
-annotations, a daily database keep-alive and a weekly backup. `.env.example`
-documents every variable, including the ones that turn on accounts (email +
-password and Google sign-in), Postgres, Redis, blob storage, and the
-per-account limits.
+`docker compose up --build` starts the whole stack from the repository: an
+`api` container serving the site, a `worker` (Celery) running workspace builds
+and paper annotations, Postgres, Redis, and a one-shot `migrate` service that
+applies the schema first. Set `RESEARCH_TREE_AUTH_MODE=accounts` and a
+`SESSION_SECRET` to require sign-in (email + password, plus Google when a
+client id and secret are configured). Each account then sees only its own
+workspaces, and the per-account limits cap what one person can spend in a day.
+Large per-paper payloads can live in Azure Blob Storage instead of the data
+directory. `.env.example` documents every variable.
 
 Without Redis the API does the long work itself, in-process, which is fine on
 a laptop.
-
-## Deploying
-
-Pushes to `main` deploy to Azure through `.github/workflows/ci.yml`: the tests
-(with Postgres and Redis lanes) and a vulnerability audit must pass, then the
-image is built, the database is migrated, and the `api` and `worker` container
-apps are rolled forward. Self-hosters can run the same image anywhere; set
-`RESEARCH_TREE_AUTH_MODE=accounts` with a Postgres URL and a `SESSION_SECRET`,
-or `none` behind a reverse proxy that authenticates for you.
 
 ## Bring your own key
 
@@ -83,6 +76,9 @@ npm run typecheck
 Setting `RESEARCH_TREE_TEST_DATABASE_URL` to a scratch Postgres runs every
 repository test a second time against the schema the migrations build;
 `RESEARCH_TREE_TEST_REDIS_URL` turns on the tests for jobs, limits and tokens.
+CI runs the same suite in all three lanes and a dependency audit on every push.
+Its `deploy` job belongs to the maintainers' hosting and only runs with their
+secrets, so a fork can delete it.
 
 ## Notes
 
