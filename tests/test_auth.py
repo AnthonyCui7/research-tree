@@ -220,3 +220,32 @@ def test_stale_running_pipeline_is_reclaimed(repository: WorkspaceRepository) ->
     assert "stopped" in run["error"]
     repository.touch_pipeline_run("pipeline_stale")
     assert repository.get_pipeline_run("pipeline_stale")["status"] == "failed"
+
+
+# ---- Google identity comes from the OpenID userinfo endpoint ----------------
+
+
+def test_google_identity_is_the_openid_subject_and_verified_email() -> None:
+    import asyncio
+
+    import httpx
+
+    from research_tree.auth.google import GoogleOpenIdOAuth2, USERINFO_ENDPOINT, id_and_email
+
+    assert id_and_email({"sub": "1", "email": "a@x.io", "email_verified": True}) == ("1", "a@x.io")
+    # An address Google has not verified is not usable for sign-in.
+    assert id_and_email({"sub": "1", "email": "a@x.io", "email_verified": False}) == ("1", None)
+
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"sub": "42", "email": "b@x.io", "email_verified": True})
+
+    client = GoogleOpenIdOAuth2("id", "secret")
+    client.get_httpx_client = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[method-assign]
+
+    assert asyncio.run(client.get_id_email("tok")) == ("42", "b@x.io")
+    assert seen["url"] == USERINFO_ENDPOINT
+    assert seen["auth"] == "Bearer tok"

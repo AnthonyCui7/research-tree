@@ -171,6 +171,16 @@ def create_app() -> FastAPI:
             return RedirectResponse("/?auth_error=google_sign_in_failed", status_code=303)
         return await http_exception_handler(request, exc)
 
+    @app.exception_handler(Exception)
+    async def handle_unexpected_exception(request: Request, exc: Exception) -> Response:
+        # Same for anything else that breaks mid-callback (the provider's
+        # profile lookup failing, say): the reader gets the sign-in screen
+        # with a message, the log gets the traceback.
+        if _is_browser_callback(request):
+            logger.exception("google sign-in callback failed")
+            return RedirectResponse("/?auth_error=google_sign_in_failed", status_code=303)
+        raise exc
+
     return app
 
 

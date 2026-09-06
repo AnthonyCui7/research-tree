@@ -8,9 +8,9 @@ from collections import defaultdict
 from threading import Lock
 
 from fastapi import APIRouter, Depends, Request
-from httpx_oauth.clients.google import GoogleOAuth2
 
 from research_tree.auth.backend import cookie_backend, fastapi_users, redirect_backend
+from research_tree.auth.google import GoogleOpenIdOAuth2
 from research_tree.auth.manager import UserCreate, UserRead
 from research_tree.auth.settings import (
     cookies_are_secure,
@@ -86,7 +86,7 @@ def build_auth_router() -> APIRouter:
         client_id, client_secret = client
         router.include_router(
             fastapi_users.get_oauth_router(
-                GoogleOAuth2(client_id, client_secret),
+                GoogleOpenIdOAuth2(client_id, client_secret),
                 redirect_backend,
                 session_secret(),
                 redirect_url=google_redirect_uri(),
