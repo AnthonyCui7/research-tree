@@ -130,3 +130,9 @@ jobs:
         run: |
           az containerapp update -n worker -g ${{ vars.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.IMAGE }}:${{ github.sha }} --output none
+      # The registry's Basic tier includes 10 GiB and every push leaves the old
+      # build cache behind untagged. Keep the newest three images (this one and
+      # two rollback targets) plus the current cache; needs AcrDelete.
+      - name: Prune the registry
+        continue-on-error: true
+        run: python3 scripts/prune_registry.py --registry ${{ vars.AZURE_CONTAINER_REGISTRY }} --keep 3
