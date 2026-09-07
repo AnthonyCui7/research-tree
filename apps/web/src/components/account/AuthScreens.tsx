@@ -1,8 +1,8 @@
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import { cx } from "../../lib/cx";
 import { messageFrom } from "../../lib/apiError";
-import { primaryActionClass, textInputClass } from "../../lib/controlClasses";
 import { register, signIn, signInWithGoogle } from "../../data/session";
+import { SignInBackdrop } from "./SignInBackdrop";
 
 export type AuthMode = "sign-in" | "create-account";
 
@@ -14,47 +14,56 @@ type AuthScreensProps = {
 
 const MIN_PASSWORD_LENGTH = 10;
 
+/** A refused attempt: under the field it concerns, or above the form. */
+type AuthError = { field: "email" | "password" | null; message: string };
+
 /**
- * The sign-in and create-account screens. The whole app sits behind them:
- * a session is required before anything else renders, so there is nothing to
- * close and nowhere else to go. The left column says what the product is for
- * a reader who arrived by link; the right column is the form.
+ * The sign-in and create-account screens, from design 1c ("floating over the
+ * tree, the product is the backdrop"). The whole app sits behind them: a
+ * session is required before anything else renders, so there is nothing to
+ * close and nowhere else to go. One 400px column centred on the dotted
+ * canvas: title and one line, the form on a card, the line that swaps modes.
+ * Behind it, faded, the real Prompting workspace.
  */
 export function AuthScreens({ notice, initialMode = "sign-in" }: AuthScreensProps) {
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [reveal, setReveal] = useState(false);
   const [busy, setBusy] = useState<"form" | "google" | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AuthError | null>(null);
   const emailId = useId();
   const passwordId = useId();
+  const errorId = useId();
 
   useEffect(() => {
     setError(null);
   }, [mode]);
+
+  const signingIn = mode === "sign-in";
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
     const address = email.trim();
     if (!address) {
-      setError("Enter your email address.");
+      setError({ field: "email", message: "Enter your email address." });
       return;
     }
-    if (mode === "create-account" && password.length < MIN_PASSWORD_LENGTH) {
-      setError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
+    if (!signingIn && password.length < MIN_PASSWORD_LENGTH) {
+      setError({ field: "password", message: `Use at least ${MIN_PASSWORD_LENGTH} characters.` });
       return;
     }
     setBusy("form");
     setError(null);
     try {
-      if (mode === "sign-in") {
+      if (signingIn) {
         await signIn(address, password);
       } else {
         await register(address, password);
       }
     } catch (requestError) {
-      setError(authMessage(requestError, mode));
+      setError(authError(requestError, mode));
       setBusy(null);
     }
   }
@@ -66,185 +75,211 @@ export function AuthScreens({ notice, initialMode = "sign-in" }: AuthScreensProp
     try {
       await signInWithGoogle();
     } catch (requestError) {
-      setError(messageFrom(requestError));
+      setError({ field: null, message: messageFrom(requestError) });
       setBusy(null);
     }
   }
 
-  const title = mode === "sign-in" ? "Sign in" : "Create your account";
+  const fieldError = (field: "email" | "password") =>
+    error && error.field === field ? error.message : null;
+  const banner = error && error.field === null ? error.message : null;
 
   return (
-    <div className="grid min-h-screen grid-cols-[minmax(0,5fr)_minmax(0,6fr)] bg-background max-[900px]:grid-cols-1">
-      <section
-        className="flex flex-col border-r border-border bg-surface-subtle px-14 py-12 max-[900px]:hidden"
-        aria-label="About Research Tree"
-      >
-        <div className="text-sm font-bold tracking-[-0.01em] text-text-primary">Research Tree</div>
-        <div className="my-auto max-w-[46ch]">
-          <h1 className="m-0 text-[28px] leading-[1.2] font-bold tracking-[-0.02em] text-text-primary">
-            A map of a research field, built from its literature.
+    <div
+      className="relative h-screen overflow-hidden bg-[#f7f8f8] text-text-primary"
+      style={{
+        backgroundImage: "radial-gradient(#d8dce0 1px, transparent 1px)",
+        backgroundSize: "20px 20px",
+      }}
+    >
+      <SignInBackdrop />
+
+      <div className="absolute top-1/2 left-1/2 flex w-[400px] max-w-[calc(100%-32px)] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-6 animate-interface-center-enter">
+        <div className="flex flex-col gap-2 text-center">
+          <h1
+            className="m-0 text-[23px] leading-[1.2] font-semibold tracking-[-0.02em]"
+            id="auth-title"
+          >
+            {signingIn ? "Sign in to Research Tree" : "Create your account"}
           </h1>
-          <p className="mt-4 mb-0 text-[14px] leading-[1.62] text-text-secondary">
-            Name a topic. Research Tree finds the papers that matter, arranges them into the
-            field&rsquo;s lines of work, and orders each line by what you need to have read
-            first.
+          <p className="m-0 max-w-[40ch] text-[13px] leading-[1.45] text-text-secondary">
+            {signingIn
+              ? "A map of a research field: its branches, its key papers, and the order to read them in."
+              : "Free to use with your own OpenAI key."}
           </p>
         </div>
-      </section>
 
-      <section className="grid place-items-center px-6 py-10">
         <form
-          className="w-[380px] max-w-full rounded-[14px] border border-border bg-surface px-8 pt-8 pb-7 shadow-dialog"
+          className="flex w-full flex-col gap-[18px] rounded-xl border border-border bg-surface px-8 py-7 shadow-[0_12px_32px_-12px_rgb(31_35_40/18%),0_1px_2px_rgb(31_35_40/6%)]"
           onSubmit={submit}
           aria-labelledby="auth-title"
           noValidate
         >
-          <div className="text-sm font-bold tracking-[-0.01em] text-text-primary min-[901px]:hidden">
-            Research Tree
-          </div>
-          <h2
-            className="mt-[18px] mb-0 text-[19px] font-bold tracking-[-0.015em] text-text-primary min-[901px]:mt-0"
-            id="auth-title"
-          >
-            {title}
-          </h2>
-
           {notice ? (
             <p
-              className="mt-4 mb-0 rounded-[8px] border border-warning-border bg-warning-surface px-3 py-2 text-[12px] leading-[1.5] text-warning"
+              className="m-0 rounded-[6px] border border-warning-border bg-warning-surface px-3 py-2.5 text-xs leading-[1.45] text-text-primary"
               role="status"
             >
               {notice}
             </p>
           ) : null}
-
-          <button
-            className="mt-[18px] flex w-full items-center justify-center gap-2.5 rounded-[9px] border border-border-strong bg-surface px-3.5 py-[9px] text-[13px] font-semibold text-text-primary transition-[background-color] duration-150 enabled:hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-60"
-            type="button"
-            onClick={() => void google()}
-            disabled={busy !== null}
-          >
-            <GoogleMark />
-            {busy === "google" ? "Opening Google…" : "Continue with Google"}
-          </button>
-
-          <div className="my-[18px] flex items-center gap-2.5" role="presentation">
-            <span className="h-px flex-1 bg-hairline" />
-            <span className="text-[11px] text-text-muted">or</span>
-            <span className="h-px flex-1 bg-hairline" />
-          </div>
-
-          <Field label="Email" htmlFor={emailId}>
-            <input
-              className={textInputClass}
-              id={emailId}
-              type="email"
-              name="email"
-              placeholder="you@university.edu"
-              autoComplete="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              disabled={busy !== null}
-              required
-            />
-          </Field>
-          <div className="mt-3.5">
-            <Field label="Password" htmlFor={passwordId}>
-              <input
-                className={textInputClass}
-                id={passwordId}
-                type="password"
-                name="password"
-                placeholder="••••••••••"
-                autoComplete={mode === "sign-in" ? "current-password" : "new-password"}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                disabled={busy !== null}
-                minLength={mode === "create-account" ? MIN_PASSWORD_LENGTH : undefined}
-                required
-              />
-            </Field>
-            {mode === "create-account" ? (
-              <p className="mt-1.5 mb-0 text-[11px] text-text-muted">
-                At least {MIN_PASSWORD_LENGTH} characters.
-              </p>
-            ) : null}
-          </div>
-
-          {error ? (
+          {banner ? (
             <p
-              className="mt-3.5 mb-0 rounded-[8px] border border-error-border bg-error-surface px-3 py-2 text-[12px] leading-[1.5] text-error"
+              className="m-0 rounded-[6px] border border-[color-mix(in_srgb,var(--color-error)_30%,#fff)] bg-[color-mix(in_srgb,var(--color-error)_7%,#fff)] px-3 py-2.5 text-xs leading-[1.45] text-text-primary"
               role="alert"
             >
-              {error}
+              {banner}
             </p>
           ) : null}
 
+          <div className="flex flex-col gap-[18px]">
+            <button
+              className="flex h-9 w-full items-center justify-center gap-2.5 rounded-[6px] border border-border bg-surface px-3 text-[13px] font-medium text-text-primary transition-[background-color] duration-150 enabled:hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-60"
+              type="button"
+              onClick={() => void google()}
+              disabled={busy !== null}
+            >
+              <GoogleMark />
+              {busy === "google" ? "Opening Google…" : "Continue with Google"}
+            </button>
+            <div className="flex items-center gap-3 text-[11px] text-text-muted" role="presentation">
+              <span className="h-px flex-1 bg-border" />
+              or
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3.5">
+            <div className="flex flex-col gap-1.5">
+              <label className={labelClass} htmlFor={emailId}>
+                Email
+              </label>
+              <input
+                className={inputClass(fieldError("email") !== null)}
+                id={emailId}
+                type="email"
+                name="email"
+                placeholder="you@university.edu"
+                autoComplete="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                disabled={busy !== null}
+                aria-invalid={fieldError("email") !== null || undefined}
+                aria-describedby={fieldError("email") ? errorId : undefined}
+                required
+              />
+              {fieldError("email") ? <FieldError id={errorId}>{fieldError("email")}</FieldError> : null}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className={labelClass} htmlFor={passwordId}>
+                Password
+              </label>
+              <span className="relative flex">
+                <input
+                  className={cx(inputClass(fieldError("password") !== null), "pr-[52px]")}
+                  id={passwordId}
+                  type={reveal ? "text" : "password"}
+                  name="password"
+                  autoComplete={signingIn ? "current-password" : "new-password"}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  disabled={busy !== null}
+                  minLength={signingIn ? undefined : MIN_PASSWORD_LENGTH}
+                  aria-invalid={fieldError("password") !== null || undefined}
+                  aria-describedby={fieldError("password") ? errorId : undefined}
+                  required
+                />
+                <button
+                  className="absolute top-1.5 right-1.5 h-6 rounded-[4px] border-0 bg-transparent px-2 text-[11px] font-medium text-text-secondary transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
+                  type="button"
+                  onClick={() => setReveal((current) => !current)}
+                  aria-pressed={reveal}
+                  aria-controls={passwordId}
+                >
+                  {reveal ? "Hide" : "Show"}
+                </button>
+              </span>
+              {fieldError("password") ? (
+                <FieldError id={errorId}>{fieldError("password")}</FieldError>
+              ) : signingIn ? null : (
+                <span className="text-[11px] leading-[1.45] text-text-muted">
+                  At least {MIN_PASSWORD_LENGTH} characters.
+                </span>
+              )}
+            </div>
+          </div>
+
           <button
-            className={cx(primaryActionClass, "mt-3.5 w-full")}
+            className="h-9 w-full rounded-[6px] border-0 bg-accent text-[13px] font-medium text-white transition-[background-color] duration-150 enabled:hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-border-strong"
             type="submit"
             disabled={busy !== null}
           >
             {busy === "form"
-              ? mode === "sign-in"
+              ? signingIn
                 ? "Signing in…"
                 : "Creating account…"
-              : mode === "sign-in"
-                ? "Continue"
+              : signingIn
+                ? "Sign in"
                 : "Create account"}
           </button>
-
-          <div className="mt-5 border-t border-hairline pt-4 text-xs text-text-secondary">
-            {mode === "sign-in" ? (
-              <>
-                New here?{" "}
-                <ToggleLink onClick={() => setMode("create-account")}>Create an account</ToggleLink>
-              </>
-            ) : (
-              <>
-                Have an account? <ToggleLink onClick={() => setMode("sign-in")}>Sign in</ToggleLink>
-              </>
-            )}
-          </div>
         </form>
-      </section>
+
+        <p className="m-0 text-xs text-text-secondary">
+          {signingIn ? (
+            <>
+              New to Research Tree?{" "}
+              <ToggleLink onClick={() => setMode("create-account")}>Create account</ToggleLink>
+            </>
+          ) : (
+            <>
+              Have an account? <ToggleLink onClick={() => setMode("sign-in")}>Sign in</ToggleLink>
+            </>
+          )}
+        </p>
+      </div>
     </div>
   );
 }
 
-function authMessage(error: unknown, mode: AuthMode): string {
+const labelClass = "text-xs leading-[1.35] font-medium text-text-secondary";
+
+function inputClass(invalid: boolean): string {
+  return cx(
+    "h-9 w-full rounded-[6px] border bg-surface px-[11px] text-[13px] text-text-primary outline-0 transition-[border-color,box-shadow] duration-150 placeholder:text-text-muted disabled:text-text-secondary",
+    invalid
+      ? "border-error shadow-[0_0_0_3px_color-mix(in_srgb,var(--color-error)_10%,transparent)]"
+      : "border-border focus:border-accent focus:shadow-[0_0_0_3px_var(--color-accent-subtle)]",
+  );
+}
+
+function FieldError({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <span className="text-xs leading-[1.45] text-error" id={id} role="alert">
+      {children}
+    </span>
+  );
+}
+
+function authError(error: unknown, mode: AuthMode): AuthError {
   const message = messageFrom(error);
   const code = (error as { code?: string })?.code ?? "";
-  if (code === "LOGIN_BAD_CREDENTIALS") {
-    return "That email and password do not match.";
+  const status = (error as { status?: number })?.status;
+  if (code === "LOGIN_BAD_CREDENTIALS" || (mode === "sign-in" && status === 400)) {
+    return { field: "password", message: "Incorrect email or password." };
   }
   if (code === "REGISTER_USER_ALREADY_EXISTS") {
-    return "An account with this email already exists. Sign in instead.";
+    return { field: "email", message: "An account with this email already exists. Sign in instead." };
   }
   if (code === "REGISTER_INVALID_PASSWORD") {
-    return message || "Choose a longer password.";
+    return { field: "password", message: message || "Choose a longer password." };
   }
-  if (mode === "sign-in" && (error as { status?: number })?.status === 400) {
-    return "That email and password do not match.";
-  }
-  return message;
-}
-
-function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
-  return (
-    <div>
-      <label className="mb-1.5 block text-xs font-semibold text-text-primary" htmlFor={htmlFor}>
-        {label}
-      </label>
-      {children}
-    </div>
-  );
+  return { field: null, message };
 }
 
 function ToggleLink({ onClick, children }: { onClick: () => void; children: ReactNode }) {
   return (
     <button
-      className="border-0 bg-transparent p-0 text-xs font-semibold text-accent transition-[color] duration-150 hover:text-accent-deep hover:underline"
+      className="border-0 bg-transparent p-0 text-xs font-medium text-accent transition-[color] duration-150 hover:text-accent-deep"
       type="button"
       onClick={onClick}
     >
@@ -253,9 +288,10 @@ function ToggleLink({ onClick, children }: { onClick: () => void; children: Reac
   );
 }
 
+/** Google's own mark, at the size its sign-in guidance draws it. */
 function GoogleMark() {
   return (
-    <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
       <path
         fill="#4285F4"
         d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"

@@ -96,7 +96,7 @@ function PaperNodeContent({ paper }: { paper: Extract<TreeNodeViewModel, { kind:
       <span className="mt-[5px] text-[11px] leading-[1.35] text-text-muted">
         {paperMetaLine(paper)}
       </span>
-      <span className={cx("mt-[7px] text-xs leading-[1.5] text-text-secondary", clampThreeLines)}>
+      <span className={cx("tldr mt-[7px] text-xs leading-[1.5] text-text-secondary", clampThreeLines)}>
         <b className="mr-1 text-[11px] text-text-primary">TLDR</b>
         {paper.tldr || "Unavailable"}
       </span>
