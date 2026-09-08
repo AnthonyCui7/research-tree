@@ -72,5 +72,10 @@ ENV PATH="/app/.venv/bin:$PATH" \
     RESEARCH_TREE_AUTH_MODE=accounts
 EXPOSE 8000
 # One worker: the process holds in-memory locks and the agent's node cache.
-# Proxy headers come from Container Apps' ingress, the only thing in front.
-CMD ["python", "-m", "uvicorn", "research_tree.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# Proxy headers come from Container Apps' ingress, the only thing in front, and
+# it reaches this container from a private address. Trusting only those makes
+# uvicorn walk `X-Forwarded-For` from the right and stop at the first address it
+# did not add — the caller's real one. Trusting `*` made it take the leftmost
+# entry instead, which the caller writes, so the per-IP sign-in and registration
+# limits could be sidestepped, or aimed at somebody else, with one header.
+CMD ["python", "-m", "uvicorn", "research_tree.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1,::1,fd00::/8"]

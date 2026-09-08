@@ -14,6 +14,7 @@ Restore, from a machine with `pg_restore` 17 and the admin DSN:
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -36,7 +37,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{DATABASE_URL_ENV} is not set.", file=sys.stderr)
         return 2
     name = f"researchtree-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.dump"
-    dump = run_pg_dump(plain_postgres_dsn(url))
+    try:
+        dump = run_pg_dump(plain_postgres_dsn(url))
+    except RuntimeError as error:
+        # An operator reading this at the wrong hour needs the sentence, not
+        # a stack trace; the scheduled task logs the exception either way.
+        print(str(error), file=sys.stderr)
+        return 1
     if args.to_file:
         Path(args.to_file).write_bytes(dump)
         print(f"wrote {args.to_file} ({len(dump)} bytes)")
@@ -55,6 +62,11 @@ def run_pg_dump(dsn: str) -> bytes:
     # source's, and neither matters for the data. --schema=public: everything
     # of ours lives there, and it is all the app role can read, so the worker
     # takes the backup with its own credentials.
+    if shutil.which("pg_dump") is None:
+        raise RuntimeError(
+            "pg_dump is not installed. The container image ships it; on a "
+            "workstation, install the PostgreSQL 17 client tools."
+        )
     completed = subprocess.run(
         [
             "pg_dump",
