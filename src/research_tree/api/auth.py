@@ -35,9 +35,16 @@ def _optional_user_dependency() -> Callable[..., Any]:
     return optional_current_user
 
 
+def _session_dependency() -> Callable[..., Any]:
+    from research_tree.auth.db import get_async_session
+
+    return get_async_session
+
+
 async def require_account(
     request: Request,
     user: Any = Depends(_optional_user_dependency()),
+    session: Any = Depends(_session_dependency()),
 ) -> AsyncIterator[Principal]:
     if user is None:
         raise UnauthenticatedError("Sign in to continue.")
@@ -57,5 +64,12 @@ async def require_account(
         is_verified=bool(user.is_verified),
         is_local=False,
     )
+    # FastAPI holds a dependency open until the response is finished, and the
+    # two SSE streams finish when the reader closes the tab. The session
+    # fastapi-users just used is the same instance (dependencies are cached per
+    # request), and nothing needs it again, so close it here: otherwise every
+    # open stream parks one of the four connections in the auth pool and the
+    # fifth request anywhere in the app waits for a connection that never comes.
+    await session.close()
     with bind_principal(principal, request_id=uuid.uuid4().hex):
         yield principal

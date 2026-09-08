@@ -6,11 +6,13 @@ itself needs the account tables, so those tests run on the Postgres lane only.
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from research_tree.api.app import create_app
 from research_tree.api.dependencies import get_repository
@@ -42,9 +44,9 @@ def accounts_client(
 
     auth_db.get_async_engine.cache_clear()
     auth_db._session_factory.cache_clear()
-    from research_tree.auth.routes import _limiter
+    from research_tree.auth import throttle
 
-    _limiter.reset()
+    throttle.reset()
     app = create_app()
     app.dependency_overrides[get_repository] = lambda: repository
     return TestClient(app)
@@ -249,3 +251,202 @@ def test_google_identity_is_the_openid_subject_and_verified_email() -> None:
     assert asyncio.run(client.get_id_email("tok")) == ("42", "b@x.io")
     assert seen["url"] == USERINFO_ENDPOINT
     assert seen["auth"] == "Bearer tok"
+
+
+# ---- the sign-in throttle under pressure -------------------------------------
+
+
+def test_a_flood_of_new_keys_cannot_reset_a_spent_counter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clearing the table on overflow handed the attacker their own budget back."""
+
+    from research_tree.auth import throttle
+
+    throttle.reset()
+    monkeypatch.setattr(throttle, "MAX_TRACKED_KEYS", 8)
+    limiter = throttle._limiter
+
+    for _ in range(3):
+        assert limiter.hit("login:email:target", 3, 900)
+    assert not limiter.hit("login:email:target", 3, 900)
+
+    for index in range(50):
+        limiter.hit(f"login:email:flood-{index}", 3, 900)
+
+    assert not limiter.hit("login:email:target", 3, 900)
+
+
+def test_the_table_recovers_once_its_entries_expire(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_tree.auth import throttle
+
+    throttle.reset()
+    monkeypatch.setattr(throttle, "MAX_TRACKED_KEYS", 8)
+    limiter = throttle._limiter
+
+    clock = [1_000.0]
+    monkeypatch.setattr(throttle.time, "monotonic", lambda: clock[0])
+    for index in range(8):
+        limiter.hit(f"login:email:early-{index}", 3, 900)
+    assert not limiter.hit("login:email:late", 3, 900)
+
+    clock[0] += 901
+    assert limiter.hit("login:email:late", 3, 900)
+
+
+# ---- Google sign-in must not adopt an account nobody proved they own ---------
+
+
+def test_google_takes_over_an_account_nobody_proved_they_owned(
+    accounts_client: TestClient, repository: WorkspaceRepository
+) -> None:
+    """Register a stranger's address, wait for their Google sign-in, take their session."""
+
+    _postgres_only(repository)
+    from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
+
+    from research_tree.auth.db import _session_factory
+    from research_tree.auth.manager import UserManager
+    from research_tree.auth.models import OAuthAccount, User
+
+    email = "pre-hijack@example.com"
+    password = "attacker-chosen"
+    registered = accounts_client.post("/auth/register", json={"email": email, "password": password})
+    assert registered.status_code == 201, registered.text
+    squatter = TestClient(accounts_client.app)
+    assert squatter.post("/auth/login", data={"username": email, "password": password}).status_code == 204
+
+    async def google_signs_in() -> None:
+        async with _session_factory()() as session:
+            manager = UserManager(SQLAlchemyUserDatabase(session, User, OAuthAccount))
+            await manager.oauth_callback(
+                "google", "token", "google-account-id", email,
+                associate_by_email=True, is_verified_by_default=True,
+            )
+
+    asyncio.run(google_signs_in())
+
+    # The password whoever registered the address chose no longer works, and
+    # the session they already held is gone.
+    refused = accounts_client.post("/auth/login", data={"username": email, "password": password})
+    assert refused.status_code == 400
+    assert squatter.get("/account/me").status_code == 401
+
+    engine = repository._engine  # type: ignore[attr-defined]
+    with engine.begin() as conn:
+        verified = conn.execute(
+            text('SELECT is_verified FROM "user" WHERE lower(email) = :email'), {"email": email}
+        ).scalar()
+    assert verified is True
+
+
+def test_one_account_per_email_whatever_the_case(
+    accounts_client: TestClient, repository: WorkspaceRepository
+) -> None:
+    """The lookup is case-insensitive, so the constraint has to be too."""
+
+    _postgres_only(repository)
+
+    first = accounts_client.post(
+        "/auth/register", json={"email": "CaseCheck@example.com", "password": "correct-horse-battery"}
+    )
+    assert first.status_code == 201, first.text
+
+    engine = repository._engine  # type: ignore[attr-defined]
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, '
+                    "is_verified) VALUES (gen_random_uuid(), :email, 'x', true, false, false)"
+                ),
+                {"email": "casecheck@example.com"},
+            )
+
+
+def test_two_accounts_building_one_topic_never_touch_each_other(
+    accounts_client: TestClient, repository: WorkspaceRepository
+) -> None:
+    """Both were handed the same name, and whoever finished second overwrote the first."""
+
+    _postgres_only(repository)
+
+    def account(email: str) -> str:
+        created = accounts_client.post(
+            "/auth/register", json={"email": email, "password": "correct-horse-battery"}
+        )
+        assert created.status_code == 201, created.text
+        return str(created.json()["id"])
+
+    first = account("racer-one@example.com")
+    second = account("racer-two@example.com")
+
+    # Both start before either has published anything.
+    first_id = repository.claim_workspace_id("prompting", owner_id=first)
+    second_id = repository.claim_workspace_id("prompting", owner_id=second)
+    assert first_id == "prompting"
+    assert second_id == "prompting-2"
+
+    document = {
+        "schema_version": "research_tree_workspace.v1",
+        "workspace_id": first_id,
+        "topic": "Prompting",
+        "title": "Prompting",
+        "root": {},
+        "tree": {},
+        "paper_paths": [],
+        "paper_cards": {},
+    }
+    repository.save_workspace_version(
+        first_id, document, actor="system", parent_version_hash=None,
+        reason="built", owner_id=first,
+    )
+    repository.save_workspace_version(
+        second_id, {**document, "workspace_id": second_id, "title": "Theirs"},
+        actor="system", parent_version_hash=None, reason="built", owner_id=second,
+    )
+
+    assert repository.get_current_workspace(first_id)["title"] == "Prompting"
+    assert repository.get_current_workspace(second_id)["title"] == "Theirs"
+    assert repository.get_workspace_owner_id(first_id) == first
+    assert repository.get_workspace_owner_id(second_id) == second
+
+
+def test_a_build_will_not_publish_into_another_accounts_workspace(
+    accounts_client: TestClient, repository: WorkspaceRepository
+) -> None:
+    """A backstop for the claim above: nothing may write into a name it does not hold."""
+
+    _postgres_only(repository)
+
+    created = accounts_client.post(
+        "/auth/register", json={"email": "holder@example.com", "password": "correct-horse-battery"}
+    )
+    assert created.status_code == 201, created.text
+    holder = str(created.json()["id"])
+    stranger = str(
+        accounts_client.post(
+            "/auth/register",
+            json={"email": "stranger@example.com", "password": "correct-horse-battery"},
+        ).json()["id"]
+    )
+    document = {
+        "schema_version": "research_tree_workspace.v1",
+        "workspace_id": "held",
+        "topic": "Held",
+        "title": "Held",
+        "root": {},
+        "tree": {},
+        "paper_paths": [],
+        "paper_cards": {},
+    }
+    repository.save_workspace_version(
+        "held", document, actor="system", parent_version_hash=None,
+        reason="built", owner_id=holder,
+    )
+
+    with pytest.raises(RuntimeError, match="took that name"):
+        repository.save_workspace_version(
+            "held", {**document, "title": "Someone else"}, actor="system",
+            parent_version_hash=None, reason="built", owner_id=stranger,
+        )
+
+    assert repository.get_current_workspace("held")["title"] == "Held"

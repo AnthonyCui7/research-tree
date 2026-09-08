@@ -87,3 +87,14 @@ def set_user_flags(user_id: str, **flags: bool) -> bool:
                 text("DELETE FROM accesstoken WHERE user_id = CAST(:id AS uuid)"), {"id": user_id}
             )
     return result.rowcount > 0
+
+
+def revoke_sessions(user_id: str) -> int:
+    """Sign this account out everywhere. Returns how many sessions ended."""
+
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            text("DELETE FROM accesstoken WHERE user_id = CAST(:user_id AS uuid)"),
+            {"user_id": user_id},
+        )
+    return int(result.rowcount or 0)

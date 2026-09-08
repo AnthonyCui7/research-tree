@@ -9,13 +9,15 @@ from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import Depends, Request, Response
-from fastapi_users import BaseUserManager, UUIDIDMixin, schemas
+from fastapi_users import BaseUserManager, UUIDIDMixin, exceptions, schemas
 from fastapi_users.exceptions import InvalidPasswordException
 from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
 
 from research_tree.auth.db import get_user_db
 from research_tree.auth.models import User
+from research_tree.auth.accounts import revoke_sessions
 from research_tree.auth.settings import email_is_allowed, session_secret
+from research_tree.auth.throttle import count_registration
 from research_tree.services.errors import ForbiddenError
 
 logger = logging.getLogger("uvicorn.error")
@@ -83,6 +85,9 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         safe: bool = False,
         request: Request | None = None,
     ) -> User:
+        # Counted here rather than at the route, which runs before the body is
+        # validated: a mistyped address used to spend the hour's registrations.
+        count_registration(request)
         ensure_email_allowed(user_create.email)
         return await super().create(user_create, safe=safe, request=request)
 
@@ -104,6 +109,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             # account or the allowlist against.
             raise ForbiddenError(UNVERIFIED_EMAIL_MESSAGE)
         ensure_email_allowed(account_email)
+        await self._claim_unproven_account(account_email)
         user = await super().oauth_callback(
             oauth_name,
             access_token,
@@ -119,6 +125,49 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         if profile:
             user = await self.user_db.update(user, profile)
         return user
+
+    async def _claim_unproven_account(self, account_email: str) -> None:
+        """Hand the account to whoever can prove the address, and lock out anyone else.
+
+        `associate_by_email` joins a Google identity to any existing account
+        with the same address without asking whether anybody ever proved that
+        address belongs to it. Nothing here sends email yet, so no password
+        account is verified, and anyone could register a stranger's address,
+        wait for them to press Continue with Google, and be handed their session
+        while keeping the password they had set.
+
+        Google has just proved the mailbox; the password account never did. So
+        the account goes to Google: the password is replaced with one nobody
+        holds, every existing session for it is revoked, and the address is
+        marked verified. This is the standard remedy for a pre-hijacked account,
+        and it costs a genuine password user their password rather than their
+        account, at the moment they have just demonstrated they own the mailbox.
+
+        TEMPORARY, and self-removing. Once registration verifies an address by
+        email, a real owner's account arrives here already verified and takes
+        the branch above, so this one stops firing on its own. Deleting it then
+        is safe.
+        """
+
+        try:
+            existing = await self.get_by_email(account_email)
+        except exceptions.UserNotExists:
+            return
+        if existing.is_verified:
+            return
+        logger.warning(
+            "google proved an address held by an unverified account; "
+            "revoking its password and sessions user_id=%s",
+            existing.id,
+        )
+        await self.user_db.update(
+            existing,
+            {
+                "hashed_password": self.password_helper.hash(self.password_helper.generate()),
+                "is_verified": True,
+            },
+        )
+        revoke_sessions(str(existing.id))
 
     async def on_after_login(
         self,
