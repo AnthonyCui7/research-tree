@@ -13,6 +13,9 @@ import sys
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
+# numeric(12, 6) holds six decimal places, so six integer digits.
+MAX_ALLOWANCE_USD = Decimal("1000000")
+
 from research_tree.billing.allowances import grant_allowance, list_allowances, revoke_allowance
 from research_tree.db import DATABASE_URL_ENV, database_url
 
@@ -23,7 +26,10 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--email", help="grant an allowance to this email")
     group.add_argument("--list", action="store_true", help="list every allowance")
     group.add_argument("--revoke", metavar="ALLOWANCE_ID", help="revoke one allowance")
-    parser.add_argument("--usd", help="the amount, e.g. 5 or 12.50 (with --email)")
+    parser.add_argument(
+        "--usd",
+        help="how much to add, e.g. 5 or 12.50; a negative amount takes credit away",
+    )
     parser.add_argument(
         "--monthly", action="store_true", help="reset the amount every month instead of once"
     )
@@ -67,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
         amount = Decimal(args.usd)
     except InvalidOperation:
         parser.error(f"--usd {args.usd!r} is not an amount")
+    # `limit_usd` is numeric(12, 6), so anything larger is a database error
+    # rather than a grant. Say so here instead of printing a stack trace.
+    if not amount.is_finite() or abs(amount) >= MAX_ALLOWANCE_USD:
+        parser.error(f"--usd must be between -{MAX_ALLOWANCE_USD:,} and {MAX_ALLOWANCE_USD:,}")
     expires_at = None
     if args.expires:
         try:

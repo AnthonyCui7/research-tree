@@ -36,11 +36,13 @@ def link_by_email(conn: Connection, user_id: str, email: str) -> None:
 
 
 def _active_row(conn: Connection, user_id: str, *, lock: bool = False) -> Any:
+    """This account's allowance, of which there is one."""
+
     query = (
         f"SELECT {_ROW_COLUMNS} FROM allowances "
         "WHERE user_id = CAST(:user_id AS uuid) AND status = 'active' "
         "AND (expires_at IS NULL OR expires_at > now()) "
-        "ORDER BY created_at LIMIT 1"
+        "LIMIT 1"
     )
     if lock:
         query += " FOR UPDATE"
@@ -124,10 +126,17 @@ def grant_allowance(
     granted_by: str | None = None,
     note: str | None = None,
 ) -> str:
+    """Add to this address's allowance, creating it the first time.
+
+    One address, one allowance, one number. A second grant tops the same one up
+    rather than queuing behind it, and a negative amount takes credit away
+    without ever pushing the total below what has already been spent.
+    """
+
     if period not in PERIODS:
         raise ValueError(f"period must be one of {', '.join(PERIODS)}")
-    if limit_usd <= 0:
-        raise ValueError("the allowance must be a positive amount")
+    if limit_usd == 0:
+        raise ValueError("the amount cannot be zero")
     allowance_id = str(uuid.uuid4())
     with get_engine().begin() as conn:
         # Attach immediately when a verified account already has this email.
@@ -135,12 +144,25 @@ def grant_allowance(
             text('SELECT id FROM "user" WHERE lower(email) = lower(:email) AND is_verified'),
             {"email": email.strip()},
         ).first()
-        conn.execute(
+        row = conn.execute(
             text(
-                "INSERT INTO allowances "
-                "(id, email, user_id, limit_usd, period, expires_at, granted_by, note) VALUES "
-                "(CAST(:id AS uuid), lower(:email), :user_id, :limit_usd, :period, :expires_at, "
-                ":granted_by, :note)"
+                """
+                INSERT INTO allowances
+                    (id, email, user_id, limit_usd, period, expires_at, granted_by, note)
+                VALUES
+                    (CAST(:id AS uuid), lower(:email), :user_id, :limit_usd, :period,
+                     :expires_at, :granted_by, :note)
+                ON CONFLICT (email) WHERE status = 'active' DO UPDATE
+                SET limit_usd = GREATEST(
+                        allowances.limit_usd + EXCLUDED.limit_usd, allowances.spent_usd
+                    ),
+                    user_id = COALESCE(allowances.user_id, EXCLUDED.user_id),
+                    period = EXCLUDED.period,
+                    expires_at = EXCLUDED.expires_at,
+                    granted_by = EXCLUDED.granted_by,
+                    note = COALESCE(EXCLUDED.note, allowances.note)
+                RETURNING id
+                """
             ),
             {
                 "id": allowance_id,
@@ -152,8 +174,8 @@ def grant_allowance(
                 "granted_by": granted_by,
                 "note": note,
             },
-        )
-    return allowance_id
+        ).first()
+    return str(row[0]) if row is not None else allowance_id
 
 
 def list_allowances() -> list[dict[str, Any]]:

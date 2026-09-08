@@ -85,6 +85,11 @@ def looks_like_openai_key(value: str) -> bool:
     return (
         value.startswith("sk-")
         and MIN_KEY_LENGTH <= len(value) <= MAX_KEY_LENGTH
+        # A key travels in an Authorization header, which is latin-1 only.
+        # `isprintable` admits every printable code point, so a pasted key with
+        # an accent or a CJK character passed this and then raised inside the
+        # HTTP client, answering 500 instead of "that is not a key".
+        and value.isascii()
         and value.isprintable()
         and not any(character.isspace() for character in value)
     )

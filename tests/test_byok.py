@@ -289,6 +289,41 @@ def test_saving_a_key_needs_a_key_encryption_key(accounts_client, repository) ->
     assert SECRET not in refused.text
 
 
+def test_an_allowance_is_one_number_that_grants_add_to(accounts_client, repository) -> None:
+    """Every grant used to make a row and only the oldest was read, so top-ups did nothing."""
+
+    _postgres_only(repository)
+    from research_tree.auth.accounts import set_user_flags
+    from research_tree.billing.allowances import (
+        allowance_status,
+        allowance_summary,
+        charge_allowance,
+        grant_allowance,
+    )
+    from research_tree.db import get_engine
+
+    user_id = _signed_in_user_id(accounts_client, "topup@example.com")
+    set_user_flags(user_id, is_verified=True)
+    grant_allowance(email="topup@example.com", limit_usd=Decimal("5.00"), granted_by="test")
+    assert allowance_status(user_id, "topup@example.com", verified=True) == "ok"
+
+    with get_engine().begin() as conn:
+        charge_allowance(conn, user_id, Decimal("5.00"))
+    assert allowance_status(user_id, "topup@example.com", verified=True) == "exhausted"
+
+    grant_allowance(email="topup@example.com", limit_usd=Decimal("10.00"), granted_by="test")
+    assert allowance_status(user_id, "topup@example.com", verified=True) == "ok"
+    topped_up = allowance_summary(user_id, "topup@example.com", verified=True)
+    assert (topped_up["limit_usd"], topped_up["spent_usd"]) == (15.0, 5.0)
+    assert topped_up["remaining_usd"] == 10.0
+
+    # And a negative grant takes credit away, without ever undoing what was spent.
+    grant_allowance(email="topup@example.com", limit_usd=Decimal("-100.00"), granted_by="test")
+    clawed_back = allowance_summary(user_id, "topup@example.com", verified=True)
+    assert (clawed_back["limit_usd"], clawed_back["remaining_usd"]) == (5.0, 0.0)
+    assert allowance_status(user_id, "topup@example.com", verified=True) == "exhausted"
+
+
 def test_allowances_attach_to_verified_accounts_and_spend_down(
     accounts_client, repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
