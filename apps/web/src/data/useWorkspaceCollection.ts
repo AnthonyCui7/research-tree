@@ -67,7 +67,7 @@ export function useWorkspaceCollection(): WorkspaceCollectionState & {
       // A stream the browser gives up on (CLOSED, not reconnecting) is what an
       // expired session looks like from here: EventSource cannot read the 401.
       if (active && events.readyState === EventSource.CLOSED) {
-        void loadSession();
+        void loadSession({ recheck: true });
       }
     };
 

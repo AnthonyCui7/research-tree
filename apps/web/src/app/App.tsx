@@ -3,7 +3,7 @@ import { AppShell, type UtilityPanel } from "../components/layout/AppShell";
 import { useWorkspaceCollection } from "../data/useWorkspaceCollection";
 import { useActiveWorkspace } from "../data/useActiveWorkspace";
 import { normalizeWorkspaceForTree } from "../lib/workspaceAdapter";
-import type { PipelineRun, TreeNodeId } from "../lib/types";
+import type { PipelineRun, TreeNodeId, TreeViewModel } from "../lib/types";
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "research-tree.sidebar-collapsed";
 
@@ -17,9 +17,16 @@ export function App() {
   const [panel, setPanel] = useState<UtilityPanel | null>(null);
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorTopic, setCreatorTopic] = useState("");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true",
-  );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+    } catch {
+      // A browser set to block site data throws here rather than returning
+      // null, and this runs in a state initializer above every error boundary,
+      // so an unguarded read left the whole page blank. The sidebar opens.
+      return false;
+    }
+  });
   const [buildingRun, setBuildingRun] = useState<PipelineRun | null>(null);
 
   const activeSummary = useMemo(() => {
@@ -39,11 +46,20 @@ export function App() {
     error: workspaceError,
   } = useActiveWorkspace(activeSummary);
 
-  const tree = useMemo(() => {
+  // A document the canvas cannot lay out must not take the rest of the app with
+  // it. This runs during render, and the sidebar, the top bar and every way out
+  // to another workspace live above it, so a throw here used to leave a blank
+  // page that a reload reproduced.
+  const [tree, treeError] = useMemo<[TreeViewModel | null, string | null]>(() => {
     if (!activeWorkspace) {
-      return null;
+      return [null, null];
     }
-    return normalizeWorkspaceForTree(activeWorkspace);
+    try {
+      return [normalizeWorkspaceForTree(activeWorkspace), null];
+    } catch (error) {
+      console.error("workspace could not be laid out", error);
+      return [null, "This workspace's saved contents are damaged, so its tree cannot be displayed."];
+    }
   }, [activeWorkspace]);
 
   const activeWorkspaceId = activeSummary?.workspace_id ?? null;
@@ -131,7 +147,7 @@ export function App() {
       tree={tree}
       activeWorkspace={activeWorkspace}
       workspaceLoading={workspaceLoading}
-      workspaceError={workspaceError}
+      workspaceError={workspaceError ?? treeError}
       selectedNodeId={selectedNodeId}
       panel={panel}
       creatorOpen={creatorOpen}

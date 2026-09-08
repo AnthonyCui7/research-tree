@@ -4,6 +4,7 @@ import { TopBar } from "./TopBar";
 import { ProfileMenu, type AccountScreen } from "./ProfileMenu";
 import { AccountScreens, useApiKeyLabel } from "../account/AccountScreens";
 import { TreeCanvas } from "../tree/TreeCanvas";
+import { CanvasErrorBoundary } from "../ui/CanvasErrorBoundary";
 import { SearchOverlay } from "../search/SearchOverlay";
 import { NodeInspector, inspectorLabel } from "../inspector/NodeInspector";
 import { RightPanel, RIGHT_PANEL_DEFAULT_WIDTH } from "../panel/RightPanel";
@@ -111,7 +112,11 @@ export function AppShell({
   const [optionsMenu, setOptionsMenu] = useState<
     { workspace: WorkspaceSummary; anchor: MenuAnchor } | null
   >(null);
-  const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
+  // The id, not the summary: a delete that loses a version race refreshes the
+  // list, and holding a snapshot meant the dialog kept confirming against the
+  // hash that had just been superseded, so every retry conflicted again.
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const deleteTarget = workspaces.find((item) => item.workspace_id === deleteTargetId) ?? null;
   const [accountScreen, setAccountScreen] = useState<AccountScreen | null>(null);
   // The assistant opens at half the screen and remembers its own drag width;
   // the narrower inspector/history column keeps a separate one.
@@ -301,16 +306,28 @@ export function AppShell({
               />
             ) : null}
             {status === "ready" && tree ? (
-              <TreeCanvas
-                tree={tree}
-                workspace={activeWorkspace}
-                selectedNodeId={selectedNodeId}
-                onSelectNode={onSelectNode}
-                onOpenNodeActions={(nodeId, point) => {
-                  onSelectNode(nodeId);
-                  setNodeActions({ nodeId, anchor: { x: point.x, y: point.y, align: "left" } });
-                }}
-              />
+              <CanvasErrorBoundary
+                fallback={
+                  <WorkspaceNotice
+                    title="Workspace failed to load"
+                    detail="This workspace's saved contents are damaged, so its tree cannot be displayed."
+                    tone="error"
+                    actionLabel="Retry"
+                    onAction={onRefresh}
+                  />
+                }
+              >
+                <TreeCanvas
+                  tree={tree}
+                  workspace={activeWorkspace}
+                  selectedNodeId={selectedNodeId}
+                  onSelectNode={onSelectNode}
+                  onOpenNodeActions={(nodeId, point) => {
+                    onSelectNode(nodeId);
+                    setNodeActions({ nodeId, anchor: { x: point.x, y: point.y, align: "left" } });
+                  }}
+                />
+              </CanvasErrorBoundary>
             ) : null}
 
             {refreshError || editor.notice ? (
@@ -475,7 +492,7 @@ export function AppShell({
             <MenuItem
               tone="danger"
               icon={<TrashIcon className="h-[13px] w-[13px]" />}
-              onClick={() => setDeleteTarget(optionsMenu.workspace)}
+              onClick={() => setDeleteTargetId(optionsMenu.workspace.workspace_id)}
             >
               Delete workspace…
             </MenuItem>
@@ -501,10 +518,10 @@ export function AppShell({
       {deleteTarget ? (
         <DeleteWorkspaceDialog
           workspace={deleteTarget}
-          onCancel={() => setDeleteTarget(null)}
+          onCancel={() => setDeleteTargetId(null)}
           onChanged={onWorkspaceChanged}
           onDeleted={async () => {
-            setDeleteTarget(null);
+            setDeleteTargetId(null);
             await onWorkspaceDeleted();
           }}
         />

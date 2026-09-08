@@ -95,7 +95,10 @@ export function WorkspaceHistory({
         ) : null}
         <ol className="m-0 flex list-none flex-col gap-0.5 p-0">
           {ordered.map((version) => {
-            const current = version.version_hash === currentVersionHash;
+            // The server marks exactly one entry current, by position. Matching
+            // on the hash marked both halves of a duplicate that older
+            // workspaces can still carry, so neither offered a way back.
+            const current = version.is_current ?? version.version_hash === currentVersionHash;
             return (
               <li
                 className={cx("rounded-[9px] px-2.5 py-3", current && "bg-accent-wash")}

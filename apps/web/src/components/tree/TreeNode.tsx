@@ -66,7 +66,7 @@ function RootNodeContent({
     <>
       <span className={kickerClass}>Research topic</span>
       <strong className="mt-[5px] [overflow-wrap:anywhere] text-[21px] font-bold leading-[1.12] tracking-normal">{node.title}</strong>
-      <span className="mt-[7px] text-xs leading-[1.5] text-text-secondary">{node.overview}</span>
+      <span className="mt-[7px] [overflow-wrap:anywhere] text-xs leading-[1.5] text-text-secondary">{node.overview}</span>
       <AnchorSummary paper={node.anchorPaper} label="Root survey" />
     </>
   );
@@ -81,7 +81,7 @@ function BranchNodeContent({
     <>
       <span className={kickerClass}>Research branch</span>
       <strong className="mt-1.5 [overflow-wrap:anywhere] text-sm font-bold leading-[1.35] tracking-normal">{node.title}</strong>
-      <span className={cx("mt-1.5 text-xs leading-[1.5] text-text-secondary", clampThreeLines)}>
+      <span className={cx("mt-1.5 [overflow-wrap:anywhere] text-xs leading-[1.5] text-text-secondary", clampThreeLines)}>
         {node.description}
       </span>
       <AnchorSummary paper={node.anchorPaper} label="Branch survey" />
@@ -93,10 +93,10 @@ function PaperNodeContent({ paper }: { paper: Extract<TreeNodeViewModel, { kind:
   return (
     <>
       <strong className="[overflow-wrap:anywhere] text-sm font-bold leading-[1.35] tracking-normal">{paper.title}</strong>
-      <span className="mt-[5px] text-[11px] leading-[1.35] text-text-muted">
+      <span className="mt-[5px] [overflow-wrap:anywhere] text-[11px] leading-[1.35] text-text-muted">
         {paperMetaLine(paper)}
       </span>
-      <span className={cx("tldr mt-[7px] text-xs leading-[1.5] text-text-secondary", clampThreeLines)}>
+      <span className={cx("tldr mt-[7px] [overflow-wrap:anywhere] text-xs leading-[1.5] text-text-secondary", clampThreeLines)}>
         <b className="mr-1 text-[11px] text-text-primary">TLDR</b>
         {paper.tldr || "Unavailable"}
       </span>
@@ -111,8 +111,8 @@ function AnchorSummary({ paper, label }: { paper: PaperDetails | null; label: st
   return (
     <span className="mt-2.5 grid w-full gap-[3px] border-t border-[color-mix(in_srgb,var(--color-border)_80%,transparent)] pt-[9px] text-[11px] leading-[1.35] text-text-secondary">
       <span className={kickerClass}>{label}</span>
-      <b className="font-semibold text-text-primary">{paper.title}</b>
-      <em className="text-[10.5px] not-italic text-text-muted">{paperMetaLine(paper)}</em>
+      <b className="[overflow-wrap:anywhere] font-semibold text-text-primary">{paper.title}</b>
+      <em className="[overflow-wrap:anywhere] text-[10.5px] not-italic text-text-muted">{paperMetaLine(paper)}</em>
     </span>
   );
 }

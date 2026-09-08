@@ -95,7 +95,9 @@ function messageForStatus(status: number, detail: string, code: string): string 
         ? "That request did not come from Research Tree. Reload the page and try again."
         : detail || "This account is not allowed to do that.";
     case 404:
-      return "That workspace no longer exists.";
+      // The server distinguishes a missing workspace from a missing version;
+      // every other status here already prefers what it said.
+      return detail || "That workspace no longer exists.";
     case 409:
       return "This workspace changed since you opened it. Refresh and try again.";
     case 413:

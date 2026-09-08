@@ -46,7 +46,17 @@ onUnauthenticated(() => {
   }
 });
 
-export async function loadSession(): Promise<void> {
+/**
+ * Read who is signed in.
+ *
+ * `recheck` is for the one caller that asks again after the event stream gave
+ * up, where the question is only ever "has the session expired". There, a
+ * failure that is not a 401 or a 403 leaves the app exactly as it is: the
+ * unreachable screen unmounts everything, so a single transient error used to
+ * cost the reader their selection, their open panels and anything they had
+ * typed, for a session that was fine.
+ */
+export async function loadSession(options: { recheck?: boolean } = {}): Promise<void> {
   try {
     const session = await requestJson<SessionInfo>("/account/me", { method: "GET" });
     setState({ status: "ready", session });
@@ -57,6 +67,9 @@ export async function loadSession(): Promise<void> {
     }
     if (error instanceof ApiError && error.status === 403) {
       setState({ status: "signed-out", notice: error.message });
+      return;
+    }
+    if (options.recheck) {
       return;
     }
     setState({

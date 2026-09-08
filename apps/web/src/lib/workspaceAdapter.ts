@@ -50,7 +50,7 @@ export function normalizeWorkspaceForTree(
   workspace: WorkspaceDocument,
   measuredHeights?: MeasuredNodeHeights,
 ): TreeViewModel {
-  const branches = workspace.tree.nodes.filter((node) => Boolean(node.node_id));
+  const branches = asList(workspace.tree.nodes).filter((node) => Boolean(node.node_id));
   const branchesById = new Map(branches.map((branch) => [branch.node_id, branch]));
   // "Branches" means the atomic ones: a parent branch is a grouping of its
   // children, and only leaves carry reading paths. Counting both reports the
@@ -423,7 +423,7 @@ function pathsGroupedByBranch(
   childrenByParent: Map<string, string[]>,
 ): Map<string, PaperPath[]> {
   const paths = new Map<string, PaperPath[]>();
-  for (const path of workspace.paper_paths) {
+  for (const path of asList(workspace.paper_paths)) {
     const branchPaths = paths.get(path.branch_node_id) ?? [];
     branchPaths.push(path);
     paths.set(path.branch_node_id, branchPaths);
@@ -432,7 +432,7 @@ function pathsGroupedByBranch(
     if (paths.has(branch.node_id) || (childrenByParent.get(branch.node_id)?.length ?? 0) > 0) {
       continue;
     }
-    if (branch.primary_paper_ids.length > 0) {
+    if (asList(branch.primary_paper_ids).length > 0) {
       paths.set(branch.node_id, [fallbackPath(branch)]);
     }
   }
@@ -445,7 +445,7 @@ function pathPaperIds(path: PaperPath): string[] {
   if (explicitSteps.length > 0) {
     return explicitSteps.sort(legacyStepOrder).map((step) => step.paper_id);
   }
-  return path.paper_ids;
+  return asList(path.paper_ids);
 }
 
 function legacyStepOrder(left: PaperStep, right: PaperStep): number {
@@ -494,8 +494,21 @@ function paperNodeViewModel({
   };
 }
 
+/**
+ * A list field as it actually arrived.
+ *
+ * The types describe what a well-formed document holds, not what the server is
+ * able to send: a field a model omitted, or filled with something other than a
+ * list, arrives all the same. Reading one of those directly throws inside the
+ * `useMemo` that builds the tree, which blanks the entire application, so every
+ * list this file iterates goes through here first.
+ */
+function asList<T>(value: T[]): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function anchorPaper(workspace: WorkspaceDocument, paperIds: string[]): PaperDetails | null {
-  for (const paperId of paperIds) {
+  for (const paperId of asList(paperIds)) {
     const paper = workspace.paper_cards[paperId];
     if (paper) {
       return paperDetails(paper);
@@ -561,7 +574,7 @@ function fallbackPath(branch: BranchNode): PaperPath {
     path_type: "primary_timeline",
     label: "Reading sequence",
     description: branch.description,
-    paper_ids: branch.primary_paper_ids,
+    paper_ids: asList(branch.primary_paper_ids),
     rationale: branch.why_it_matters,
   };
 }
@@ -671,14 +684,15 @@ function fallbackLineCount(value: string, charactersPerLine: number, firstLinePr
 }
 
 function compactAuthorLine(authors: string[]): string {
-  const [first, second] = authors;
+  const names = asList(authors);
+  const [first, second] = names;
   if (first === undefined) {
     return "Authors unavailable";
   }
   if (second === undefined) {
     return first;
   }
-  if (authors.length === 2) {
+  if (names.length === 2) {
     return `${first} & ${second}`;
   }
   return `${first} et al.`;
