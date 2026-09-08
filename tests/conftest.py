@@ -109,15 +109,19 @@ def data_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture(scope="session")
 def postgres_engine():
-    """One engine for the session; the schema is built by the real migration."""
+    """One engine for the session; the schema is built the way a deploy builds it.
+
+    `research-tree-migrate` is what the migrate job runs: the migrations, the
+    checkpointer's own tables, and the hardening pass over all of them. Using
+    it here means the posture tests see the same tables production has.
+    """
 
     url = os.environ.get(TEST_DATABASE_URL_ENV)
     if not url:
         pytest.skip(f"{TEST_DATABASE_URL_ENV} is not set")
-    from alembic import command
-    from alembic.config import Config
     from sqlalchemy import text
 
+    from research_tree.cli.migrate import migrate
     from research_tree.db import make_engine
 
     engine = make_engine(url, pool_size=2, max_overflow=2)
@@ -126,8 +130,8 @@ def postgres_engine():
         conn.execute(text("CREATE SCHEMA public"))
         # Deployed, the API connects as a role that does not own the tables,
         # which is what makes row-level security apply to it at all. Tests
-        # connect as the owner, so without this role the migration that grants
-        # that role its access would never run its own policy branch here.
+        # connect as the owner, so without this role the hardening pass would
+        # never run its own policy branch here.
         conn.execute(
             text(
                 """
@@ -139,17 +143,9 @@ def postgres_engine():
                 """
             )
         )
-    config = Config(str(REPO_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.cmd_opts = _AlembicArgs(x=[f"url={url}"])
-    command.upgrade(config, "head")
+    migrate(url)
     yield engine
     engine.dispose()
-
-
-class _AlembicArgs:
-    def __init__(self, x: list[str]) -> None:
-        self.x = x
 
 
 @pytest.fixture(params=REPOSITORY_LANES)

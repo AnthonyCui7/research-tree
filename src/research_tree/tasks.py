@@ -49,6 +49,12 @@ app.conf.update(
         # second worker while the first is still on it.
         "visibility_timeout": 7200,
         "global_keyprefix": "{research-tree}",
+        # Managed Redis closes connections that sit idle; the worker's
+        # subscription sat idle between builds and was found closed, with a
+        # traceback, once or twice a week. Keepalives and a periodic ping
+        # keep it open instead.
+        "socket_keepalive": True,
+        "health_check_interval": 30,
     },
     broker_use_ssl=(
         {"ssl_cert_reqs": ssl.CERT_REQUIRED} if (redis_url() or "").startswith("rediss://") else None
