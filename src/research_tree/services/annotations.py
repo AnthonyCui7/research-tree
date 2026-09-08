@@ -90,7 +90,7 @@ class PaperAnnotationService:
         """
 
         card = self._paper_card(workspace_id, paper_id)
-        return _pdf_filename(card), self._download(card)
+        return _pdf_filename(card), self._pdf_bytes(card)
 
     def get_paper_annotations(
         self,
@@ -107,22 +107,28 @@ class PaperAnnotationService:
         the requested one. `refresh` regenerates unconditionally. A miss is
         generated inline without Redis and returns a job (a dict carrying
         `job_id`) with it.
+
+        Annotations belong to one PDF, named by its hash. A paper the build
+        hydrated already carries that hash on its card, so a cached result for
+        it is served without fetching anything; otherwise the PDF is fetched
+        (from the store when it has been seen, else downloaded) and compared.
         """
 
         if mode is not None and mode not in {"fast", "dense"}:
             raise InvalidPayloadError("mode must be 'fast' or 'dense'.")
         requested_mode = mode or retrieval_mode()
         safe_workspace_id, safe_paper_id, card = self._locate_paper(workspace_id, paper_id)
-        pdf_bytes = self._download(card)
-        pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
-        cached = self._cached_annotations(safe_workspace_id, safe_paper_id)
-        if (
-            not refresh
-            and cached is not None
-            and cached.get("pdf_sha256") == pdf_sha256
-            and (mode is None or cached.get("retrieval_mode") == requested_mode)
-        ):
+        cached = None if refresh else self._cached_annotations(safe_workspace_id, safe_paper_id)
+        if cached is not None and mode is not None and cached.get("retrieval_mode") != requested_mode:
+            cached = None
+        known_sha256 = _known_pdf_sha256(card)
+        if cached is not None and known_sha256 and cached.get("pdf_sha256") == known_sha256:
+            return _response(safe_workspace_id, safe_paper_id, cached)
+
+        pdf_bytes = self._pdf_bytes(card)
+        pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+        if cached is not None and cached.get("pdf_sha256") == pdf_sha256:
             return _response(safe_workspace_id, safe_paper_id, cached)
 
         redis = self._redis_client()
@@ -135,7 +141,6 @@ class PaperAnnotationService:
             workspace_id=safe_workspace_id,
             paper_id=safe_paper_id,
             mode=requested_mode,
-            pdf_bytes=pdf_bytes,
             pdf_sha256=pdf_sha256,
         )
 
@@ -254,7 +259,6 @@ class PaperAnnotationService:
         workspace_id: str,
         paper_id: str,
         mode: str,
-        pdf_bytes: bytes,
         pdf_sha256: str,
     ) -> dict[str, Any]:
         active_key = self._active_key(workspace_id, paper_id, mode)
@@ -277,12 +281,6 @@ class PaperAnnotationService:
             "detail": None,
             "created_at": now,
         }
-        # The worker reads the PDF back from the store rather than fetching it
-        # a second time; content-addressed, so a repeat put is a no-op.
-        try:
-            self.artifacts.put(f"pdf/{pdf_sha256}", pdf_bytes)
-        except Exception as error:  # noqa: BLE001 - the worker downloads it again
-            logger.warning("could not store PDF %s: %s", pdf_sha256, error)
         if not redis.set(active_key, job["job_id"], nx=True, ex=ACTIVE_TTL_SECONDS):
             existing_id = redis.get(active_key)
             existing = _load_job(redis, existing_id.decode("utf-8")) if existing_id else None
@@ -373,6 +371,27 @@ class PaperAnnotationService:
             f"{_paper_content_key(paper_id)}:{mode}"
         )
 
+    def _pdf_bytes(self, card: dict[str, Any]) -> bytes:
+        """The paper's PDF: from the store when it has been fetched before, else fetched and kept.
+
+        The build records the hash of the PDF it extracted text from, so a paper
+        it hydrated names its own file in the store. Everything fetched here
+        is kept under its hash, which is what the worker reads a job's PDF from
+        and what the next open is served from.
+        """
+
+        known_sha256 = _known_pdf_sha256(card)
+        if known_sha256:
+            stored = self.artifacts.get(f"pdf/{known_sha256}")
+            if stored is not None:
+                return stored
+        pdf_bytes = self._download(card)
+        try:
+            self.artifacts.put(f"pdf/{hashlib.sha256(pdf_bytes).hexdigest()}", pdf_bytes)
+        except Exception as error:  # noqa: BLE001 - the next open downloads it again
+            logger.warning("could not store a PDF: %s", error)
+        return pdf_bytes
+
     def _download(self, card: dict[str, Any]) -> bytes:
         url = paper_pdf_url(card)
         if not url:
@@ -396,6 +415,14 @@ def paper_pdf_url(card: dict[str, Any]) -> str | None:
     if isinstance(arxiv_link, str) and "arxiv.org/abs/" in arxiv_link:
         return _https(arxiv_link.replace("/abs/", "/pdf/"))
     return None
+
+
+def _known_pdf_sha256(card: dict[str, Any]) -> str | None:
+    """The hash of the PDF the build extracted this paper's text from, if it did."""
+
+    content = card.get("paper_content")
+    value = content.get("sha256") if isinstance(content, dict) else None
+    return value if isinstance(value, str) and value else None
 
 
 def _https(url: str) -> str:

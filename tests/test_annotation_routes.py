@@ -261,3 +261,73 @@ class TestPaperPdf:
     def test_an_unknown_paper_is_not_found(self, annotated_client: TestClient) -> None:
         response = annotated_client.get("/workspaces/sampling/paper-pdf?paper_id=nope")
         assert response.status_code == 404
+
+
+# ---- the PDF is fetched once, then kept -------------------------------------
+
+
+class _CountingDownloader:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, url: str, **_: Any) -> bytes:
+        self.calls += 1
+        return PDF_BYTES
+
+
+def test_a_hydrated_paper_is_served_from_the_store_without_a_download(
+    client: TestClient, repository: WorkspaceRepository, tmp_path
+) -> None:
+    """The build recorded the PDF's hash; once the file is in the store nothing is fetched."""
+
+    import hashlib
+
+    from research_tree.artifact_store import FilesystemArtifactStore
+
+    sha256 = hashlib.sha256(PDF_BYTES).hexdigest()
+    seed_paper_workspace(
+        repository,
+        card={
+            "paper_id": PAPER_ID,
+            "title": "Language Models (Mostly) Know What They Know",
+            "paper_content": {"source_url": "https://arxiv.org/pdf/2207.05221", "sha256": sha256},
+        },
+    )
+    artifacts = FilesystemArtifactStore(tmp_path / "artifacts")
+    downloader = _CountingDownloader()
+    annotator = Annotator()
+    client.app.dependency_overrides[get_paper_annotation_service] = lambda: PaperAnnotationService(
+        repository, download_pdf=downloader, generate_annotations=annotator, artifacts=artifacts
+    )
+
+    # The first open has to download: the store is empty. It keeps what it fetched.
+    assert client.get(f"/workspaces/sampling/paper-pdf?paper_id={PAPER_ID}").status_code == 200
+    assert downloader.calls == 1
+    assert artifacts.get(f"pdf/{sha256}") == PDF_BYTES
+    assert client.get(annotations_url()).status_code == 200
+    assert (downloader.calls, annotator.calls) == (1, 1)
+
+    # From here on, neither route fetches anything.
+    assert client.get(f"/workspaces/sampling/paper-pdf?paper_id={PAPER_ID}").status_code == 200
+    assert client.get(annotations_url()).status_code == 200
+    assert (downloader.calls, annotator.calls) == (1, 1)
+
+
+def test_a_paper_the_build_never_fetched_is_downloaded_once_per_open(
+    client: TestClient, repository: WorkspaceRepository, tmp_path
+) -> None:
+    """Without a recorded hash the PDF has to be fetched to know whether the cache still applies."""
+
+    from research_tree.artifact_store import FilesystemArtifactStore
+
+    seed_paper_workspace(repository)
+    downloader = _CountingDownloader()
+    client.app.dependency_overrides[get_paper_annotation_service] = lambda: PaperAnnotationService(
+        repository,
+        download_pdf=downloader,
+        generate_annotations=Annotator(),
+        artifacts=FilesystemArtifactStore(tmp_path / "artifacts"),
+    )
+    assert client.get(annotations_url()).status_code == 200
+    assert client.get(annotations_url()).status_code == 200
+    assert downloader.calls == 2
