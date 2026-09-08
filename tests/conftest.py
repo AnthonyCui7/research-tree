@@ -123,6 +123,21 @@ def postgres_engine():
     with engine.begin() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE"))
         conn.execute(text("CREATE SCHEMA public"))
+        # Deployed, the API connects as a role that does not own the tables,
+        # which is what makes row-level security apply to it at all. Tests
+        # connect as the owner, so without this role the migration that grants
+        # that role its access would never run its own policy branch here.
+        conn.execute(
+            text(
+                """
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'research_tree_app')
+                    THEN CREATE ROLE research_tree_app NOLOGIN;
+                    END IF;
+                END $$
+                """
+            )
+        )
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
     config.cmd_opts = _AlembicArgs(x=[f"url={url}"])

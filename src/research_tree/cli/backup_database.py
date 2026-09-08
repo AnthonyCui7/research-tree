@@ -62,6 +62,13 @@ def run_pg_dump(dsn: str) -> bytes:
     # source's, and neither matters for the data. --schema=public: everything
     # of ours lives there, and it is all the app role can read, so the worker
     # takes the backup with its own credentials.
+    # --enable-row-security: pg_dump otherwise turns row security off to be
+    # certain it sees every row, which the database refuses from a role that
+    # cannot bypass it - and the app role cannot. Left on, the app role's
+    # policy applies instead, and that policy carries no predicate, so the
+    # dump is still every row of every table. A table whose policy is missing
+    # would dump empty rather than fail, which is why the postgres test lane
+    # asserts every table has one.
     if shutil.which("pg_dump") is None:
         raise RuntimeError(
             "pg_dump is not installed. The container image ships it; on a "
@@ -74,6 +81,7 @@ def run_pg_dump(dsn: str) -> bytes:
             "--no-owner",
             "--no-privileges",
             "--schema=public",
+            "--enable-row-security",
             "--dbname",
             dsn,
         ],
