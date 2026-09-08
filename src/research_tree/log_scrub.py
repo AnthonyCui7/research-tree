@@ -37,4 +37,13 @@ def scrub(text: str) -> str:
 
 
 def _scrub(value: object) -> object:
-    return _SECRET_PATTERN.sub(_REDACTED, value) if isinstance(value, str) else value
+    if isinstance(value, str):
+        return _SECRET_PATTERN.sub(_REDACTED, value)
+    # A dict or a list formatted into a message prints through `repr`, which
+    # carried the key straight through when only strings were scrubbed. The
+    # value is replaced by its scrubbed text only when it actually holds one,
+    # so a `%d` argument is still a number.
+    printed = str(value)
+    if _SECRET_PATTERN.search(printed):
+        return _SECRET_PATTERN.sub(_REDACTED, printed)
+    return value

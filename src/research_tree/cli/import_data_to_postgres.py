@@ -30,7 +30,7 @@ from research_tree.workspace.postgres_repository import PostgresWorkspaceReposit
 from research_tree.workspace.repository import (
     LocalJsonWorkspaceRepository,
     _read_json,
-    _topic_key,
+    normalized_topic_key,
     workspace_summary,
 )
 
@@ -165,7 +165,7 @@ def _import_workspace(
                 "owner_id": owner_id,
                 "topic": summary["topic"],
                 "title": summary["title"],
-                "topic_key": _topic_key(summary["topic"] or summary["title"]),
+                "topic_key": normalized_topic_key(summary["topic"] or summary["title"]),
             },
         )
         for version_hash, document in documents.items():
@@ -288,7 +288,7 @@ def _import_runs(source_dir: Path, engine: Any, owner_id: str | None, workspace_
                 {
                     "run_id": str(run["run_id"]),
                     "workspace_id": str(run.get("workspace_id") or "") or None,
-                    "topic_key": _topic_key(str(run.get("topic") or "")),
+                    "topic_key": normalized_topic_key(str(run.get("topic") or "")),
                     "owner_id": run.get("owner_id"),
                     "status": str(run.get("status") or ""),
                     "record": json.dumps(run),

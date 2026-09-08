@@ -19,11 +19,8 @@ from fastapi.testclient import TestClient
 
 from research_tree.api.dependencies import get_paper_annotation_service
 from research_tree.artifact_store import FilesystemArtifactStore
-from research_tree.principal import Principal, bind_principal
-from research_tree.rate_limits import check_rate_limit
 from research_tree.retrieval.cache import RateLimiter
 from research_tree.services.annotations import PaperAnnotationService
-from research_tree.services.errors import RateLimitedError
 from research_tree.services.pipeline import (
     _dispatch_celery,
     _dispatch_local_thread,
@@ -34,7 +31,6 @@ from research_tree.workspace.repository import WorkspaceRepository
 from tests.conftest import read_sse_events
 from tests.test_annotation_routes import PAPER_ID, PDF_BYTES, Annotator, annotations_url, seed_paper_workspace
 
-ACCOUNT = Principal(user_id=str(uuid.uuid4()), email="reader@example.com")
 
 
 # ---- annotation jobs --------------------------------------------------------
@@ -142,23 +138,6 @@ def test_agent_refusals_are_plain_errors_even_when_streaming(client: TestClient)
     assert response.json()["error_code"] == "workspace_not_found"
 
 
-# ---- per-account ceilings ---------------------------------------------------
-
-
-def test_an_account_is_limited_per_window(redis_client, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RESEARCH_TREE_LIMIT_AGENT_TURNS_PER_MINUTE", "2")
-    with bind_principal(ACCOUNT):
-        check_rate_limit("agent_turns", redis=redis_client)
-        check_rate_limit("agent_turns", redis=redis_client)
-        with pytest.raises(RateLimitedError, match="2 assistant requests per minute"):
-            check_rate_limit("agent_turns", redis=redis_client)
-    # Another account has its own budget; the local profile has none at all.
-    with bind_principal(Principal(user_id=str(uuid.uuid4()), email="other@example.com")):
-        check_rate_limit("agent_turns", redis=redis_client)
-    for _ in range(5):
-        check_rate_limit("agent_turns", redis=redis_client)
-
-
 # ---- topic tokens -----------------------------------------------------------
 
 
@@ -194,6 +173,48 @@ def test_a_broken_redis_falls_back_to_the_local_limiter() -> None:
     limiter.acquire(0.05)
     limiter.acquire(0.05)
     assert time.monotonic() - started >= 0.05
+
+
+def test_the_shared_lane_comes_back_after_redis_recovers() -> None:
+    """The fallback used to latch, so one blip split the lane until a restart."""
+
+    class Flaky:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.healthy = False
+
+        def register_script(self, script: str) -> Any:
+            def run(keys: list[str], args: list[int]) -> int:
+                self.calls += 1
+                if not self.healthy:
+                    raise ConnectionError("reset")
+                return 0
+
+            return run
+
+    redis = Flaky()
+    limiter = RateLimiter(redis_client=redis)
+
+    limiter.acquire(0.01)
+    limiter.acquire(0.01)
+    assert redis.calls == 1
+
+    redis.healthy = True
+    limiter._redis_unavailable_until = 0.0
+    limiter.acquire(0.01)
+    assert redis.calls == 2
+
+
+def test_an_artifact_put_replaces_what_was_there(tmp_path) -> None:
+    """Regenerating a paper's annotations writes new content under the same key."""
+
+    store = FilesystemArtifactStore(tmp_path / "artifacts")
+    key = "annotations/workspace-1/abc123"
+
+    store.put(key, b"the first pass")
+    store.put(key, b"regenerated from scratch")
+
+    assert store.get(key) == b"regenerated from scratch"
 
 
 # ---- change notifications ---------------------------------------------------

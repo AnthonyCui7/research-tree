@@ -20,8 +20,13 @@ from research_tree.retrieval.candidate_preparation import (
 from research_tree.paths import data_root, pipeline_runs_dir, semantic_scholar_cache_dir
 from research_tree.retrieval.semantic_scholar import SemanticScholarClient, s2_api_key
 from research_tree.credentials import openai_api_key
-from research_tree.principal import LOCAL_PRINCIPAL, Principal, bind_principal, current_owner_id
-from research_tree.rate_limits import check_rate_limit
+from research_tree.principal import (
+    LOCAL_PRINCIPAL,
+    Principal,
+    auth_mode,
+    bind_principal,
+    current_owner_id,
+)
 from research_tree.services.errors import (
     InvalidPayloadError,
     WorkspaceNotFoundError,
@@ -29,6 +34,7 @@ from research_tree.services.errors import (
 )
 from research_tree.services.tenancy import require_owned, require_run_owned
 from research_tree.services.topics import TopicReviewService, topic_slug
+from research_tree.services.validation import validate_resource_id
 from research_tree.llm import DEFAULT_MODEL
 from research_tree.workspace.construction import construct_workspace_from_candidates
 from research_tree.workspace.context import workspace_version_hash
@@ -106,8 +112,9 @@ class WorkspacePipelineService:
             raise InvalidPayloadError(
                 "Review the research focus again before building a workspace."
             )
-        check_rate_limit("workspaces")
-        workspace_id = self._available_workspace_id(topic_slug(normalized_topic))
+        workspace_id = self.repository.claim_workspace_id(
+            topic_slug(normalized_topic), owner_id=current_owner_id()
+        )
         return self._start(
             workspace_id=workspace_id,
             topic=normalized_topic,
@@ -127,15 +134,18 @@ class WorkspacePipelineService:
     ) -> dict[str, Any]:
         if start_stage not in PIPELINE_STAGES:
             raise InvalidPayloadError(f"start_stage must be one of {PIPELINE_STAGES}.")
-        require_owned(self.repository, workspace_id)
+        safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
+        require_owned(self.repository, safe_workspace_id)
         try:
-            workspace = self.repository.get_current_workspace(workspace_id)
+            workspace = self.repository.get_current_workspace(safe_workspace_id)
         except FileNotFoundError as error:
-            raise WorkspaceNotFoundError(f"workspace does not exist: {workspace_id}") from error
+            raise WorkspaceNotFoundError(
+                f"workspace does not exist: {safe_workspace_id}"
+            ) from error
         current_hash = workspace_version_hash(workspace)
         if expected_version_hash and current_hash != expected_version_hash:
             raise InvalidPayloadError("Workspace changed. Refresh before starting a pipeline rerun.")
-        prior_runs = self.repository.list_pipeline_runs(workspace_id)
+        prior_runs = self.repository.list_pipeline_runs(safe_workspace_id)
         source_run = next(
             (run for run in prior_runs if run.get("status") in {"completed", "completed_with_warnings"}),
             None,
@@ -145,7 +155,7 @@ class WorkspacePipelineService:
                 "No completed pipeline run is available to provide reusable stage artifacts."
             )
         return self._start(
-            workspace_id=workspace_id,
+            workspace_id=safe_workspace_id,
             topic=str(workspace.get("topic") or workspace.get("title") or ""),
             start_stage=start_stage,
             source_run=source_run,
@@ -163,10 +173,14 @@ class WorkspacePipelineService:
         )
 
     def get_run(self, run_id: str) -> dict[str, Any]:
+        # Reading, cancelling and streaming a run all come through here, so this
+        # is where the id is checked. Without it the file store turned an id it
+        # could not make a filename from into a 500.
+        safe_run_id = validate_resource_id(run_id, field_name="run_id")
         try:
-            run = self.repository.get_pipeline_run(run_id)
+            run = self.repository.get_pipeline_run(safe_run_id)
         except FileNotFoundError as error:
-            raise WorkspaceNotFoundError(f"pipeline run does not exist: {run_id}") from error
+            raise WorkspaceNotFoundError(f"pipeline run does not exist: {safe_run_id}") from error
         require_run_owned(run)
         return run
 
@@ -178,10 +192,11 @@ class WorkspacePipelineService:
         return run
 
     def list_runs(self, workspace_id: str) -> dict[str, Any]:
-        require_owned(self.repository, workspace_id)
+        safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
+        require_owned(self.repository, safe_workspace_id)
         return {
-            "workspace_id": workspace_id,
-            "pipeline_runs": self.repository.list_pipeline_runs(workspace_id),
+            "workspace_id": safe_workspace_id,
+            "pipeline_runs": self.repository.list_pipeline_runs(safe_workspace_id),
         }
 
     def _start(
@@ -252,7 +267,27 @@ class WorkspacePipelineService:
         # The thread (or worker) that runs this has no request context, so the
         # run's owner is bound here: everything downstream that records an
         # actor or resolves credentials sees the account that asked for it.
-        with bind_principal(principal_for_owner_id(run.get("owner_id")), feature="pipeline"):
+        try:
+            principal = principal_for_owner_id(run.get("owner_id"))
+        except WorkspaceServiceError as error:
+            logger.error(
+                "workspace pipeline has no usable owner run_id=%s owner_id=%s",
+                run_id,
+                run.get("owner_id"),
+            )
+            now = _now()
+            run.update(
+                {
+                    "status": "failed",
+                    "error": str(error),
+                    "current_stage": None,
+                    "completed_at": now,
+                    "updated_at": now,
+                }
+            )
+            self.repository.save_pipeline_run(run)
+            return
+        with bind_principal(principal, feature="pipeline"):
             self._execute_bound(run_id, run, source_run)
 
     def _execute_bound(
@@ -380,6 +415,11 @@ class WorkspacePipelineService:
                     "completed_with_warnings" if hydration_warnings else "completed",
                     outputs={"workspace_json": str(hydrated_path)},
                 )
+                # The stage that produced this ran for a minute or more, and
+                # the reader may have pressed Cancel during it. Publishing now
+                # overwrites the workspace they were protecting.
+                if self._run_was_cancelled(run_id):
+                    raise RuntimeError("pipeline run was cancelled")
                 publish = publish_workspace_version(
                     repository=self.repository,
                     workspace=workspace,
@@ -455,6 +495,8 @@ class WorkspacePipelineService:
                     "completed_at": _now(),
                 }
                 provenance["updated_at"] = _now()
+            if self._run_was_cancelled(run_id):
+                raise RuntimeError("pipeline run was cancelled")
             publish = publish_workspace_version(
                 repository=self.repository,
                 workspace=workspace,
@@ -624,13 +666,6 @@ class WorkspacePipelineService:
             raise InvalidPayloadError("pipeline artifact path is outside the data directory.")
         return path
 
-    def _available_workspace_id(self, base_id: str) -> str:
-        candidate = base_id
-        suffix = 2
-        while self.repository.workspace_id_is_taken(candidate):
-            candidate = f"{base_id}-{suffix}"
-            suffix += 1
-        return candidate
 
     def _run_was_cancelled(self, run_id: str) -> bool:
         try:
@@ -776,13 +811,26 @@ class _Heartbeat:
                 logger.warning("pipeline heartbeat failed run_id=%s: %s", self._run_id, error)
 
 
+OWNER_UNAVAILABLE_MESSAGE = "The account that started this is no longer active."
+
+
 def principal_for_owner_id(owner_id: Any) -> Principal:
-    if not owner_id:
+    """The account background work runs as.
+
+    The local principal owns everything and spends the operator's key, so it is
+    only ever the answer where there are no accounts at all. With accounts
+    enabled, work whose owner cannot be resolved — deactivated, deleted, never
+    recorded — is refused rather than promoted to the operator.
+    """
+
+    if auth_mode() != "accounts":
         return LOCAL_PRINCIPAL
     from research_tree.auth.accounts import principal_for_user_id
 
-    principal = principal_for_user_id(str(owner_id))
-    return principal if principal is not None else LOCAL_PRINCIPAL
+    principal = principal_for_user_id(str(owner_id)) if owner_id else None
+    if principal is None:
+        raise WorkspaceServiceError(OWNER_UNAVAILABLE_MESSAGE)
+    return principal
 
 
 MAX_INSTRUCTIONS_CHARS = 2_000

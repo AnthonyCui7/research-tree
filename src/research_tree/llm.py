@@ -136,7 +136,14 @@ def _request_with_retries(
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
             if error.code in RETRYABLE_HTTP_STATUS and attempt < len(RETRY_BACKOFF_SECONDS):
-                delay = _retry_after_seconds(error) or RETRY_BACKOFF_SECONDS[attempt]
+                # Never wait longer than this ladder's own worst case, however
+                # long the server asks for.
+                asked_for = _retry_after_seconds(error)
+                delay = (
+                    min(asked_for, max(RETRY_BACKOFF_SECONDS))
+                    if asked_for
+                    else RETRY_BACKOFF_SECONDS[attempt]
+                )
                 logger.warning(
                     "OpenAI %s call got HTTP %s; retrying in %.0fs",
                     label,

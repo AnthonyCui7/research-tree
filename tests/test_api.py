@@ -715,7 +715,10 @@ def test_edit_review_validation_failure_returns_failed_validation(client, reposi
     assert response.status_code == 200
     assert payload["status"] == "failed_validation"
     assert payload["errors"]
-    assert repository.get_review("workspace-1", "review-edit-invalid")["status"] == "edited"
+    # An edit that cannot be applied leaves the proposal alone: the reader can
+    # fix the edit, approve what the assistant proposed, or reject it.
+    assert repository.get_review("workspace-1", "review-edit-invalid")["status"] == "pending"
+    assert payload["persisted_event_ids"] == []
 
 
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
@@ -889,18 +892,17 @@ def test_failed_partial_rerun_keeps_source_artifacts_unchanged(repository) -> No
 
 
 def test_unpublished_paper_content_does_not_block_workspace_retry_id(repository) -> None:
-    service = WorkspacePipelineService(repository, repo_root=_temp_dir())
     # Failed hydration can leave cached paper content without ever publishing
-    # a workspace. Only a current workspace reserves its ID.
+    # a workspace. Only a claimed name reserves it.
     repository.save_paper_content(
         "retrieval-augmented-generation", "paper-1", {"status": "available", "full_text": "x"}
     )
 
-    assert service._available_workspace_id("retrieval-augmented-generation") == (
+    assert repository.claim_workspace_id("retrieval-augmented-generation") == (
         "retrieval-augmented-generation"
     )
     _seed_current(repository)
-    assert service._available_workspace_id("workspace-1") == "workspace-1-2"
+    assert repository.claim_workspace_id("workspace-1") == "workspace-1-2"
 
 
 def test_pipeline_rerun_rejects_another_active_run_for_the_workspace(repository) -> None:

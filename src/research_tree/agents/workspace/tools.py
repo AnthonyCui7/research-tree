@@ -117,10 +117,13 @@ def _get_branch(context: ToolContext, arguments: dict[str, Any]) -> Any:
             "error": f"no branch with id {branch_id!r}",
             "available_branch_ids": [str(node.get("node_id")) for node in nodes],
         }
+    # A path names its branch in `branch_node_id`; every other reader of a path
+    # uses that. Matching on `branch_id` found nothing, so the assistant was
+    # told every branch was empty and answered from that.
     paths = [
         path
         for path in context.workspace.get("paper_paths") or []
-        if isinstance(path, Mapping) and str(path.get("branch_id")) == branch_id
+        if isinstance(path, Mapping) and str(path.get("branch_node_id")) == branch_id
     ]
     return {
         "branch": branch,

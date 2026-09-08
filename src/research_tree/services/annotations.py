@@ -27,7 +27,6 @@ from research_tree.annotation import (
 from research_tree.annotation.config import annotation_model, retrieval_mode
 from research_tree.artifact_store import ArtifactStore, default_artifact_store
 from research_tree.principal import bind_principal, current_principal
-from research_tree.rate_limits import check_rate_limit
 from research_tree.retrieval.full_text import download_open_access_pdf
 from research_tree.services.errors import (
     InvalidPayloadError,
@@ -181,8 +180,12 @@ class PaperAnnotationService:
             logger.info("annotation job %s not started: status=%s", job_id, job.get("status"))
             return
         _save_job(redis, {**job, "status": "running"})
-        with bind_principal(principal_for_owner_id(job.get("user_id")), feature="annotations"):
-            try:
+        # Resolving the job's account is inside the try: an account that has
+        # gone away is a reason to fail the job, not to run it as somebody else.
+        try:
+            with bind_principal(
+                principal_for_owner_id(job.get("user_id")), feature="annotations"
+            ):
                 _, safe_paper_id, card = self._locate_paper(job["workspace_id"], job["paper_id"])
                 pdf_bytes = self.artifacts.get(f"pdf/{job['pdf_sha256']}")
                 if pdf_bytes is None:
@@ -191,36 +194,36 @@ class PaperAnnotationService:
                 self._generate_and_store(
                     job["workspace_id"], safe_paper_id, card, pdf_bytes, pdf_sha256, job["mode"]
                 )
-            except WorkspaceServiceError as error:
-                _save_job(
-                    redis,
-                    {
-                        **job,
-                        "status": "failed",
-                        "error_code": error.error_code,
-                        "error_status": error.status_code,
-                        "detail": public_service_error_message(error),
-                    },
-                )
-            except Exception as error:  # noqa: BLE001 - the reader gets a reason, the log the trace
-                logger.exception("annotation job %s failed", job_id)
-                _save_job(
-                    redis,
-                    {
-                        **job,
-                        "status": "failed",
-                        "error_code": "paper_unavailable",
-                        "error_status": 502,
-                        "detail": "We could not annotate that paper. Please try again.",
-                    },
-                )
-            else:
-                _save_job(redis, {**job, "status": "completed"})
-            finally:
-                try:
-                    redis.delete(_active_key(job["workspace_id"], job["paper_id"], job["mode"]))
-                except Exception:  # noqa: BLE001
-                    pass
+        except WorkspaceServiceError as error:
+            _save_job(
+                redis,
+                {
+                    **job,
+                    "status": "failed",
+                    "error_code": error.error_code,
+                    "error_status": error.status_code,
+                    "detail": public_service_error_message(error),
+                },
+            )
+        except Exception:  # noqa: BLE001 - the reader gets a reason, the log the trace
+            logger.exception("annotation job %s failed", job_id)
+            _save_job(
+                redis,
+                {
+                    **job,
+                    "status": "failed",
+                    "error_code": "paper_unavailable",
+                    "error_status": 502,
+                    "detail": "We could not annotate that paper. Please try again.",
+                },
+            )
+        else:
+            _save_job(redis, {**job, "status": "completed"})
+        finally:
+            try:
+                redis.delete(_active_key(job["workspace_id"], job["paper_id"], job["mode"]))
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---- internals --------------------------------------------------------
 
@@ -262,7 +265,6 @@ class PaperAnnotationService:
             existing = _load_job(redis, existing_id.decode("utf-8"))
             if existing is not None and existing.get("status") in {"queued", "running"}:
                 return _job_view(existing)
-        check_rate_limit("annotation_jobs", redis=redis)
         principal = current_principal()
         now = datetime.now(UTC).isoformat()
         job = {

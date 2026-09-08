@@ -126,7 +126,7 @@ def test_deleted_workspace_is_hidden_and_keeps_its_id(repository) -> None:
     # The files move to trash, so the id is free again; a row stays, so the
     # id is taken and a rebuild gets the next suffix rather than old history.
     expected_taken = not isinstance(repository, LocalJsonWorkspaceRepository)
-    assert repository.workspace_id_is_taken("workspace-1") is expected_taken
+    assert (repository.claim_workspace_id("workspace-1") == "workspace-1") is not expected_taken
 
 
 
@@ -540,6 +540,86 @@ def _save_pending_review(
         interrupt_payload={"type": "workspace_patch_review"},
     )
     return base_hash
+
+
+def test_a_cancelled_run_stays_cancelled(repository: WorkspaceRepository) -> None:
+    """The executor holds the run for a whole stage and writes it back afterwards."""
+
+    run = {
+        "schema_version": "research_tree.pipeline_run.v2",
+        "run_id": "pipeline_1",
+        "workspace_id": "workspace-1",
+        "topic": "Prompting",
+        "status": "running",
+        "requested_stages": ["candidates"],
+        "stages": {},
+    }
+    repository.save_pipeline_run(run)
+    repository.cancel_pipeline_runs("workspace-1")
+
+    repository.save_pipeline_run({**run, "status": "running"})
+    assert repository.get_pipeline_run("pipeline_1")["status"] == "cancelled"
+
+    repository.save_pipeline_run({**run, "status": "completed"})
+    assert repository.get_pipeline_run("pipeline_1")["status"] == "cancelled"
+
+
+def test_a_topic_in_any_script_can_start_a_build(repository: WorkspaceRepository) -> None:
+    """An ASCII-only topic key refused every reader who wrote in their own language."""
+
+    for index, topic in enumerate(("Prompting", "\u673a\u5668\u5b66\u4e60", "\u041e\u0431\u0443\u0447\u0435\u043d\u0438\u0435")):
+        repository.reserve_new_workspace_run(
+            {
+                "schema_version": "research_tree.pipeline_run.v2",
+                "run_id": f"pipeline_{index}",
+                "workspace_id": f"workspace-{index}",
+                "topic": topic,
+                "status": "queued",
+                "requested_stages": ["candidates"],
+            }
+        )
+
+
+def test_saving_a_document_already_in_history_moves_to_it(repository: WorkspaceRepository) -> None:
+    """An edit and an edit back is one version, not two entries under one reason."""
+
+    first = _workspace()
+    first["topic"] = "Prompting"
+    changed = _workspace()
+    changed["topic"] = "Prompting"
+    changed["title"] = "Renamed"
+
+    original = repository.save_workspace_version(
+        "workspace-1", first, actor="system", parent_version_hash=None, reason="built"
+    )
+    edited = repository.save_workspace_version(
+        "workspace-1", changed, actor="user", parent_version_hash=original, reason="renamed it"
+    )
+    reverted = repository.save_workspace_version(
+        "workspace-1", first, actor="user", parent_version_hash=edited, reason="renamed it back"
+    )
+
+    assert reverted == original
+    versions = repository.list_workspace_versions("workspace-1")
+    assert [version["version_hash"] for version in versions] == [original, edited]
+    assert [version["is_current"] for version in versions] == [True, False]
+
+
+def test_two_workspaces_on_one_topic_are_both_listed(repository: WorkspaceRepository) -> None:
+    """Renaming a topic used to remove a workspace from the only list that opens one."""
+
+    for workspace_id in ("alpha", "beta"):
+        document = _workspace()
+        document["workspace_id"] = workspace_id
+        document["topic"] = "Prompting"
+        document["title"] = "Prompting"
+        repository.save_workspace_version(
+            workspace_id, document, actor="system", parent_version_hash=None, reason="built"
+        )
+
+    listed = {summary["workspace_id"] for summary in repository.list_workspaces()}
+
+    assert listed == {"alpha", "beta"}
 
 
 def _count_events(events: list[dict[str, object]], event_type: str) -> int:

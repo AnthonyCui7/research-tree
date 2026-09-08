@@ -3,9 +3,14 @@
 Keys are paths (`pdf/{sha256}`, `paper_content/{workspace}/{sha}`,
 `annotations/{workspace}/{sha}`, `pipeline/{sha256}`, `s2/{key}`). Locally
 they land under the data root; in the cloud they are blobs in one private
-container reached through the container's managed identity. Content-addressed
-keys are written once and never change, so a second `put` of an existing key
-is a no-op rather than an error.
+container reached through the container's managed identity.
+
+A `put` replaces whatever was under that key. Most keys are content-addressed,
+where replacing means writing the same bytes again, but `annotations/...` and
+`paper_content/...` are keyed by workspace and paper: regenerating a paper's
+annotations writes new content under the same key. The Blob implementation
+used to refuse to overwrite, so "regenerate from scratch" did nothing at all in
+the cloud while working on a laptop.
 """
 
 from __future__ import annotations
@@ -24,7 +29,8 @@ DEFAULT_BLOB_CONTAINER = "artifacts"
 
 
 class ArtifactStore(Protocol):
-    def put(self, key: str, data: bytes) -> None: ...
+    def put(self, key: str, data: bytes) -> None:
+        """Store `data` under `key`, replacing anything already there."""
 
     def get(self, key: str) -> bytes | None: ...
 
@@ -81,12 +87,7 @@ class AzureBlobArtifactStore:
         )
 
     def put(self, key: str, data: bytes) -> None:
-        from azure.core.exceptions import ResourceExistsError
-
-        try:
-            self._client.upload_blob(_safe_key(key), data, overwrite=False)
-        except ResourceExistsError:
-            return
+        self._client.upload_blob(_safe_key(key), data, overwrite=True)
 
     def get(self, key: str) -> bytes | None:
         from azure.core.exceptions import ResourceNotFoundError

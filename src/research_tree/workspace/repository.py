@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator, Mapping, Protocol
 
+from research_tree.services.validation import MAX_RESOURCE_ID_LENGTH
 from research_tree.workspace.context import atomic_branch_count, workspace_version_hash
 
 
@@ -31,7 +32,7 @@ class WorkspaceRepository(Protocol):
     def list_workspaces(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
         ...
 
-    def workspace_id_is_taken(self, workspace_id: str) -> bool:
+    def claim_workspace_id(self, base_id: str, *, owner_id: str | None = None) -> str:
         ...
 
     def get_workspace_owner_id(self, workspace_id: str) -> str | None:
@@ -285,28 +286,24 @@ def workspace_summary(workspace_id: str, workspace: Mapping[str, Any]) -> dict[s
     }
 
 
-def dedupe_workspace_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Newest first; one entry per normalized topic.
+def order_workspace_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Newest first, by the timestamp in the document.
 
-    Older pipeline runs could publish the same normalized topic under
-    different IDs. Keep the newest visible without deleting either copy.
+    Neither store orders its rows, and the sidebar lists them as it receives
+    them, so the order is decided here for both.
+
+    This used to also hide every workspace but the newest on a normalized
+    topic, from when a pipeline run could publish one topic under two ids. Both
+    stores refuse that at reservation now, and `topic` is a field the reader and
+    the assistant can set: renaming one workspace to another's removed it from
+    the only list the app can open a workspace from, silently and for good.
     """
 
-    ordered = sorted(
+    return sorted(
         summaries,
         key=lambda summary: str(summary.get("updated_at") or ""),
         reverse=True,
     )
-    visible: list[dict[str, Any]] = []
-    seen_topics: set[str] = set()
-    for summary in ordered:
-        topic_key = _topic_key(str(summary.get("topic") or summary.get("title") or ""))
-        if topic_key and topic_key in seen_topics:
-            continue
-        if topic_key:
-            seen_topics.add(topic_key)
-        visible.append(summary)
-    return visible
 
 
 class WorkspaceRepositoryBase:
@@ -1407,12 +1404,39 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
                 continue
             workspace_id = str(workspace.get("workspace_id") or workspace_dir.name)
             summaries.append(workspace_summary(workspace_id, workspace))
-        return dedupe_workspace_summaries(summaries)
+        return order_workspace_summaries(summaries)
 
-    def workspace_id_is_taken(self, workspace_id: str) -> bool:
-        # Failed hydration can leave cached paper content without ever
-        # publishing a workspace. Only a current workspace reserves its ID.
-        return (self._workspace_dir(workspace_id) / "current.json").exists()
+    def claim_workspace_id(self, base_id: str, *, owner_id: str | None = None) -> str:
+        with self._lock:
+            for candidate in _id_candidates(base_id):
+                directory = self._workspace_dir(candidate)
+                if (directory / "current.json").exists():
+                    continue
+                # Failed hydration can leave cached paper content behind without
+                # ever publishing, so an empty directory is not a claim; the
+                # marker is.
+                # A name whose build ran and finished without publishing is
+                # free again; one claimed a moment ago with no run yet is a
+                # build about to start.
+                if (directory / _CLAIM_FILE).exists() and not self._build_gave_up(candidate):
+                    continue
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / _CLAIM_FILE).write_text(_now(), encoding="utf-8")
+                return candidate
+        raise ValueError(f"no workspace id is available for {base_id!r}")
+
+    def _build_gave_up(self, workspace_id: str) -> bool:
+        """True when this name had a build and none is running now."""
+
+        runs_dir = self.base_dir / ".pipeline_runs"
+        if not runs_dir.is_dir():
+            return False
+        statuses = set()
+        for path in runs_dir.glob("*.json"):
+            run = _read_json(path)
+            if isinstance(run, dict) and run.get("workspace_id") == workspace_id:
+                statuses.add(str(run.get("status") or ""))
+        return bool(statuses) and not statuses & {"queued", "running"}
 
     def get_workspace_owner_id(self, workspace_id: str) -> str | None:
         return None
@@ -1600,21 +1624,26 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
 
     def save_pipeline_run(self, pipeline_run: Mapping[str, Any]) -> None:
         run_id = _safe_workspace_id(str(pipeline_run.get("run_id") or ""))
+        path = self.base_dir / ".pipeline_runs" / f"{run_id}.json"
         with self._lock:
-            _write_json_atomic(
-                self.base_dir / ".pipeline_runs" / f"{run_id}.json",
-                pipeline_run,
-            )
+            # A cancelled run is the end of that run. The executor writes the
+            # copy it has been holding for the length of a stage, which would
+            # otherwise put `running` back over a cancel that landed during it.
+            if path.is_file():
+                stored = _read_json(path)
+                if isinstance(stored, dict) and stored.get("status") == "cancelled":
+                    return
+            _write_json_atomic(path, pipeline_run)
 
     def reserve_new_workspace_run(self, pipeline_run: Mapping[str, Any]) -> None:
         """Atomically reject duplicate topics across active workspaces and jobs."""
 
-        topic_key = _topic_key(str(pipeline_run.get("topic") or ""))
+        topic_key = normalized_topic_key(str(pipeline_run.get("topic") or ""))
         if not topic_key:
             raise ValueError("pipeline run topic cannot be empty.")
         with self._lock:
             if any(
-                _topic_key(str(item.get("topic") or item.get("title") or "")) == topic_key
+                normalized_topic_key(str(item.get("topic") or item.get("title") or "")) == topic_key
                 for item in self.list_workspaces()
             ):
                 raise ValueError("a workspace for this topic already exists.")
@@ -1628,7 +1657,7 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
                         continue
                     if (
                         item.get("status") in {"queued", "running"}
-                        and _topic_key(str(item.get("topic") or "")) == topic_key
+                        and normalized_topic_key(str(item.get("topic") or "")) == topic_key
                     ):
                         raise ValueError("a workspace for this topic is already being built.")
             self.save_pipeline_run(pipeline_run)
@@ -1785,10 +1814,17 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
     def _record_new_navigation_head(self, workspace_id: str, version_hash: str) -> None:
         navigation = self._workspace_navigation(workspace_id)
         hashes = navigation["version_hashes"][: navigation["current_index"] + 1]
-        if not hashes or hashes[-1] != version_hash:
+        if version_hash in hashes:
+            # Versions are content-addressed, so saving a document identical to
+            # one already in this history is a move back to it. Appending would
+            # list the same row a second time, under the author and the reason
+            # of the first time it was written - an undo shown as a fresh build
+            # by the pipeline, and two entries the reader cannot tell apart.
+            navigation["current_index"] = hashes.index(version_hash)
+        else:
             hashes.append(version_hash)
+            navigation["current_index"] = len(hashes) - 1
         navigation["version_hashes"] = hashes
-        navigation["current_index"] = len(hashes) - 1
         navigation["updated_at"] = _now()
         _write_json_atomic(self._navigation_path(workspace_id), navigation)
 
@@ -1875,6 +1911,25 @@ def build_workspace_repository(*, artifacts: Any = None, redis: Any = None) -> W
             redis=redis if redis is not None else get_redis(),
         )
     return LocalJsonWorkspaceRepository(workspaces_dir())
+
+
+# A claim is a marker file rather than the directory itself, because a failed
+# run can leave a directory behind holding cached paper content.
+_CLAIM_FILE = ".claimed"
+
+
+def _id_candidates(base_id: str) -> Iterator[str]:
+    """`prompting`, then `prompting-2`, `prompting-3`, and so on.
+
+    A topic gets 240 characters and the id has to fit 180, so the base is cut
+    to leave room for the suffix rather than growing past what a route accepts.
+    """
+
+    base = base_id[:MAX_RESOURCE_ID_LENGTH].rstrip("-") or "workspace"
+    yield base
+    for suffix in range(2, 1_000):
+        marker = f"-{suffix}"
+        yield base[: MAX_RESOURCE_ID_LENGTH - len(marker)].rstrip("-") + marker
 
 
 def _versions_from_navigation(
@@ -2074,8 +2129,16 @@ def _safe_version_hash(version_hash: str) -> str:
     return normalized
 
 
-def _topic_key(value: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+def normalized_topic_key(value: str) -> str:
+    """The normalized form two topics are the same when they share.
+
+    Word runs in any script, not only the Latin alphabet. An ASCII-only class
+    made this empty for a topic written in Chinese, Russian, Japanese, Arabic or
+    Greek, and an empty key is refused at reservation, so nobody could build a
+    workspace on a topic they wrote in their own language.
+    """
+
+    return " ".join(re.findall(r"[^\W_]+", value.casefold()))
 
 
 def _now() -> str:

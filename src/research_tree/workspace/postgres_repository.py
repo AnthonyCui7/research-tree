@@ -38,9 +38,10 @@ from research_tree.workspace.repository import (
     _now,
     _paper_content_key,
     _safe_version_hash,
-    _topic_key,
+    normalized_topic_key,
+    _id_candidates,
     _versions_from_navigation,
-    dedupe_workspace_summaries,
+    order_workspace_summaries,
     workspace_summary,
 )
 
@@ -120,16 +121,53 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
             }
             for row in rows
         ]
-        return dedupe_workspace_summaries(summaries)
+        return order_workspace_summaries(summaries)
 
-    def workspace_id_is_taken(self, workspace_id: str) -> bool:
-        # Deleted workspaces keep their id: a rebuilt "prompting" becomes
-        # "prompting-2" rather than adopting the deleted one's history.
+    def claim_workspace_id(self, base_id: str, *, owner_id: str | None = None) -> str:
+        """Take the first free id for this topic, and hold it from now on.
+
+        Choosing a name and then publishing under it minutes later meant two
+        accounts building the same topic were handed the same one, and whoever
+        finished second wrote into the other's workspace. The name is taken
+        here, in a single statement, so a second build is simply handed the next
+        one and neither account ever waits on or interferes with the other.
+
+        A name whose build ran and finished without ever publishing is free
+        again, so a failed build does not burn the good name for ever. A name
+        claimed seconds ago that has no run yet is not: that is a build about to
+        start, not an abandoned one. A deleted workspace keeps its name, as it
+        always has, so a rebuilt "prompting" becomes "prompting-2" rather than
+        inheriting the deleted one's history.
+        """
+
         with self._engine.begin() as conn:
-            row = conn.execute(
-                text("SELECT 1 FROM workspaces WHERE id = :id"), {"id": workspace_id}
-            ).first()
-        return row is not None
+            for candidate in _id_candidates(base_id):
+                claimed = conn.execute(
+                    text(
+                        """
+                        INSERT INTO workspaces (id, owner_id)
+                        VALUES (:id, CAST(:owner_id AS uuid))
+                        ON CONFLICT (id) DO UPDATE
+                        SET owner_id = EXCLUDED.owner_id, updated_at = now()
+                        WHERE workspaces.current_version_hash IS NULL
+                          AND workspaces.deleted_at IS NULL
+                          AND EXISTS (
+                              SELECT 1 FROM pipeline_runs r
+                              WHERE r.workspace_id = workspaces.id
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM pipeline_runs r
+                              WHERE r.workspace_id = workspaces.id
+                                AND r.status IN ('queued', 'running')
+                          )
+                        RETURNING id
+                        """
+                    ),
+                    {"id": candidate, "owner_id": _uuid_or_none(owner_id)},
+                ).first()
+                if claimed is not None:
+                    return str(claimed[0])
+        raise ValueError(f"no workspace id is available for {base_id!r}")
 
     def get_workspace_owner_id(self, workspace_id: str) -> str | None:
         with self._engine.begin() as conn:
@@ -223,19 +261,33 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
                 "owner_id": _uuid_or_none(owner_id),
                 "topic": summary["topic"],
                 "title": summary["title"],
-                "topic_key": _topic_key(summary["topic"] or summary["title"]),
+                "topic_key": normalized_topic_key(summary["topic"] or summary["title"]),
             },
         )
         row = ctx.execute(
             text(
-                "SELECT current_version_hash, deleted_at FROM workspaces WHERE id = :id FOR UPDATE"
+                "SELECT current_version_hash, deleted_at, owner_id FROM workspaces "
+                "WHERE id = :id FOR UPDATE"
             ),
             {"id": workspace_id},
         ).first()
         assert row is not None
-        current_hash, deleted_at = row[0], row[1]
+        current_hash, deleted_at, existing_owner = row[0], row[1], row[2]
         if deleted_at is not None:
             raise FileNotFoundError(f"workspace was deleted: {workspace_id}")
+        # An id is only free until somebody publishes it. Two accounts building
+        # the same topic at once both took it before either had published, and
+        # the insert above then quietly did nothing for the second, whose
+        # document went into the first account's workspace.
+        if (
+            owner_id is not None
+            and existing_owner is not None
+            and str(existing_owner) != str(owner_id)
+        ):
+            raise RuntimeError(
+                "Another workspace took that name while this build was running. "
+                "Start the build again."
+            )
         if expected_version_hash is not None and current_hash != expected_version_hash:
             raise StaleVersionError(
                 "workspace current version changed before publish: "
@@ -309,7 +361,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
                 "hash": summary["workspace_version_hash"],
                 "topic": summary["topic"],
                 "title": summary["title"],
-                "topic_key": _topic_key(summary["topic"] or summary["title"]),
+                "topic_key": normalized_topic_key(summary["topic"] or summary["title"]),
                 "paper_count": summary["paper_count"],
                 "branch_count": summary["branch_count"],
                 "paper_path_count": summary["paper_path_count"],
@@ -352,8 +404,15 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
     ) -> None:
         hashes, current_index = self._navigation(ctx, workspace_id)
         hashes = hashes[: current_index + 1]
-        if not hashes or hashes[-1] != version_hash:
-            hashes.append(version_hash)
+        if version_hash in hashes:
+            # Versions are content-addressed, so saving a document identical to
+            # one already in this history is a move back to it. Appending would
+            # list the same row a second time, under the author and the reason
+            # of the first time it was written - an undo shown as a fresh build
+            # by the pipeline, and two entries the reader cannot tell apart.
+            self._write_navigation(ctx, workspace_id, hashes, hashes.index(version_hash))
+            return
+        hashes.append(version_hash)
         self._write_navigation(ctx, workspace_id, hashes, len(hashes) - 1)
 
     def list_workspace_versions(self, workspace_id: str) -> list[dict[str, Any]]:
@@ -545,6 +604,15 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
             self._upsert_pipeline_run(conn, pipeline_run)
 
     def _upsert_pipeline_run(self, conn: Connection, pipeline_run: Mapping[str, Any]) -> None:
+        """Write a run record, except over a cancelled one.
+
+        The executor holds the run in memory for the length of a stage and
+        writes it back at the end. A cancel landing during that stage was
+        overwritten by the write that followed it, and the next stage's check
+        then read the resurrected `running` and carried on to completion. A
+        cancelled run is the end of that run.
+        """
+
         run = dict(pipeline_run)
         run_id = str(run.get("run_id") or "")
         if not run_id:
@@ -571,12 +639,13 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
                         heartbeat_at = CASE WHEN EXCLUDED.status IN ('queued', 'running')
                                             THEN now() ELSE pipeline_runs.heartbeat_at END,
                         updated_at = now()
+                    WHERE pipeline_runs.status <> 'cancelled'
                     """
                 ),
                 {
                     "run_id": run_id,
                     "workspace_id": str(run["workspace_id"]) if run.get("workspace_id") else None,
-                    "topic_key": _topic_key(str(run.get("topic") or "")),
+                    "topic_key": normalized_topic_key(str(run.get("topic") or "")),
                     "owner_id": _uuid_or_none(run.get("owner_id")),
                     "status": status,
                     "record": json.dumps(run),
@@ -591,7 +660,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
     def reserve_new_workspace_run(self, pipeline_run: Mapping[str, Any]) -> None:
         """Atomically reject duplicate topics across active workspaces and jobs."""
 
-        topic_key = _topic_key(str(pipeline_run.get("topic") or ""))
+        topic_key = normalized_topic_key(str(pipeline_run.get("topic") or ""))
         if not topic_key:
             raise ValueError("pipeline run topic cannot be empty.")
         owner_id = _uuid_or_none(pipeline_run.get("owner_id"))

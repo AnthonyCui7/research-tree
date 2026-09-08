@@ -6,8 +6,11 @@ from typing import Any, Callable
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.llm import DEFAULT_MODEL
 from research_tree.agents.workspace.run import ProgressCallback, run_workspace_agent
-from research_tree.rate_limits import check_rate_limit
-from research_tree.services.errors import ReviewConflictError, WorkspaceNotFoundError
+from research_tree.services.errors import (
+    ReviewConflictError,
+    WorkspaceNotFoundError,
+    WorkspaceServiceError,
+)
 from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id
 from research_tree.workspace.repository import WorkspaceRepository
@@ -72,7 +75,6 @@ class WorkspaceAgentService:
         on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         safe_workspace_id = self.ensure_agent_available(workspace_id)
-        check_rate_limit("agent_turns")
 
         try:
             graph = self._graph or self.graph_factory(self.repository)
@@ -90,6 +92,11 @@ class WorkspaceAgentService:
                 graph=graph,
                 on_progress=on_progress,
             )
+        except WorkspaceServiceError:
+            # A refusal this codebase wrote — no key, allowance spent, rate
+            # limited — already says what to do about it. Swallowing it into
+            # "try again" told people to retry something that cannot succeed.
+            raise
         except Exception:  # API callers get a structured agent failure.
             # The traceback goes to the log, not to the client: exception text
             # from anywhere in the graph can carry internal paths and payloads.

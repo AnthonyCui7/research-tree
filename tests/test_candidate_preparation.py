@@ -813,6 +813,35 @@ class CandidatePreparationTest(unittest.TestCase):
                     client.get_json("https://s2/y")
             slept.assert_not_called()
 
+    def test_an_absurd_retry_after_is_capped_at_the_ladder(self) -> None:
+        """Honouring the header without a bound parks the stage, and its thread, for hours."""
+
+        from email.message import Message
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        from research_tree.retrieval.cache import CachedJsonClient, JsonRequestError
+
+        headers = Message()
+        headers["Retry-After"] = "100000"
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = CachedJsonClient(
+                cache_dir=Path(directory), request_delay_seconds=0.0, max_retries=3
+            )
+            throttled = HTTPError(
+                "https://api.semanticscholar.org/x", 429, "slow down", headers, BytesIO(b"{}")
+            )
+            with (
+                patch("urllib.request.urlopen", side_effect=throttled),
+                patch("time.sleep") as slept,
+            ):
+                with self.assertRaises(JsonRequestError):
+                    client.get_json("https://s2/x")
+
+            waited = [call.args[0] for call in slept.call_args_list]
+            self.assertEqual(waited, [45, 45, 45])
+
     def test_graph_blind_cutoff_is_measured_not_assumed(self) -> None:
         """The frontier band is the years the graph cannot rank, per run.
 

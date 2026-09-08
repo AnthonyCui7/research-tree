@@ -44,7 +44,8 @@ def _workspace() -> dict[str, Any]:
         "paper_paths": [
             {
                 "path_id": "path-1",
-                "branch_id": "branch-main",
+                "branch_node_id": "branch-main",
+                "paper_ids": ["p1"],
                 "paper_steps": [{"paper_id": "p1", "order": 1}],
             }
         ],

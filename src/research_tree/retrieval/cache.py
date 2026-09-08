@@ -34,6 +34,12 @@ RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
 # Reserves the next request slot atomically on the Redis server's own clock,
 # so every process sharing the key queues into one lane without a busy loop
 # and without trusting container clocks. Returns how long the caller waits.
+# How long the shared lane stays out of play after Redis refuses one call. At
+# roughly one Semantic Scholar request a second, this costs one failed call per
+# thirty while Redis is down, and a blip splits the lane for half a minute
+# rather than until the container restarts.
+REDIS_RETRY_SECONDS = 30.0
+
 _RESERVE_SLOT_LUA = """
 local key = KEYS[1]
 local delay = tonumber(ARGV[1])
@@ -73,7 +79,7 @@ class RateLimiter:
         self._redis_client = redis_client
         self._redis_resolved = redis_client is not None
         self._redis_key = redis_key
-        self._redis_failed = False
+        self._redis_unavailable_until = 0.0
         self._reserve_slot: Any = None
 
     def acquire(self, delay_seconds: float) -> None:
@@ -106,7 +112,7 @@ class RateLimiter:
         """Seconds to wait for the reserved slot, or None when Redis is not in play."""
 
         client = self._redis()
-        if client is None or self._redis_failed:
+        if client is None or time.monotonic() < self._redis_unavailable_until:
             return None
         try:
             if self._reserve_slot is None:
@@ -115,9 +121,16 @@ class RateLimiter:
                 keys=[self._redis_key], args=[int(delay_seconds * 1000)]
             )
         except Exception as error:  # noqa: BLE001 - fall back rather than stall every request
-            self._redis_failed = True
+            # Back off, do not give up. This used to latch for the life of the
+            # process, so one blip left the API and the worker each keeping
+            # their own lock file and their own idea of the shared lane, which
+            # is the arrangement that overruns Semantic Scholar's budget.
+            self._reserve_slot = None
+            self._redis_unavailable_until = time.monotonic() + REDIS_RETRY_SECONDS
             logger.warning(
-                "Redis rate limiter unavailable (%s); falling back to the local limiter.", error
+                "Redis rate limiter unavailable (%s); using the local limiter for %d seconds.",
+                error,
+                REDIS_RETRY_SECONDS,
             )
             return None
         return max(int(wait_ms), 0) / 1000.0
@@ -284,8 +297,14 @@ class CachedJsonClient:
                 last_error = error
                 if error.code not in RETRYABLE_HTTP_STATUS or attempt >= len(backoffs):
                     raise JsonRequestError(_format_http_error(error)) from error
-                retry_after = error.headers.get("Retry-After")
-                wait_seconds = _parse_retry_after(retry_after) or backoffs[attempt]
+                # The server's own number wins, but never past the longest wait
+                # this ladder would take by itself. An absurd `Retry-After`
+                # otherwise parks the stage, and the thread running it, for
+                # hours on a promise nobody checked.
+                asked_for = _parse_retry_after(error.headers.get("Retry-After"))
+                wait_seconds = (
+                    min(asked_for, max(backoffs)) if asked_for else backoffs[attempt]
+                )
                 time.sleep(wait_seconds)
             except urllib.error.URLError as error:
                 last_error = error
