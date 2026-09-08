@@ -6,6 +6,7 @@ from uuid import uuid4
 from research_tree.agents.workspace.models import WorkspaceValidationSummary
 from research_tree.principal import acting_user_id
 from research_tree.services.errors import (
+    InvalidPayloadError,
     ReviewConflictError,
     ReviewNotFoundError,
     StaleWorkspaceError,
@@ -157,6 +158,13 @@ class WorkspaceReviewService:
         status = str(review.get("status") or "")
         if status != "pending":
             raise ReviewConflictError(f"cannot edit review with status {status!r}")
+        # A rerun proposal has no document to edit. Editing one used to retire
+        # it and hand back a workspace patch instead, so the rebuild the reader
+        # asked for quietly became a text change.
+        if str(review.get("review_type") or "workspace_patch") != "workspace_patch":
+            raise InvalidPayloadError(
+                "A rebuild proposal cannot be edited. Approve or reject it instead."
+            )
         base_hash = str(review.get("base_workspace_version_hash") or "")
         if current_hash != base_hash:
             raise StaleWorkspaceError(
@@ -167,20 +175,10 @@ class WorkspaceReviewService:
             workspace=current,
             proposed_workspace=proposed,
         )
-        edit_result = self.repository.edit_review_once(
-            safe_workspace_id,
-            safe_review_id,
-            edited_workspace=proposed,
-            actor_type="user",
-            actor_id=acting_user_id(),
-            target_ids=operation_target_ids(operations),
-            approval_decision=approval_decision or {},
-        )
-        if not edit_result.get("ok"):
-            raise ReviewConflictError(
-                str(edit_result.get("error_message") or "workspace review could not be edited.")
-            )
-
+        # Validate before the review is consumed. `edit_review_once` retires the
+        # pending review and the successor is only written further down, so
+        # validating afterwards threw the proposal away whenever the edit was
+        # rejected: the reader lost the assistant's work with nothing to approve.
         validation_summary = validate_workspace_proposal(
             current_workspace=current,
             proposed_workspace=proposed,
@@ -199,8 +197,22 @@ class WorkspaceReviewService:
                 "validation_summary": validation_summary,
                 "warnings": warnings,
                 "errors": validation_summary.get("errors") or [],
-                "persisted_event_ids": edit_result.get("persisted_event_ids") or [],
+                "persisted_event_ids": [],
             }
+
+        edit_result = self.repository.edit_review_once(
+            safe_workspace_id,
+            safe_review_id,
+            edited_workspace=proposed,
+            actor_type="user",
+            actor_id=acting_user_id(),
+            target_ids=operation_target_ids(operations),
+            approval_decision=approval_decision or {},
+        )
+        if not edit_result.get("ok"):
+            raise ReviewConflictError(
+                str(edit_result.get("error_message") or "workspace review could not be edited.")
+            )
 
         new_review_id = f"review_{uuid4().hex}"
         interrupt_payload = _review_interrupt_payload(

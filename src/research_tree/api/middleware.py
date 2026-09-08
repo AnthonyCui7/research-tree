@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 
 from research_tree.auth.settings import PUBLIC_ORIGIN_ENV
 
@@ -69,14 +70,23 @@ class CanonicalHostMiddleware:
                 and host != canonical_host
                 and host.endswith("." + canonical_host)
             ):
-                path = scope.get("path") or "/"
+                # The raw path, still percent-encoded, is what belongs in a
+                # header. `scope["path"]` is decoded, so a link with an accent
+                # in it could not be encoded as latin-1 (500) and one carrying
+                # %0d%0a became a header value the HTTP layer refused to send,
+                # dropping the connection with no response at all.
+                raw_path = scope.get("raw_path") or (scope.get("path") or "/").encode("utf-8")
                 query = scope.get("query_string") or b""
-                target = f"{origin}{path}" + (f"?{query.decode('latin-1')}" if query else "")
+                target = origin.encode("latin-1") + quote(raw_path, safe="/%:@!$&'()*+,;=~-._").encode(
+                    "latin-1"
+                )
+                if query:
+                    target += b"?" + query
                 await send(
                     {
                         "type": "http.response.start",
                         "status": 308,
-                        "headers": [(b"location", target.encode("latin-1")), (b"content-length", b"0")],
+                        "headers": [(b"location", target), (b"content-length", b"0")],
                     }
                 )
                 await send({"type": "http.response.body", "body": b""})

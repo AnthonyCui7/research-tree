@@ -10,6 +10,16 @@ def derive_operations_and_diff_summary(
     workspace: Mapping[str, Any],
     proposed_workspace: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
+    """Describe how the proposal differs from the workspace.
+
+    Both callers hand this untrusted documents and both run it before anything
+    validates them: the review editor passes a body straight from the browser,
+    and the agent graph derives operations before it selects its validators.
+    So it describes whatever it is given and never raises. A field of the wrong
+    shape reads as absent here, and the validation that follows is what tells
+    the caller their document is malformed.
+    """
+
     operations: list[dict[str, Any]] = []
     warnings: list[str] = []
     changed_top_level = [
@@ -52,8 +62,8 @@ def derive_operations_and_diff_summary(
         "changed_top_level_fields": changed_top_level,
         "operation_count": len(operations),
         "operation_types": sorted({operation["operation_type"] for operation in operations}),
-        "visible_paper_count_before": len((workspace.get("paper_cards") or {})),
-        "visible_paper_count_after": len((proposed_workspace.get("paper_cards") or {})),
+        "visible_paper_count_before": len(_mapping(workspace.get("paper_cards"))),
+        "visible_paper_count_after": len(_mapping(proposed_workspace.get("paper_cards"))),
         "appears_global": len(changed_top_level) > 5,
     }
     return operations, diff_summary, warnings
@@ -155,8 +165,8 @@ def _paper_card_operations(
     workspace: Mapping[str, Any],
     proposed_workspace: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    before_cards = _mapping(workspace.get("paper_cards"))
-    after_cards = _mapping(proposed_workspace.get("paper_cards"))
+    before_cards = _objects_by_key(workspace.get("paper_cards"))
+    after_cards = _objects_by_key(proposed_workspace.get("paper_cards"))
     operations: list[dict[str, Any]] = []
 
     for paper_id in sorted(set(after_cards) - set(before_cards)):
@@ -238,8 +248,8 @@ def _paper_path_operations(
     workspace: Mapping[str, Any],
     proposed_workspace: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    before_paths = {str(path.get("path_id")): path for path in workspace.get("paper_paths") or [] if isinstance(path, Mapping)}
-    after_paths = {str(path.get("path_id")): path for path in proposed_workspace.get("paper_paths") or [] if isinstance(path, Mapping)}
+    before_paths = {str(path.get("path_id")): path for path in _objects(workspace.get("paper_paths"))}
+    after_paths = {str(path.get("path_id")): path for path in _objects(proposed_workspace.get("paper_paths"))}
     operations: list[dict[str, Any]] = []
     for path_id in sorted(set(after_paths) - set(before_paths)):
         operations.append(
@@ -375,16 +385,29 @@ def _operation(
 
 
 def _nodes_by_id(workspace: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    tree = workspace.get("tree") if isinstance(workspace.get("tree"), Mapping) else {}
     return {
         str(node.get("node_id")): node
-        for node in tree.get("nodes") or []
-        if isinstance(node, Mapping) and node.get("node_id")
+        for node in _objects(_mapping(workspace.get("tree")).get("nodes"))
+        if node.get("node_id")
     }
 
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _objects(value: Any) -> list[Mapping[str, Any]]:
+    """A field that should be a list of objects, with everything else dropped."""
+
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _objects_by_key(value: Any) -> dict[str, Mapping[str, Any]]:
+    """A field that should be objects keyed by id, with everything else dropped."""
+
+    return {str(key): item for key, item in _mapping(value).items() if isinstance(item, Mapping)}
 
 
 def _node_id_from_card(card: Mapping[str, Any]) -> str | None:

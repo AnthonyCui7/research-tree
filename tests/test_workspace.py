@@ -23,6 +23,7 @@ from research_tree.workspace.schemas import (
     candidate_papers_from_artifact,
 )
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
+from research_tree.workspace.diff import derive_operations_and_diff_summary
 from research_tree.workspace.operations import (
     WorkspacePatchError,
     apply_structured_workspace_patch,
@@ -118,6 +119,24 @@ class WorkspaceBackendTest(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_insert_refuses_a_paper_card_that_is_not_an_object(self) -> None:
+        """A card that arrived as a string reached `card.get` and answered 500."""
+
+        for card in ("hello", 7, 1.5, True, ["a"], None):
+            with self.assertRaises(WorkspacePatchError):
+                apply_structured_workspace_patch(
+                    base_workspace=_workspace(),
+                    operations=[
+                        {
+                            "op": "insert",
+                            "entity_type": "paper_placement",
+                            "paper_id": "new-1",
+                            "branch_id": "branch-main",
+                            "value": {"paper_card": card},
+                        }
+                    ],
+                )
 
     def test_insert_removed_paper_reuses_card_without_old_placement(self) -> None:
         removed = apply_structured_workspace_patch(
@@ -1325,6 +1344,30 @@ def _candidate(paper_id: str, title: str) -> dict[str, object]:
         "is_survey": False,
         "found_by": ["test"],
     }
+
+
+class MalformedDocumentDiffTest(unittest.TestCase):
+    """The diff runs before anything validates, on documents a model or a browser wrote."""
+
+    def test_it_describes_any_shape_without_raising(self) -> None:
+        workspace = _workspace()
+        for proposed in (
+            {**workspace, "paper_cards": {"p1": None}},
+            {**workspace, "paper_cards": "nope"},
+            {**workspace, "paper_paths": 5},
+            {**workspace, "tree": [1, 2, 3]},
+            {**workspace, "tree": {"root_node_id": "root", "nodes": 9}},
+            {**workspace, "reading_order": {"a": 1}},
+            {**workspace, "root": "root"},
+            {},
+        ):
+            operations, summary, _warnings = derive_operations_and_diff_summary(
+                workspace=workspace,
+                proposed_workspace=proposed,
+            )
+            self.assertIsInstance(operations, list)
+            self.assertIn("operation_count", summary)
+
 
 
 def _workspace() -> dict[str, object]:

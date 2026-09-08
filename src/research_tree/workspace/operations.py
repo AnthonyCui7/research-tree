@@ -7,32 +7,35 @@ from typing import Any, Mapping
 from research_tree.workspace.context import workspace_version_hash
 
 
-ALLOWED_SET_FIELDS: dict[str, set[str]] = {
-    "workspace": {"title", "topic"},
+# What `set` may write, and the shape each field takes. The shape matters as
+# much as the name: the canvas reads these as text and as lists, so a number,
+# an object or a null written here renders as nothing or throws.
+ALLOWED_SET_FIELDS: dict[str, dict[str, str]] = {
+    "workspace": {"title": "text", "topic": "text"},
     "root": {
-        "overview",
-        "suggested_reading_direction",
-        "key_terms",
-        "open_questions",
+        "overview": "text",
+        "suggested_reading_direction": "text",
+        "key_terms": "list",
+        "open_questions": "list",
     },
     "branch": {
-        "label",
-        "description",
-        "why_it_matters",
-        "tags",
-        "open_questions",
+        "label": "text",
+        "description": "text",
+        "why_it_matters": "text",
+        "tags": "list",
+        "open_questions": "list",
     },
     "paper_card": {
-        "title",
-        "tldr",
-        "tldr_source",
-        "paper_role",
-        "importance",
-        "concise_importance",
-        "summary",
-        "read_before",
-        "read_after",
-        "similar_papers",
+        "title": "text",
+        "tldr": "text",
+        "tldr_source": "text",
+        "paper_role": "text",
+        "importance": "text",
+        "concise_importance": "text",
+        "summary": "text",
+        "read_before": "list",
+        "read_after": "list",
+        "similar_papers": "list",
     },
 }
 
@@ -233,12 +236,18 @@ def _normalize_operation(operation: Mapping[str, Any]) -> dict[str, Any]:
 def _apply_set(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
     entity_type = str(operation.get("entity_type") or "")
     field_name = str(operation.get("field") or "")
-    if field_name not in ALLOWED_SET_FIELDS.get(entity_type, set()):
+    shape = ALLOWED_SET_FIELDS.get(entity_type, {}).get(field_name)
+    if shape is None:
         raise WorkspacePatchError(
             f"set is not allowed for {entity_type}.{field_name}."
         )
+    value = operation.get("value")
+    if shape == "text" and not isinstance(value, str):
+        raise WorkspacePatchError(f"{entity_type}.{field_name} must be text.")
+    if shape == "list" and not isinstance(value, list):
+        raise WorkspacePatchError(f"{entity_type}.{field_name} must be a list.")
     target = _target_object(workspace, operation, entity_type)
-    target[field_name] = copy.deepcopy(operation.get("value"))
+    target[field_name] = copy.deepcopy(value)
 
 
 def _apply_insert(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
@@ -478,11 +487,13 @@ def _insert_paper_placement(workspace: dict[str, Any], operation: Mapping[str, A
     cards = _required_mapping(workspace.get("paper_cards"), "paper_cards")
     if paper_id not in cards:
         restored = _removed_placement_for_paper(workspace, paper_id)
-        value = operation.get("value")
-        card = (
-            copy.deepcopy(restored.get("paper_card"))
-            if restored and isinstance(restored.get("paper_card"), Mapping)
-            else copy.deepcopy(_mapping(value).get("paper_card"))
+        # A card is an object whichever source it comes from. The restored one
+        # was checked and the one in the operation was not, so a `paper_card`
+        # that arrived as a string or a number reached `card.get` below and
+        # answered 500 instead of the refusal underneath.
+        card = copy.deepcopy(
+            _mapping(restored.get("paper_card") if restored else None)
+            or _mapping(_mapping(operation.get("value")).get("paper_card"))
         )
         if not card:
             raise WorkspacePatchError(f"paper card data is required for {paper_id}.")

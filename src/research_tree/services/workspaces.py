@@ -8,11 +8,20 @@ from research_tree.services.errors import (
     ReviewConflictError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
+    WorkspaceVersionNotFoundError,
 )
 from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id, validate_version_hash
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.repository import WorkspaceRepository
+
+
+# A full workspace document, twice over on a review that was edited. Nothing
+# that lists reviews reads either one.
+_REVIEW_DOCUMENT_FIELDS = frozenset({"proposed_workspace", "edited_workspace"})
+# The change a review proposes, which the assistant panel renders while the
+# review is still open. On a finished review it is history nobody reads.
+_REVIEW_PROPOSAL_FIELDS = frozenset({"proposed_operations", "interrupt_payload"})
 
 
 class WorkspaceQueryService:
@@ -56,12 +65,32 @@ class WorkspaceQueryService:
         }
 
     def list_reviews(self, workspace_id: str) -> dict[str, Any]:
+        """Every review of this workspace, newest first, without the documents.
+
+        Reviews accumulate for the life of a workspace and each one embeds the
+        document it proposed — over half a megabyte on a real workspace — so the
+        list grew without bound on a route the assistant panel calls on open.
+        The documents go out of the list entirely: the detail route still serves
+        one review whole. What the panel restores from is the change itself, and
+        that only matters while a review is still pending.
+        """
+
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
         self.get_current_workspace(safe_workspace_id)
-        return {
-            "workspace_id": safe_workspace_id,
-            "reviews": self.repository.list_workspace_reviews(safe_workspace_id),
-        }
+        summaries = [
+            {
+                key: value
+                for key, value in review.items()
+                if key not in _REVIEW_DOCUMENT_FIELDS
+                and not (
+                    key in _REVIEW_PROPOSAL_FIELDS
+                    and str(review.get("status") or "") != "pending"
+                )
+            }
+            for review in self.repository.list_workspace_reviews(safe_workspace_id)
+        ]
+        summaries.sort(key=lambda review: str(review.get("created_at") or ""), reverse=True)
+        return {"workspace_id": safe_workspace_id, "reviews": summaries}
 
     def get_paper_content(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
         """Return the text extracted from a paper's open-access PDF.
@@ -112,7 +141,7 @@ class WorkspaceQueryService:
                 safe_version_hash,
             )
         except FileNotFoundError as error:
-            raise WorkspaceNotFoundError("workspace version does not exist") from error
+            raise WorkspaceVersionNotFoundError("workspace version does not exist") from error
         except ValueError as error:
             raise WorkspaceServiceError(str(error)) from error
         return {
@@ -144,7 +173,7 @@ class WorkspaceQueryService:
                 reason=reason,
             )
         except FileNotFoundError as error:
-            raise WorkspaceNotFoundError("workspace version does not exist") from error
+            raise WorkspaceVersionNotFoundError("workspace version does not exist") from error
         return {
             "workspace_id": safe_workspace_id,
             "workspace_version_hash": str(result["version_hash"]),

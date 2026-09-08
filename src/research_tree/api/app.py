@@ -4,10 +4,12 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, Mapping
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -153,6 +155,25 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> Response:
+        # FastAPI's own handler repeats the rejected value back to the caller,
+        # so a wrongly typed `api_key` came back with the key inside it. This
+        # says which field was wrong and why, and never repeats what was sent.
+        problems = [
+            _validation_problem(error) for error in exc.errors()[:_VALIDATION_PROBLEM_LIMIT]
+        ]
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": "; ".join(problems) or "That request was not valid.",
+                "error_code": "invalid_payload",
+            },
+        )
+
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> Response:
         # The Google callback lands in a browser tab: a JSON 400 there is a
@@ -193,14 +214,14 @@ def _mount_web(app: FastAPI) -> None:
     if assets.is_dir():
         app.mount("/assets", _ImmutableStaticFiles(directory=str(assets)), name="assets")
 
-    @app.get("/", include_in_schema=False)
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
     async def spa_index() -> FileResponse:
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     favicon = root / "favicon.png"
     if favicon.is_file():
 
-        @app.get("/favicon.png", include_in_schema=False)
+        @app.api_route("/favicon.png", methods=["GET", "HEAD"], include_in_schema=False)
         async def spa_favicon() -> FileResponse:
             return FileResponse(favicon, headers={"Cache-Control": "public, max-age=86400"})
 
@@ -212,6 +233,33 @@ class _ImmutableStaticFiles(StaticFiles):
         response = super().file_response(*args, **kwargs)
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
+
+
+# Enough to fix the request, without turning one malformed body into a wall of
+# text; pydantic reports one entry per field it could not read.
+_VALIDATION_PROBLEM_LIMIT = 5
+
+
+def _validation_problem(error: Mapping[str, Any]) -> str:
+    """One rejected field, named as the caller wrote it, and why.
+
+    A whole-body check has no field to name, pydantic prefixes its own
+    "Value error," to anything a validator raised, and a body that is not JSON
+    reports a character offset rather than a field. None of that belongs in a
+    sentence someone reads.
+    """
+
+    message = str(error.get("msg") or "").removeprefix("Value error, ")
+    if str(error.get("type") or "").startswith("json_"):
+        # A body that is not JSON at all has a character offset where a field
+        # name would be, and "59: JSON decode error" reads as nonsense.
+        return message
+    parts = [
+        str(part)
+        for part in (error.get("loc") or ())
+        if part not in {"body", "query", "path"}
+    ]
+    return f"{'.'.join(parts)}: {message}" if parts else message
 
 
 def _is_browser_callback(request: Request) -> bool:

@@ -2,10 +2,30 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from research_tree.annotation.models import PaperAnnotation
 from research_tree.llm import DEFAULT_MODEL
+from research_tree.payload import unstorable_reason
+
+
+class ClientRequest(BaseModel):
+    """A model built from a request body.
+
+    Every body the API accepts is checked here for the two shapes this service
+    cannot carry: a character no store can hold, and nesting deeper than a
+    response can be serialized from. Doing it on the base class rather than
+    field by field means a field added later is covered without being told to
+    be, and it is the only place that has to know the rule.
+    """
+
+    @model_validator(mode="after")
+    def _reject_what_cannot_be_carried(self) -> "ClientRequest":
+        for field_name in type(self).model_fields:
+            reason = unstorable_reason(getattr(self, field_name), path=field_name)
+            if reason is not None:
+                raise ValueError(reason)
+        return self
 
 
 class HealthResponse(BaseModel):
@@ -43,11 +63,14 @@ class ApiKeysResponse(BaseModel):
     platform_key: bool = False
 
 
-class SaveApiKeyRequest(BaseModel):
+class SaveApiKeyRequest(ClientRequest):
     provider: str = Field(default="openai", pattern=r"^openai$")
-    # No length bounds here on purpose: a pydantic refusal echoes the value,
-    # and this value is a secret. The route checks the shape itself.
-    api_key: str
+    # No length bounds and a default on purpose: a pydantic refusal echoes the
+    # value it rejected, and a *missing field* refusal echoes the whole body —
+    # so a caller that named the field wrong got its key quoted back. With a
+    # default there is nothing for pydantic to refuse; the route checks the
+    # shape itself and answers without repeating the value.
+    api_key: str = ""
 
 
 class SaveApiKeyResponse(BaseModel):
@@ -79,7 +102,7 @@ class UsageResponse(BaseModel):
     recent: list[UsageEvent] = Field(default_factory=list)
 
 
-class BugReportRequest(BaseModel):
+class BugReportRequest(ClientRequest):
     summary: str = Field(min_length=1, max_length=200)
     details: str = Field(default="", max_length=8_000)
     area: str = Field(default="general", max_length=40, pattern=r"^[a-z-]+$")
@@ -117,7 +140,7 @@ class WorkspaceVersionsResponse(BaseModel):
     versions: list[dict[str, Any]]
 
 
-class TopicReviewRequest(BaseModel):
+class TopicReviewRequest(ClientRequest):
     topic: str = Field(min_length=1, max_length=240)
 
 
@@ -135,7 +158,7 @@ class TopicReviewResponse(BaseModel):
 
 # Pipeline construction is model-locked (see WorkspacePipelineService), so
 # neither request takes a model. Only the agent does.
-class CreateWorkspaceRequest(BaseModel):
+class CreateWorkspaceRequest(ClientRequest):
     topic: str = Field(min_length=1, max_length=240)
     topic_review_token: str = Field(min_length=1, max_length=128)
     # The reader's optional steer for construction — what to emphasize, exclude,
@@ -143,7 +166,7 @@ class CreateWorkspaceRequest(BaseModel):
     instructions: str = Field(default="", max_length=2_000)
 
 
-class PipelineRerunApiRequest(BaseModel):
+class PipelineRerunApiRequest(ClientRequest):
     start_stage: str
     expected_version_hash: str | None = None
 
@@ -157,12 +180,12 @@ class PipelineRunsResponse(BaseModel):
     pipeline_runs: list[dict[str, Any]]
 
 
-class RestoreWorkspaceRequest(BaseModel):
+class RestoreWorkspaceRequest(ClientRequest):
     expected_version_hash: str | None = None
     reason: str = "restored from workspace history"
 
 
-class DeleteWorkspaceRequest(BaseModel):
+class DeleteWorkspaceRequest(ClientRequest):
     expected_version_hash: str | None = None
 
 
@@ -172,7 +195,7 @@ class WorkspaceMutationResponse(BaseModel):
     changed: bool
 
 
-class WorkspaceEditRequest(BaseModel):
+class WorkspaceEditRequest(ClientRequest):
     """A change made by hand on the canvas, as structured operations.
 
     The operations are the ones `workspace/operations.py` applies for the
@@ -246,7 +269,7 @@ class WorkspaceReviewResponse(BaseModel):
     review: dict[str, Any]
 
 
-class AgentRunRequest(BaseModel):
+class AgentRunRequest(ClientRequest):
     message: str = Field(min_length=1, max_length=20_000)
     conversation_history: list[dict[str, str]] = Field(default_factory=list, max_length=24)
     # Thread ids are persisted into event payloads, so they are constrained the
@@ -275,12 +298,12 @@ class AgentRunResponse(BaseModel):
     persisted_event_ids: list[str] = Field(default_factory=list)
 
 
-class ReviewDecisionRequest(BaseModel):
+class ReviewDecisionRequest(ClientRequest):
     reason: str | None = None
     approval_decision: dict[str, Any] = Field(default_factory=dict)
 
 
-class ReviewEditRequest(BaseModel):
+class ReviewEditRequest(ClientRequest):
     proposed_workspace: dict[str, Any]
     approval_decision: dict[str, Any] = Field(default_factory=dict)
 

@@ -143,11 +143,15 @@ def get_usage() -> dict[str, object]:
 
 @router.post("/bug-reports", response_model=BugReportResponse, status_code=202)
 def report_bug(request: BugReportRequest) -> dict[str, object]:
+    # `%r` rather than `%s`: the summary is whatever the reader typed, and a
+    # newline in it wrote a second line that read like the server's own.
+    # The details are logged too — the response says the report went to the log,
+    # and a report without its details is not a report.
     logger.info(
-        "bug report received area=%s summary=%s details_chars=%d",
+        "bug report received area=%s summary=%r details=%r",
         request.area,
         request.summary,
-        len(request.details),
+        request.details,
     )
     return {"received": True, "stored": False, "detail": BUG_REPORT_UNAVAILABLE}
 

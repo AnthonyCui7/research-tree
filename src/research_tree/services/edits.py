@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from research_tree.principal import acting_user_id
+from research_tree.principal import acting_user_id, current_owner_id
 from research_tree.services.errors import (
     InvalidPayloadError,
     ReviewConflictError,
@@ -14,6 +14,7 @@ from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.diff import derive_operations_and_diff_summary
+from research_tree.workspace.repository import normalized_topic_key
 from research_tree.workspace.operations import (
     WorkspacePatchError,
     apply_structured_workspace_patch,
@@ -38,6 +39,34 @@ class WorkspaceEditService:
 
     def __init__(self, repository: WorkspaceRepository) -> None:
         self.repository = repository
+
+    def _refuse_a_topic_already_taken(
+        self,
+        workspace_id: str,
+        current: Mapping[str, Any],
+        proposed: Mapping[str, Any],
+    ) -> None:
+        """One topic, one workspace, however it got the name.
+
+        A build already refuses a topic this account has a workspace for.
+        Renaming was the way around that, and two workspaces on one topic used
+        to mean one of them silently vanished from the only list the app can
+        open a workspace from.
+        """
+
+        topic = str(proposed.get("topic") or proposed.get("title") or "")
+        if topic == str(current.get("topic") or current.get("title") or ""):
+            return
+        topic_key = normalized_topic_key(topic)
+        if not topic_key:
+            return
+        for other in self.repository.list_workspaces(owner_id=current_owner_id()):
+            if other["workspace_id"] == workspace_id:
+                continue
+            if normalized_topic_key(str(other.get("topic") or other.get("title") or "")) == topic_key:
+                raise InvalidPayloadError(
+                    f"You already have a workspace on that topic: {other.get('title') or other['workspace_id']}."
+                )
 
     def apply(
         self,
@@ -68,6 +97,7 @@ class WorkspaceEditService:
             )
         except WorkspacePatchError as error:
             raise InvalidPayloadError(str(error)) from error
+        self._refuse_a_topic_already_taken(safe_workspace_id, current, proposed)
 
         derived, diff_summary, diff_warnings = derive_operations_and_diff_summary(
             workspace=current,

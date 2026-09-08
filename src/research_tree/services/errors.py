@@ -32,6 +32,12 @@ class PaperUnavailableError(WorkspaceServiceError):
     error_code = "paper_unavailable"
 
 
+class WorkspaceVersionNotFoundError(WorkspaceNotFoundError):
+    """The workspace is fine; the version asked for is not there any more."""
+
+    error_code = "workspace_version_not_found"
+
+
 class ReviewNotFoundError(WorkspaceServiceError):
     status_code = 404
     error_code = "review_not_found"
@@ -111,6 +117,8 @@ PUBLIC_ERROR_CODES = {
 
 
 def public_service_error_message(exc: WorkspaceServiceError) -> str:
+    if exc.error_code == "workspace_version_not_found":
+        return "That version is no longer available. Refresh the history and try again."
     if exc.error_code in {"workspace_not_found", "review_not_found"}:
         return "That workspace is no longer available. Refresh and try again."
     if exc.error_code in {"review_conflict", "stale_workspace"}:

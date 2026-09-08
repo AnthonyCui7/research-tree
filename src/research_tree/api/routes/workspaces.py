@@ -35,6 +35,7 @@ from research_tree.api.schemas import (
     WorkspaceVersionsResponse,
     WorkspacesResponse,
 )
+from research_tree.principal import current_principal
 from research_tree.redis_client import get_async_redis
 from research_tree.services.annotations import PaperAnnotationService
 from research_tree.services.edits import WorkspaceEditService
@@ -114,7 +115,7 @@ async def stream_pipeline_run_updates(
         since_heartbeat = 0.0
         async with _ChangeSignal(f"{RUN_CHANNEL_PREFIX}{run_id}", RUN_POLL_SECONDS) as changes:
             while True:
-                if await request.is_disconnected():
+                if await request.is_disconnected() or not await _still_signed_in():
                     return
                 signature = json.dumps(run, sort_keys=True, default=str)
                 if signature != previous_signature:
@@ -146,7 +147,7 @@ async def stream_workspace_updates(
         since_heartbeat = 0.0
         async with _ChangeSignal(WORKSPACES_CHANNEL, COLLECTION_POLL_SECONDS) as changes:
             while True:
-                if await request.is_disconnected():
+                if await request.is_disconnected() or not await _still_signed_in():
                     return
                 workspaces = await asyncio.to_thread(_workspace_collection_signature, service)
                 if workspaces != previous_signature:
@@ -159,6 +160,29 @@ async def stream_workspace_updates(
                     yield ": heartbeat\n\n"
 
     return _sse_response(event_stream())
+
+
+async def _still_signed_in() -> bool:
+    """Whether the account behind an open stream may still read.
+
+    Authorization happens once, when the stream connects, and a stream stays
+    open for as long as the tab does. Without this an account that was
+    deactivated, or dropped from the allowlist, went on receiving every change
+    to its workspaces; new requests were refused the whole time.
+    """
+
+    principal = current_principal()
+    if principal is None or principal.is_local:
+        return True
+    return await asyncio.to_thread(_account_may_read, principal.user_id)
+
+
+def _account_may_read(user_id: str) -> bool:
+    from research_tree.auth.accounts import principal_for_user_id
+    from research_tree.auth.settings import email_is_allowed
+
+    live = principal_for_user_id(user_id)
+    return live is not None and email_is_allowed(live.email)
 
 
 class _ChangeSignal:
@@ -206,7 +230,13 @@ class _ChangeSignal:
             )
         except Exception as error:  # noqa: BLE001 - keep serving, just poll from here on
             logger.warning("event stream lost its Redis subscription: %s", error)
-            self._pubsub = None
+            # Dropping the reference without closing leaked the connection for
+            # as long as the stream stayed open, which is until the tab closes.
+            failed, self._pubsub = self._pubsub, None
+            try:
+                await failed.aclose()
+            except Exception:  # noqa: BLE001 - it is already broken
+                pass
             await asyncio.sleep(self._poll_seconds)
         return asyncio.get_running_loop().time() - started
 

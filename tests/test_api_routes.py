@@ -49,7 +49,10 @@ def test_unknown_version_is_not_found(client, seed_workspace) -> None:
     response = client.get(f"/workspaces/workspace-1/versions/{'a' * 64}")
 
     assert response.status_code == 404
-    assert response.json()["error_code"] == "workspace_not_found"
+    # The workspace is there; only the version is gone, and the reader is told
+    # which of the two it is.
+    assert response.json()["error_code"] == "workspace_version_not_found"
+    assert "version" in response.json()["detail"]
 
 
 def test_workspace_events_and_reviews_list(client, seed_workspace) -> None:
@@ -367,3 +370,147 @@ def _save_run(
     }
     repository.save_pipeline_run(run)
     return run
+
+
+# ---- what a request body may carry ------------------------------------------
+
+
+def _edit_body(version_hash: str, value_literal: str, *, extra: str = "") -> str:
+    return (
+        '{"expected_version_hash":' + json.dumps(version_hash) + extra + ","
+        '"operations":[{"op":"set","entity_type":"root","field":"key_terms",'
+        '"value":' + value_literal + "}]}"
+    )
+
+
+def test_a_body_nested_past_the_ceiling_is_refused(client, seed_workspace) -> None:
+    version_hash = seed_workspace()
+    deep: Any = "x"
+    for _ in range(300):
+        deep = [deep]
+
+    response = client.post(
+        "/workspaces/workspace-1/edits",
+        content=_edit_body(version_hash, json.dumps(deep)),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert "nested" in response.json()["detail"]
+    # The point of the ceiling: a document that got past it could be stored and
+    # then never read again, because the response cannot be serialized from it.
+    assert client.get("/workspaces/workspace-1").status_code == 200
+
+
+def test_an_unpaired_surrogate_in_a_body_is_refused(client, seed_workspace) -> None:
+    version_hash = seed_workspace()
+
+    response = client.post(
+        "/workspaces/workspace-1/edits",
+        content=_edit_body(version_hash, '"a\\ud800b"'),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert "cannot be stored" in response.json()["detail"]
+
+
+def test_a_null_byte_outside_the_document_is_refused(client) -> None:
+    # Postgres refuses U+0000 in json, and the run record is written before any
+    # workspace exists, so this reached the driver and answered 500.
+    response = client.post(
+        "/workspaces",
+        content='{"topic":"Prompting","topic_review_token":"t","instructions":"emphasise a\\u0000b"}',
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"].startswith("instructions")
+
+
+def test_a_rejected_field_is_named_without_repeating_what_was_sent(client) -> None:
+    response = client.put("/account/api-keys", json={"api_key": ["sk-proj-NOTTHEREALKEY"]})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error_code"] == "invalid_payload"
+    assert body["detail"].startswith("api_key")
+    assert "NOTTHEREALKEY" not in response.text
+
+
+# ---- ids the two stores would read differently -------------------------------
+
+
+def test_an_id_the_file_store_would_rename_is_refused(client, seed_workspace) -> None:
+    """`-workspace-1` served `workspace-1`'s document under a name it does not have."""
+
+    seed_workspace()
+
+    for workspace_id in ("-workspace-1", "workspace-1-", ".workspace-1", "...", "---"):
+        response = client.get(f"/workspaces/{workspace_id}")
+        assert response.status_code == 400, workspace_id
+        assert response.json()["error_code"] == "invalid_resource_id"
+
+    assert client.get("/workspaces/workspace-1").status_code == 200
+
+
+def test_a_run_id_the_file_store_cannot_name_is_refused(client) -> None:
+    for run_id in ("---", "..."):
+        assert client.get(f"/workspaces/pipeline-runs/{run_id}").status_code == 400
+        assert client.post(f"/workspaces/pipeline-runs/{run_id}/cancel").status_code == 400
+    assert client.get("/workspaces/pipeline-runs/pipeline_missing").status_code == 404
+
+
+def test_health_answers_a_headers_only_request(client) -> None:
+    """`curl -I` and every uptime check ask with HEAD; FastAPI answered 405."""
+
+    response = client.head("/health")
+
+    assert response.status_code == 200
+    assert response.content == b""
+
+
+def test_renaming_onto_a_topic_you_already_have_is_refused(client, repository) -> None:
+    """A build already refuses a duplicate topic; renaming was the way around it."""
+
+    for workspace_id, topic in (("alpha", "Prompting"), ("beta", "Sampling")):
+        repository.save_workspace_version(
+            workspace_id,
+            {
+                "schema_version": "research_tree_workspace.v1",
+                "workspace_id": workspace_id,
+                "topic": topic,
+                "title": topic,
+                "scope": {},
+                "source_candidate_artifact": {},
+                "root": {"node_id": "root", "label": topic, "overview": "Overview."},
+                "tree": {"root_node_id": "root", "nodes": []},
+                "paper_paths": [],
+                "paper_cards": {"p1": {"paper_id": "p1", "title": "A paper"}},
+                "reading_order": [],
+                "comparison_tables": [],
+                "discarded_candidates": [],
+                "provenance": {},
+            },
+            actor="system",
+            parent_version_hash=None,
+            reason="built",
+        )
+
+    head = client.get("/workspaces/beta").json()["workspace_version_hash"]
+    response = client.post(
+        "/workspaces/beta/edits",
+        json={
+            "expected_version_hash": head,
+            "operations": [
+                {"op": "set", "entity_type": "workspace", "field": "topic", "value": "Prompting"}
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "already have a workspace on that topic" in response.json()["detail"]
+    assert {w["workspace_id"] for w in client.get("/workspaces").json()["workspaces"]} == {
+        "alpha",
+        "beta",
+    }

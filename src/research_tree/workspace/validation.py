@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from research_tree.payload import unstorable_reason
 from research_tree.workspace.schemas import (
     PAPER_ROLES,
     WORKSPACE_SCHEMA_VERSION,
@@ -57,6 +58,12 @@ def validate_workspace(
     ):
         if field_name not in workspace_payload:
             errors.append(f"workspace is missing top-level field {field_name!r}.")
+
+    # The pipeline and the assistant build documents that never pass through a
+    # request, so the check the request models run does not cover them.
+    unstorable = unstorable_reason(workspace_payload, path="workspace")
+    if unstorable is not None:
+        errors.append(unstorable)
 
     if workspace.schema_version != WORKSPACE_SCHEMA_VERSION:
         errors.append(
