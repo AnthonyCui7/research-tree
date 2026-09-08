@@ -58,6 +58,10 @@ RUN set -eux; \
 COPY --from=builder --chown=app:app /app /app
 COPY --from=builder --chown=app:app /opt/hf-home /opt/hf-home
 COPY --from=web --chown=app:app /src/apps/web/dist /app/web
+# The database's certificate chain ends in Supabase's own root, so a DSN that
+# verifies the server (`sslmode=verify-full&sslrootcert=certs/...`) needs the
+# root on hand; the path is relative to this WORKDIR and to the repo root.
+COPY --chown=app:app certs /app/certs
 USER app
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH" \

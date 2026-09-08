@@ -21,6 +21,10 @@ from research_tree.billing.usage import record_llm_usage
 logger = logging.getLogger("uvicorn.error")
 
 DEFAULT_MODEL = "gpt-5.6-luna"
+# The models the assistant may be asked to use, and the only ones it will:
+# every one is priced in `billing/pricing.py`, so a sponsored turn is never
+# charged at a guess, and a request naming anything else is refused.
+AGENT_MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"

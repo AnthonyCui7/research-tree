@@ -5,7 +5,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
-from research_tree.llm import DEFAULT_MODEL
+from research_tree.llm import AGENT_MODELS, DEFAULT_MODEL
 from research_tree.agents.workspace.run import ProgressCallback, run_workspace_agent
 from research_tree.services.errors import (
     InvalidPayloadError,
@@ -112,6 +112,8 @@ class WorkspaceAgentService:
         model: str = DEFAULT_MODEL,
         on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
+        if model not in AGENT_MODELS:
+            raise InvalidPayloadError(f"model must be one of {', '.join(AGENT_MODELS)}.")
         safe_workspace_id = self.ensure_agent_available(workspace_id)
         active_thread_id = self.thread_id(safe_workspace_id, thread_id)
 

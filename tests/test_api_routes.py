@@ -514,3 +514,13 @@ def test_renaming_onto_a_topic_you_already_have_is_refused(client, repository) -
         "alpha",
         "beta",
     }
+
+
+def test_the_assistant_refuses_a_model_it_cannot_price(client, seed_workspace) -> None:
+    seed_workspace()
+    refused = client.post(
+        "/workspaces/workspace-1/agent", json={"message": "hello", "model": "gpt-9-imaginary"}
+    )
+    assert refused.status_code == 400
+    assert refused.json()["error_code"] == "invalid_payload"
+    assert "gpt-5.6-luna" in refused.json()["detail"]

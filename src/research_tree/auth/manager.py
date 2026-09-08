@@ -14,6 +14,7 @@ from fastapi_users.exceptions import InvalidPasswordException
 from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
 
 from research_tree.auth.db import get_user_db
+from research_tree.auth.google import USERINFO_ENDPOINT
 from research_tree.auth.models import User
 from research_tree.auth.accounts import revoke_sessions
 from research_tree.auth.settings import email_is_allowed, session_secret
@@ -49,7 +50,6 @@ UNVERIFIED_EMAIL_MESSAGE = (
     "Google has not verified the email address on that account, so it cannot be used "
     "to sign in here."
 )
-GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
@@ -189,7 +189,7 @@ async def _google_profile(access_token: str) -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
-                GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"}
+                USERINFO_ENDPOINT, headers={"Authorization": f"Bearer {access_token}"}
             )
             response.raise_for_status()
             payload = response.json()
