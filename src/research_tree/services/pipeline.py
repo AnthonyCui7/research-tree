@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import logging
 import os
@@ -25,14 +26,12 @@ from research_tree.principal import (
     Principal,
     auth_mode,
     bind_principal,
-    current_owner_id,
 )
 from research_tree.services.errors import (
     InvalidPayloadError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
 )
-from research_tree.services.tenancy import require_owned, require_run_owned
 from research_tree.services.topics import TopicReviewService, topic_slug
 from research_tree.services.validation import validate_resource_id
 from research_tree.llm import DEFAULT_MODEL
@@ -73,8 +72,10 @@ MODEL_STAGES = ("candidates", "construct", "hydrate")
 REUSABLE_ARTIFACTS = ("candidate_json", "paper_database_json")
 
 # Hands a reserved run to whatever executes it: `execute(run_id)` on a local
-# thread by default, the Celery queue when Redis is configured.
-Dispatch = Callable[[str, Callable[[str], None]], None]
+# thread by default, the Celery queue when Redis is configured. The owner goes
+# along because the queue has to bind a repository to that account before it
+# can read the run.
+Dispatch = Callable[[str, str, Callable[[str], None]], None]
 
 
 class WorkspacePipelineService:
@@ -112,9 +113,7 @@ class WorkspacePipelineService:
             raise InvalidPayloadError(
                 "Review the research focus again before building a workspace."
             )
-        workspace_id = self.repository.claim_workspace_id(
-            topic_slug(normalized_topic), owner_id=current_owner_id()
-        )
+        workspace_id = self.repository.claim_workspace_id(topic_slug(normalized_topic))
         return self._start(
             workspace_id=workspace_id,
             topic=normalized_topic,
@@ -135,7 +134,6 @@ class WorkspacePipelineService:
         if start_stage not in PIPELINE_STAGES:
             raise InvalidPayloadError(f"start_stage must be one of {PIPELINE_STAGES}.")
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
-        require_owned(self.repository, safe_workspace_id)
         try:
             workspace = self.repository.get_current_workspace(safe_workspace_id)
         except FileNotFoundError as error:
@@ -181,7 +179,6 @@ class WorkspacePipelineService:
             run = self.repository.get_pipeline_run(safe_run_id)
         except FileNotFoundError as error:
             raise WorkspaceNotFoundError(f"pipeline run does not exist: {safe_run_id}") from error
-        require_run_owned(run)
         return run
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
@@ -193,7 +190,6 @@ class WorkspacePipelineService:
 
     def list_runs(self, workspace_id: str) -> dict[str, Any]:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
-        require_owned(self.repository, safe_workspace_id)
         return {
             "workspace_id": safe_workspace_id,
             "pipeline_runs": self.repository.list_pipeline_runs(safe_workspace_id),
@@ -229,9 +225,10 @@ class WorkspacePipelineService:
             "requested_stages": list(PIPELINE_STAGES[start_index:]),
             "source_run_id": source_run.get("run_id") if source_run else None,
             "source_workspace_version_hash": source_version_hash,
-            # The account this run builds for; the workspace it publishes is
-            # owned by the same account. None for the local user.
-            "owner_id": current_owner_id(),
+            # The account this run builds for, which is the account the
+            # repository is bound to; the worker binds the same one before it
+            # reads the run.
+            "owner_id": self.repository.owner_id,
             "runner_pid": os.getpid(),
             # PID liveness only means anything on the machine that owns the
             # PID, so the reclaimer checks the host before trusting the probe.
@@ -250,7 +247,7 @@ class WorkspacePipelineService:
         except ValueError as error:
             raise InvalidPayloadError(str(error)) from error
         try:
-            self.dispatch(run_id, self._execute)
+            self.dispatch(self.repository.owner_id, run_id, self._execute)
         except Exception as error:  # noqa: BLE001 - the queue is down; do not leave a ghost run
             logger.exception("workspace pipeline could not be queued run_id=%s", run_id)
             self.repository.cancel_pipeline_runs(workspace_id)
@@ -265,15 +262,16 @@ class WorkspacePipelineService:
             except FileNotFoundError:
                 source_run = None
         # The thread (or worker) that runs this has no request context, so the
-        # run's owner is bound here: everything downstream that records an
-        # actor or resolves credentials sees the account that asked for it.
+        # account the repository is bound to is bound as the principal here:
+        # everything downstream that records an actor or resolves credentials
+        # sees the account that asked for the build.
         try:
-            principal = principal_for_owner_id(run.get("owner_id"))
+            principal = principal_for_owner_id(self.repository.owner_id)
         except WorkspaceServiceError as error:
             logger.error(
                 "workspace pipeline has no usable owner run_id=%s owner_id=%s",
                 run_id,
-                run.get("owner_id"),
+                self.repository.owner_id,
             )
             now = _now()
             run.update(
@@ -436,7 +434,6 @@ class WorkspacePipelineService:
                     },
                     expected_parent_version_hash=published_parent_hash,
                     pipeline_run_id=run_id,
-                    owner_id=run.get("owner_id"),
                 )
                 published_parent_hash = publish["version_hash"]
                 artifacts["core_workspace_version_hash"] = publish["version_hash"]
@@ -505,7 +502,6 @@ class WorkspacePipelineService:
                 event_payload={"pipeline_run_id": run_id, "stages": run["requested_stages"]},
                 expected_parent_version_hash=published_parent_hash,
                 pipeline_run_id=run_id,
-                owner_id=run.get("owner_id"),
             )
             artifacts["workspace_version_hash"] = publish["version_hash"]
             run.update(
@@ -845,16 +841,22 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _dispatch_local_thread(run_id: str, execute: Callable[[str], None]) -> None:
-    """Run the pipeline on a daemon thread of this process."""
+def _dispatch_local_thread(owner_id: str, run_id: str, execute: Callable[[str], None]) -> None:
+    """Run the pipeline on a daemon thread of this process.
 
+    `execute` is bound to the account's repository already, so the owner is
+    not needed here; the thread binds its own principal from the run.
+    """
+
+    del owner_id
     Thread(target=execute, args=(run_id,), name=f"research-tree-{run_id}", daemon=True).start()
 
 
-def _dispatch_celery(run_id: str, execute: Callable[[str], None]) -> None:
+def _dispatch_celery(owner_id: str, run_id: str, execute: Callable[[str], None]) -> None:
+    del execute  # the worker builds its own, bound to the owner
     from research_tree.tasks import run_pipeline
 
-    run_pipeline.delay(run_id)
+    run_pipeline.delay(owner_id, run_id)
 
 
 def default_pipeline_dispatch() -> Dispatch:
@@ -867,10 +869,13 @@ def default_pipeline_dispatch() -> Dispatch:
 
 def _run_in_daemon_thread(callback: Callable[[], Any], name: str) -> Future:
     future: Future = Future()
+    # The bound principal comes along: whatever the prefetch does is done as
+    # the account the build is for, not as nobody.
+    context = contextvars.copy_context()
 
     def run() -> None:
         try:
-            future.set_result(callback())
+            future.set_result(context.run(callback))
         except BaseException as error:  # noqa: BLE001
             future.set_exception(error)
 

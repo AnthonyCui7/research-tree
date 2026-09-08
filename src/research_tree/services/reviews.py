@@ -13,7 +13,6 @@ from research_tree.services.errors import (
     WorkspaceNotFoundError,
     WorkspaceServiceError,
 )
-from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import (
     as_mapping,
     validate_resource_id,
@@ -342,7 +341,6 @@ class WorkspaceReviewService:
         )
 
     def _load_current(self, workspace_id: str) -> dict[str, Any]:
-        require_owned(self.repository, workspace_id)
         try:
             return self.repository.get_current_workspace(workspace_id)
         except FileNotFoundError as error:

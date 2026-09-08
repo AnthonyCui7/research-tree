@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from research_tree.principal import acting_user_id, current_owner_id
+from research_tree.principal import acting_user_id
 from research_tree.services.errors import (
     InvalidPayloadError,
     ReviewConflictError,
@@ -10,7 +10,6 @@ from research_tree.services.errors import (
     WorkspaceServiceError,
 )
 from research_tree.services.reviews import validate_workspace_proposal
-from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.diff import derive_operations_and_diff_summary
@@ -60,7 +59,7 @@ class WorkspaceEditService:
         topic_key = normalized_topic_key(topic)
         if not topic_key:
             return
-        for other in self.repository.list_workspaces(owner_id=current_owner_id()):
+        for other in self.repository.list_workspaces():
             if other["workspace_id"] == workspace_id:
                 continue
             if normalized_topic_key(str(other.get("topic") or other.get("title") or "")) == topic_key:
@@ -82,7 +81,6 @@ class WorkspaceEditService:
             raise InvalidPayloadError(
                 f"an edit applies at most {MAX_OPERATIONS_PER_EDIT} operations."
             )
-        require_owned(self.repository, safe_workspace_id)
         current = self._load_current(safe_workspace_id)
         current_hash = workspace_version_hash(current)
         if expected_version_hash and expected_version_hash != current_hash:

@@ -42,6 +42,7 @@ from research_tree.services.edits import WorkspaceEditService
 from research_tree.services.pipeline import WorkspacePipelineService
 from research_tree.services.topics import TopicReviewService
 from research_tree.services.workspaces import WorkspaceQueryService
+from research_tree.workspace.postgres_repository import RUN_CHANNEL_PREFIX, workspaces_channel
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -56,8 +57,6 @@ NOTIFIED_POLL_SECONDS = 10.0
 # Proxies drop idle connections; a comment line keeps them open without
 # looking like an event to the client.
 HEARTBEAT_SECONDS = 15.0
-WORKSPACES_CHANNEL = "research_tree:workspaces"
-RUN_CHANNEL_PREFIX = "research_tree:runs:"
 
 
 @router.post("/topic-review", response_model=TopicReviewResponse)
@@ -145,7 +144,8 @@ async def stream_workspace_updates(
     async def event_stream():
         previous_signature: str | None = None
         since_heartbeat = 0.0
-        async with _ChangeSignal(WORKSPACES_CHANNEL, COLLECTION_POLL_SECONDS) as changes:
+        channel = workspaces_channel(service.repository.owner_id)
+        async with _ChangeSignal(channel, COLLECTION_POLL_SECONDS) as changes:
             while True:
                 if await request.is_disconnected() or not await _still_signed_in():
                     return

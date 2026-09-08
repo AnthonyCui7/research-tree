@@ -3,8 +3,10 @@
 Reads workspaces, versions, navigation, events, reviews, and pipeline runs
 through the JSON repository and writes them through the Postgres one, so the
 two stores agree on every invariant. Per-paper text and annotations go to the
-artifact store. Running it twice is a no-op: versions and events are keyed by
-content, reviews are overwritten with the files' copy.
+artifact store. Everything lands under one owner: the account named by
+`--owner-email`, or the local user on a deployment without accounts. Running
+it twice is a no-op: versions and events are keyed by content, reviews are
+overwritten with the files' copy.
 
 Run inside the deployed container:
 
@@ -24,7 +26,8 @@ from sqlalchemy import text
 
 from research_tree.artifact_store import default_artifact_store
 from research_tree.db import DATABASE_URL_ENV, database_url, make_engine
-from research_tree.paths import data_root, workspaces_dir
+from research_tree.paths import data_root
+from research_tree.principal import LOCAL_USER_ID
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.postgres_repository import PostgresWorkspaceRepository
 from research_tree.workspace.repository import (
@@ -39,7 +42,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="research-tree-import-data", description=__doc__)
     parser.add_argument("--data-dir", default=None, help="the JSON data root (default: RESEARCH_TREE_DATA_DIR)")
     parser.add_argument("--database-url", default=None, help=f"overrides {DATABASE_URL_ENV}")
-    parser.add_argument("--owner-email", default=None, help="account that will own the imported workspaces")
+    parser.add_argument(
+        "--owner-email",
+        default=None,
+        help="the account that will own everything imported (default: the local user)",
+    )
     parser.add_argument("--workspace-id", action="append", default=[], help="import only these ids (repeatable)")
     parser.add_argument("--s2-cache", action="store_true", help="also copy the Semantic Scholar cache to the artifact store")
     parser.add_argument("--dry-run", action="store_true", help="report what would be written and stop")
@@ -56,19 +63,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     engine = make_engine(url, pool_size=2, max_overflow=1)
-    artifacts = default_artifact_store()
-    source = LocalJsonWorkspaceRepository(source_dir)
-    target = PostgresWorkspaceRepository(engine, artifacts=artifacts)
-
-    owner_id = None
+    owner_id = LOCAL_USER_ID
     if args.owner_email:
-        from research_tree.auth.accounts import user_id_for_email
-
-        with _engine_env(url):
-            owner_id = user_id_for_email(args.owner_email)
-        if owner_id is None:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text('SELECT id FROM "user" WHERE lower(email) = lower(:email)'),
+                {"email": args.owner_email.strip()},
+            ).first()
+        if row is None:
             print(f"no account with email {args.owner_email}; sign in once first.", file=sys.stderr)
             return 2
+        owner_id = str(row[0])
+    artifacts = default_artifact_store()
+    source = LocalJsonWorkspaceRepository(source_dir)
+    target = PostgresWorkspaceRepository(engine, owner_id=owner_id, artifacts=artifacts)
 
     workspace_ids = args.workspace_id or [
         path.name
@@ -77,14 +85,18 @@ def main(argv: list[str] | None = None) -> int:
     ]
     totals = {"workspaces": 0, "versions": 0, "events": 0, "agent_events": 0, "reviews": 0, "artifacts": 0, "runs": 0}
     for workspace_id in workspace_ids:
-        counts = _import_workspace(source, target, engine, workspace_id, owner_id, dry_run=args.dry_run)
+        counts = _import_workspace(source, target, engine, workspace_id, dry_run=args.dry_run)
         for key, value in counts.items():
             totals[key] += value
         print(f"{workspace_id}: " + ", ".join(f"{k}={v}" for k, v in counts.items() if v))
     totals["runs"] = _import_runs(source_dir, engine, owner_id, workspace_ids, dry_run=args.dry_run)
     if args.s2_cache:
         totals["artifacts"] += _import_s2_cache(root, artifacts, dry_run=args.dry_run)
-    print(("would write " if args.dry_run else "wrote ") + ", ".join(f"{k}={v}" for k, v in totals.items()))
+    print(
+        ("would write " if args.dry_run else "wrote ")
+        + ", ".join(f"{k}={v}" for k, v in totals.items())
+        + f" for {owner_id}"
+    )
     return 0
 
 
@@ -93,7 +105,6 @@ def _import_workspace(
     target: PostgresWorkspaceRepository,
     engine: Any,
     workspace_id: str,
-    owner_id: str | None,
     *,
     dry_run: bool,
 ) -> dict[str, int]:
@@ -147,22 +158,21 @@ def _import_workspace(
     if dry_run:
         return counts
 
+    owner_id = target.owner_id
     summary = workspace_summary(workspace_id, current)
     with engine.begin() as conn:
-        conn.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"workspace:{workspace_id}"}
-        )
+        target._lock_workspace(conn, workspace_id)
         conn.execute(
             text(
                 """
-                INSERT INTO workspaces (id, owner_id, topic, title, topic_key)
-                VALUES (:id, CAST(:owner_id AS uuid), :topic, :title, :topic_key)
-                ON CONFLICT (id) DO UPDATE SET owner_id = COALESCE(workspaces.owner_id, EXCLUDED.owner_id)
+                INSERT INTO workspaces (owner_id, id, topic, title, topic_key)
+                VALUES (:owner, :id, :topic, :title, :topic_key)
+                ON CONFLICT (owner_id, id) DO NOTHING
                 """
             ),
             {
+                "owner": owner_id,
                 "id": workspace_id,
-                "owner_id": owner_id,
                 "topic": summary["topic"],
                 "title": summary["title"],
                 "topic_key": normalized_topic_key(summary["topic"] or summary["title"]),
@@ -184,12 +194,19 @@ def _import_workspace(
             conn.execute(
                 text(
                     """
-                    INSERT INTO workspace_versions (workspace_id, version_hash, document, metadata)
-                    VALUES (:id, :hash, CAST(:document AS json), CAST(:metadata AS jsonb))
-                    ON CONFLICT (workspace_id, version_hash) DO NOTHING
+                    INSERT INTO workspace_versions
+                        (owner_id, workspace_id, version_hash, document, metadata)
+                    VALUES (:owner, :id, :hash, CAST(:document AS json), CAST(:metadata AS jsonb))
+                    ON CONFLICT (owner_id, workspace_id, version_hash) DO NOTHING
                     """
                 ),
-                {"id": workspace_id, "hash": version_hash, "document": json.dumps(document), "metadata": json.dumps(item)},
+                {
+                    "owner": owner_id,
+                    "id": workspace_id,
+                    "hash": version_hash,
+                    "document": json.dumps(document),
+                    "metadata": json.dumps(item),
+                },
             )
         target._update_head(conn, workspace_id, summary)
         if not hashes:
@@ -203,12 +220,15 @@ def _import_workspace(
             conn.execute(
                 text(
                     """
-                    INSERT INTO workspace_events (workspace_id, event_id, event_type, review_id, payload)
-                    VALUES (:workspace_id, :event_id, :event_type, :review_id, CAST(:payload AS jsonb))
+                    INSERT INTO workspace_events
+                        (owner_id, workspace_id, event_id, event_type, review_id, payload)
+                    VALUES (:owner, :workspace_id, :event_id, :event_type, :review_id,
+                            CAST(:payload AS jsonb))
                     ON CONFLICT (event_id) DO NOTHING
                     """
                 ),
                 {
+                    "owner": owner_id,
                     "workspace_id": workspace_id,
                     "event_id": str(event.get("event_id")),
                     "event_type": str(event.get("event_type") or ""),
@@ -220,12 +240,15 @@ def _import_workspace(
             conn.execute(
                 text(
                     """
-                    INSERT INTO agent_run_events (workspace_id, run_event_id, agent_run_id, status, payload)
-                    VALUES (:workspace_id, :run_event_id, :agent_run_id, :status, CAST(:payload AS jsonb))
+                    INSERT INTO agent_run_events
+                        (owner_id, workspace_id, run_event_id, agent_run_id, status, payload)
+                    VALUES (:owner, :workspace_id, :run_event_id, :agent_run_id, :status,
+                            CAST(:payload AS jsonb))
                     ON CONFLICT (run_event_id) DO NOTHING
                     """
                 ),
                 {
+                    "owner": owner_id,
                     "workspace_id": workspace_id,
                     "run_event_id": str(event.get("run_event_id")),
                     "agent_run_id": str(event.get("agent_run_id") or ""),
@@ -246,7 +269,7 @@ def _import_workspace(
     return counts
 
 
-def _import_runs(source_dir: Path, engine: Any, owner_id: str | None, workspace_ids: list[str], *, dry_run: bool) -> int:
+def _import_runs(source_dir: Path, engine: Any, owner_id: str, workspace_ids: list[str], *, dry_run: bool) -> int:
     runs_dir = source_dir / ".pipeline_runs"
     if not runs_dir.is_dir():
         return 0
@@ -262,34 +285,24 @@ def _import_runs(source_dir: Path, engine: Any, owner_id: str | None, workspace_
         if run.get("status") in {"queued", "running"}:
             # Nothing is executing it any more; say so rather than leave it active.
             run.update({"status": "failed", "current_stage": None, "error": "imported while active"})
-        if not run.get("owner_id"):
-            run["owner_id"] = owner_id
+        run["owner_id"] = owner_id
         count += 1
         if dry_run:
             continue
-        # A run imported before its owner had an account is claimed on a
-        # later pass with --owner-email, in the column and in the record the
-        # API reads; a run that already has an owner is left alone.
         with engine.begin() as conn:
             conn.execute(
                 text(
                     """
-                    INSERT INTO pipeline_runs (run_id, workspace_id, topic_key, owner_id, status, record)
-                    VALUES (:run_id, :workspace_id, :topic_key, CAST(:owner_id AS uuid), :status, CAST(:record AS jsonb))
-                    ON CONFLICT (run_id) DO UPDATE
-                    SET owner_id = COALESCE(pipeline_runs.owner_id, EXCLUDED.owner_id),
-                        record = CASE
-                            WHEN pipeline_runs.owner_id IS NULL AND EXCLUDED.owner_id IS NOT NULL
-                            THEN pipeline_runs.record || jsonb_build_object('owner_id', CAST(EXCLUDED.owner_id AS text))
-                            ELSE pipeline_runs.record END,
-                        updated_at = now()
+                    INSERT INTO pipeline_runs (run_id, owner_id, workspace_id, topic_key, status, record)
+                    VALUES (:run_id, :owner, :workspace_id, :topic_key, :status, CAST(:record AS jsonb))
+                    ON CONFLICT (run_id) DO NOTHING
                     """
                 ),
                 {
                     "run_id": str(run["run_id"]),
+                    "owner": owner_id,
                     "workspace_id": str(run.get("workspace_id") or "") or None,
                     "topic_key": normalized_topic_key(str(run.get("topic") or "")),
-                    "owner_id": run.get("owner_id"),
                     "status": str(run.get("status") or ""),
                     "record": json.dumps(run),
                 },
@@ -306,27 +319,6 @@ def _import_s2_cache(root: Path, artifacts: Any, *, dry_run: bool) -> int:
         for path in files:
             artifacts.put(f"s2/{path.stem}", path.read_bytes())
     return len(files)
-
-
-class _engine_env:
-    """Point the process-wide engine at the import target for one block."""
-
-    def __init__(self, url: str) -> None:
-        self._url = url
-
-    def __enter__(self) -> None:
-        import os
-
-        self._previous = os.environ.get(DATABASE_URL_ENV)
-        os.environ[DATABASE_URL_ENV] = self._url
-
-    def __exit__(self, *exc: object) -> None:
-        import os
-
-        if self._previous is None:
-            os.environ.pop(DATABASE_URL_ENV, None)
-        else:
-            os.environ[DATABASE_URL_ENV] = self._previous
 
 
 if __name__ == "__main__":

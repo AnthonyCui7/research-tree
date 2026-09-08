@@ -103,19 +103,22 @@ BUILD_SLOT_RETRY_SECONDS = 30
 
 
 @app.task(name="research_tree.run_pipeline", bind=True, max_retries=None)
-def run_pipeline(self, run_id: str) -> None:
+def run_pipeline(self, owner_id: str, run_id: str) -> None:
+    # The run is the account's, so the repository it executes through is
+    # bound to that account before anything is read.
     from research_tree.redis_client import get_redis
     from research_tree.services.pipeline import WorkspacePipelineService
 
+    repository = _repository().for_owner(owner_id)
     redis = get_redis()
     if redis is not None and not redis.set(BUILD_SLOT_KEY, run_id, nx=True, ex=BUILD_SLOT_TTL_SECONDS):
         holder = redis.get(BUILD_SLOT_KEY)
         if holder != run_id.encode("utf-8"):
             logger.info("build %s waits for the slot held by %s", run_id, holder)
-            _repository().touch_pipeline_run(run_id)
+            repository.touch_pipeline_run(run_id)
             raise self.retry(countdown=BUILD_SLOT_RETRY_SECONDS)
     try:
-        WorkspacePipelineService(_repository(), repo_root=REPO_ROOT)._execute(run_id)
+        WorkspacePipelineService(repository, repo_root=REPO_ROOT)._execute(run_id)
     finally:
         if redis is not None:
             _release_build_slot(redis, run_id)
@@ -131,9 +134,13 @@ def _release_build_slot(redis, run_id: str) -> None:
 
 @app.task(name="research_tree.generate_annotations")
 def generate_annotations(job_id: str) -> None:
-    from research_tree.services.annotations import PaperAnnotationService
+    from research_tree.services.annotations import PaperAnnotationService, load_annotation_job
 
-    PaperAnnotationService(_repository()).run_annotation_job(job_id)
+    job = load_annotation_job(job_id)
+    if job is None:
+        logger.info("annotation job %s expired before it ran", job_id)
+        return
+    PaperAnnotationService(_repository().for_owner(job["owner_id"])).run_annotation_job(job)
 
 
 @app.task(name="research_tree.keep_database_awake")

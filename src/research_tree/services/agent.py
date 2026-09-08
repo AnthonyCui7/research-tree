@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Callable
+from uuid import uuid4
 
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.llm import DEFAULT_MODEL
 from research_tree.agents.workspace.run import ProgressCallback, run_workspace_agent
 from research_tree.services.errors import (
+    InvalidPayloadError,
     ReviewConflictError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
 )
-from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id
 from research_tree.workspace.repository import WorkspaceRepository
 
@@ -21,18 +22,56 @@ logger = logging.getLogger("uvicorn.error")
 
 
 class WorkspaceAgentService:
+    """One account's assistant.
+
+    The graph is compiled per request around that account's repository, which
+    is what keeps its nodes from reading another account's workspaces. What
+    has to outlive a request is shared through `checkpointer` (conversation
+    state) and `cache` (the workspace context a node builds); both are keyed by
+    content, not by request.
+    """
+
     def __init__(
         self,
         repository: WorkspaceRepository,
         *,
+        checkpointer: Any = None,
+        cache: Any = None,
         graph: Any | None = None,
         graph_factory: GraphFactory | None = None,
     ) -> None:
         self.repository = repository
-        # A prebuilt graph is the production path: its checkpointer and node
-        # cache only mean something when the graph outlives one request.
+        self._checkpointer = checkpointer
+        self._cache = cache
         self._graph = graph
-        self.graph_factory = graph_factory or _default_graph_factory
+        self.graph_factory = graph_factory
+
+    def _graph_for_turn(self) -> Any:
+        if self._graph is not None:
+            return self._graph
+        if self.graph_factory is not None:
+            return self.graph_factory(self.repository)
+        return build_workspace_agent_graph(
+            workspace_repository=self.repository,
+            checkpointer=self._checkpointer,
+            cache=self._cache,
+        )
+
+    def thread_id(self, workspace_id: str, requested: str | None) -> str:
+        """The conversation thread a turn continues, or a new one.
+
+        Threads are stored by id alone, so the id carries the account and the
+        workspace it belongs to, and a request naming a thread outside its own
+        workspace is refused rather than resumed. Nothing reads the id back;
+        it only has to be unique and its own.
+        """
+
+        prefix = f"{self.repository.owner_id}:{workspace_id}:"
+        if requested is None:
+            return f"{prefix}{uuid4().hex[:12]}"
+        if not requested.startswith(prefix):
+            raise InvalidPayloadError("thread_id does not belong to this workspace.")
+        return requested
 
     def ensure_agent_available(self, workspace_id: str) -> str:
         """Everything that can refuse a turn before any model call is made.
@@ -42,7 +81,6 @@ class WorkspaceAgentService:
         """
 
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
-        require_owned(self.repository, safe_workspace_id)
         try:
             self.repository.get_current_workspace(safe_workspace_id)
         except FileNotFoundError as error:
@@ -75,9 +113,9 @@ class WorkspaceAgentService:
         on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         safe_workspace_id = self.ensure_agent_available(workspace_id)
+        active_thread_id = self.thread_id(safe_workspace_id, thread_id)
 
         try:
-            graph = self._graph or self.graph_factory(self.repository)
             result = run_workspace_agent(
                 {
                     "workspace_id": safe_workspace_id,
@@ -85,11 +123,11 @@ class WorkspaceAgentService:
                     "conversation_history": _bounded_conversation_history(
                         conversation_history or []
                     ),
-                    "thread_id": thread_id,
+                    "thread_id": active_thread_id,
                     "allow_pipeline_rerun": allow_pipeline_rerun,
                     "agent_model": model,
                 },
-                graph=graph,
+                graph=self._graph_for_turn(),
                 on_progress=on_progress,
             )
         except WorkspaceServiceError:
@@ -106,9 +144,9 @@ class WorkspaceAgentService:
             return {
                 "workspace_id": safe_workspace_id,
                 "status": "failed_exception",
-                # The request's thread id, so the client can continue the
+                # The turn's thread id, so the client can continue the
                 # conversation after a failed turn.
-                "thread_id": thread_id,
+                "thread_id": active_thread_id,
                 "final_response": "Assistant failed before completing the request.",
                 "errors": ["The assistant could not complete that request. Try again."],
                 "warnings": [],
@@ -132,10 +170,6 @@ class WorkspaceAgentService:
             "errors": output.get("errors") or [],
             "persisted_event_ids": output.get("persisted_event_ids") or [],
         }
-
-
-def _default_graph_factory(repository: WorkspaceRepository) -> Any:
-    return build_workspace_agent_graph(workspace_repository=repository)
 
 
 def _bounded_conversation_history(

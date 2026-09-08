@@ -15,7 +15,6 @@ def publish_workspace_version(
     event_payload: dict[str, Any],
     expected_parent_version_hash: str | None = None,
     pipeline_run_id: str | None = None,
-    owner_id: str | None = None,
 ) -> dict[str, Any]:
     workspace_id = str(workspace.get("workspace_id") or "").strip()
     if not workspace_id:
@@ -71,7 +70,6 @@ def publish_workspace_version(
         reason=reason,
         pipeline_run_id=pipeline_run_id,
         expected_version_hash=parent_hash,
-        owner_id=owner_id,
     )
     event_id = repository.append_workspace_event(
         workspace_id,

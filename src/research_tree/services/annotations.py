@@ -26,7 +26,7 @@ from research_tree.annotation import (
 )
 from research_tree.annotation.config import annotation_model, retrieval_mode
 from research_tree.artifact_store import ArtifactStore, default_artifact_store
-from research_tree.principal import bind_principal, current_principal
+from research_tree.principal import bind_principal
 from research_tree.retrieval.full_text import download_open_access_pdf
 from research_tree.services.errors import (
     InvalidPayloadError,
@@ -36,7 +36,6 @@ from research_tree.services.errors import (
     WorkspaceServiceError,
     public_service_error_message,
 )
-from research_tree.services.tenancy import require_owned
 from research_tree.services.validation import validate_resource_id
 from research_tree.workspace.repository import WorkspaceRepository, _paper_content_key
 
@@ -145,26 +144,26 @@ class PaperAnnotationService:
 
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
         safe_job_id = validate_resource_id(job_id, field_name="job_id")
-        require_owned(self.repository, safe_workspace_id)
         redis = self._redis_client()
         job = _load_job(redis, safe_job_id) if redis is not None else None
-        principal = current_principal()
         if (
             job is None
+            or job.get("owner_id") != self.repository.owner_id
             or job.get("workspace_id") != safe_workspace_id
-            or (principal is not None and not principal.is_local and job.get("user_id") != principal.user_id)
         ):
             raise WorkspaceNotFoundError(f"annotation job does not exist: {safe_job_id}")
         return _job_view(job)
 
     # ---- the worker side --------------------------------------------------
 
-    def run_annotation_job(self, job_id: str) -> None:
+    def run_annotation_job(self, job: dict[str, Any]) -> None:
         """Generate and store the annotations a job asked for.
 
-        Idempotent under redelivery: a job that is no longer queued is left
-        alone. The job's account is bound for the duration so ownership checks
-        and, later, credential resolution see the person who asked.
+        The service is bound to the job's account (`load_annotation_job` says
+        whose it is). Idempotent under redelivery: a job that is no longer
+        queued is left alone. The account is bound as the principal for the
+        duration so credential resolution and metering see the person who
+        asked.
         """
 
         from research_tree.services.pipeline import principal_for_owner_id
@@ -172,10 +171,9 @@ class PaperAnnotationService:
         redis = self._redis_client()
         if redis is None:
             raise RuntimeError("annotation jobs need Redis.")
-        job = _load_job(redis, job_id)
-        if job is None:
-            logger.info("annotation job %s expired before it ran", job_id)
-            return
+        job_id = str(job["job_id"])
+        if job.get("owner_id") != self.repository.owner_id:
+            raise ValueError(f"annotation job {job_id} belongs to another account.")
         if job.get("status") != "queued":
             logger.info("annotation job %s not started: status=%s", job_id, job.get("status"))
             return
@@ -184,7 +182,7 @@ class PaperAnnotationService:
         # gone away is a reason to fail the job, not to run it as somebody else.
         try:
             with bind_principal(
-                principal_for_owner_id(job.get("user_id")), feature="annotations"
+                principal_for_owner_id(self.repository.owner_id), feature="annotations"
             ):
                 _, safe_paper_id, card = self._locate_paper(job["workspace_id"], job["paper_id"])
                 pdf_bytes = self.artifacts.get(f"pdf/{job['pdf_sha256']}")
@@ -221,7 +219,7 @@ class PaperAnnotationService:
             _save_job(redis, {**job, "status": "completed"})
         finally:
             try:
-                redis.delete(_active_key(job["workspace_id"], job["paper_id"], job["mode"]))
+                redis.delete(self._active_key(job["workspace_id"], job["paper_id"], job["mode"]))
             except Exception:  # noqa: BLE001
                 pass
 
@@ -259,17 +257,16 @@ class PaperAnnotationService:
         pdf_bytes: bytes,
         pdf_sha256: str,
     ) -> dict[str, Any]:
-        active_key = _active_key(workspace_id, paper_id, mode)
+        active_key = self._active_key(workspace_id, paper_id, mode)
         existing_id = redis.get(active_key)
         if existing_id:
             existing = _load_job(redis, existing_id.decode("utf-8"))
             if existing is not None and existing.get("status") in {"queued", "running"}:
                 return _job_view(existing)
-        principal = current_principal()
         now = datetime.now(UTC).isoformat()
         job = {
             "job_id": f"annotation_{uuid4().hex}",
-            "user_id": principal.user_id if principal is not None and not principal.is_local else None,
+            "owner_id": self.repository.owner_id,
             "workspace_id": workspace_id,
             "paper_id": paper_id,
             "mode": mode,
@@ -346,7 +343,6 @@ class PaperAnnotationService:
         safe_paper_id = paper_id.strip()
         if not safe_paper_id or len(safe_paper_id) > 512:
             raise InvalidResourceIdError("paper_id must be between 1 and 512 characters.")
-        require_owned(self.repository, safe_workspace_id)
         try:
             workspace = self.repository.get_current_workspace(safe_workspace_id)
         except FileNotFoundError as error:
@@ -370,6 +366,12 @@ class PaperAnnotationService:
             return self.repository.get_paper_annotations(workspace_id, paper_id)
         except (FileNotFoundError, ValueError):
             return None
+
+    def _active_key(self, workspace_id: str, paper_id: str, mode: str) -> str:
+        return (
+            f"{ACTIVE_KEY_PREFIX}{self.repository.owner_id}:{workspace_id}:"
+            f"{_paper_content_key(paper_id)}:{mode}"
+        )
 
     def _download(self, card: dict[str, Any]) -> bytes:
         url = paper_pdf_url(card)
@@ -428,8 +430,16 @@ def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _active_key(workspace_id: str, paper_id: str, mode: str) -> str:
-    return f"{ACTIVE_KEY_PREFIX}{workspace_id}:{_paper_content_key(paper_id)}:{mode}"
+def load_annotation_job(job_id: str, *, redis: Any = None) -> dict[str, Any] | None:
+    """The job as queued, for the worker to bind its owner before running it."""
+
+    if redis is None:
+        from research_tree.redis_client import get_redis
+
+        redis = get_redis()
+    if redis is None:
+        raise RuntimeError("annotation jobs need Redis.")
+    return _load_job(redis, job_id)
 
 
 def _load_job(redis: Any, job_id: str) -> dict[str, Any] | None:

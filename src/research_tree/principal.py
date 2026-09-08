@@ -75,19 +75,15 @@ def current_principal() -> Principal | None:
 
 
 def acting_user_id() -> str:
-    """The id recorded as the actor of a change; the local user when unbound."""
+    """The id recorded as the actor of a change; the local user when unbound.
+
+    This is also the id a repository is bound to: what the acting principal
+    creates is theirs, under this id, whether it is an account or the one
+    implicit local user.
+    """
 
     principal = current_principal()
     return principal.user_id if principal is not None else LOCAL_USER_ID
-
-
-def current_owner_id() -> str | None:
-    """The account that owns what this request creates; None for the local user."""
-
-    principal = current_principal()
-    if principal is None or principal.is_local:
-        return None
-    return principal.user_id
 
 
 @contextmanager

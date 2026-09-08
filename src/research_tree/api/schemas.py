@@ -272,10 +272,11 @@ class WorkspaceReviewResponse(BaseModel):
 class AgentRunRequest(ClientRequest):
     message: str = Field(min_length=1, max_length=20_000)
     conversation_history: list[dict[str, str]] = Field(default_factory=list, max_length=24)
-    # Thread ids are persisted into event payloads, so they are constrained the
-    # same way workspace ids are.
+    # A thread id names the account and the workspace it belongs to ahead of
+    # its own suffix, so it is longer than a workspace id; the characters are
+    # the same set, since ids are persisted into event payloads.
     thread_id: str | None = Field(
-        default=None, max_length=180, pattern=r"^[A-Za-z0-9_.:-]+$"
+        default=None, max_length=254, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
     allow_pipeline_rerun: bool = False
     # `require_approval` was removed: proposals and reruns always become pending

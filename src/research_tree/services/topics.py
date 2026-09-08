@@ -13,7 +13,6 @@ from typing import Any
 
 from research_tree.credentials import openai_api_key
 from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
-from research_tree.principal import current_owner_id
 from research_tree.redis_client import get_redis
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
@@ -47,7 +46,7 @@ class TopicReviewService:
         # so first, without a Semantic Scholar request on its behalf.
         api_key = openai_api_key()
 
-        workspaces = self.repository.list_workspaces(owner_id=current_owner_id())
+        workspaces = self.repository.list_workspaces()
         source_paper = _linked_paper_metadata(raw_topic)
         if _is_web_link(raw_topic) and source_paper is None:
             result = _result(

@@ -13,13 +13,14 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator, Mapping, Protocol
 
+from research_tree.principal import LOCAL_USER_ID
 from research_tree.services.validation import MAX_RESOURCE_ID_LENGTH
 from research_tree.workspace.context import atomic_branch_count, workspace_version_hash
 
 
 ALLOWED_ACTOR_TYPES = {"user", "agent", "system"}
 DEFAULT_ACTOR_IDS = {
-    "user": "local_user",
+    "user": LOCAL_USER_ID,
     "agent": "workspace_agent",
     "system": "workspace_agent",
 }
@@ -29,13 +30,23 @@ _REPOSITORY_LOCKS_GUARD = RLock()
 
 
 class WorkspaceRepository(Protocol):
-    def list_workspaces(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
+    """One account's workspaces.
+
+    A repository is bound to its owner: every id it accepts or hands out is
+    that account's, and nothing another account built is reachable through
+    it. The API binds one per request from the signed-in principal
+    (`for_owner`); background work binds one from the run it was given.
+    """
+
+    owner_id: str
+
+    def for_owner(self, owner_id: str) -> "WorkspaceRepository":
         ...
 
-    def claim_workspace_id(self, base_id: str, *, owner_id: str | None = None) -> str:
+    def list_workspaces(self) -> list[dict[str, Any]]:
         ...
 
-    def get_workspace_owner_id(self, workspace_id: str) -> str | None:
+    def claim_workspace_id(self, base_id: str) -> str:
         ...
 
     def get_current_workspace(self, workspace_id: str) -> dict[str, Any]:
@@ -61,7 +72,6 @@ class WorkspaceRepository(Protocol):
         agent_run_id: str | None = None,
         pipeline_run_id: str | None = None,
         expected_version_hash: str | None = None,
-        owner_id: str | None = None,
     ) -> str:
         ...
 
@@ -344,7 +354,6 @@ class WorkspaceRepositoryBase:
         agent_run_id: str | None = None,
         pipeline_run_id: str | None = None,
         expected_version_hash: str | None = None,
-        owner_id: str | None = None,
     ) -> str:
         raise NotImplementedError
 
@@ -409,7 +418,6 @@ class WorkspaceRepositoryBase:
         agent_run_id: str | None = None,
         pipeline_run_id: str | None = None,
         expected_version_hash: str | None = None,
-        owner_id: str | None = None,
     ) -> str:
         if actor not in ALLOWED_ACTOR_TYPES:
             raise ValueError(f"unsupported workspace actor: {actor!r}")
@@ -426,7 +434,6 @@ class WorkspaceRepositoryBase:
                 agent_run_id=agent_run_id,
                 pipeline_run_id=pipeline_run_id,
                 expected_version_hash=expected_version_hash,
-                owner_id=owner_id,
             )
 
     def append_workspace_event(
@@ -1370,11 +1377,23 @@ class WorkspaceRepositoryBase:
 
 
 class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
+    """The file store: one data directory, one owner, the local user."""
+
+    owner_id = LOCAL_USER_ID
+
     def __init__(self, base_dir: Path | str) -> None:
         self.base_dir = Path(base_dir)
         lock_key = str(self.base_dir.resolve())
         with _REPOSITORY_LOCKS_GUARD:
             self._lock = _REPOSITORY_LOCKS.setdefault(lock_key, RLock())
+
+    def for_owner(self, owner_id: str) -> "LocalJsonWorkspaceRepository":
+        if owner_id != self.owner_id:
+            raise ValueError(
+                "the file store holds the local user's workspaces only; "
+                "accounts need RESEARCH_TREE_DATABASE_URL."
+            )
+        return self
 
     @contextmanager
     def _transaction(self, workspace_id: str | None = None) -> Iterator[None]:
@@ -1383,9 +1402,7 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
 
     # ---- workspaces -------------------------------------------------------
 
-    def list_workspaces(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
-        # Files carry no owner; a single-user data directory is all one tenant.
-        del owner_id
+    def list_workspaces(self) -> list[dict[str, Any]]:
         if not self.base_dir.is_dir():
             return []
 
@@ -1406,7 +1423,7 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
             summaries.append(workspace_summary(workspace_id, workspace))
         return order_workspace_summaries(summaries)
 
-    def claim_workspace_id(self, base_id: str, *, owner_id: str | None = None) -> str:
+    def claim_workspace_id(self, base_id: str) -> str:
         with self._lock:
             for candidate in _id_candidates(base_id):
                 directory = self._workspace_dir(candidate)
@@ -1437,9 +1454,6 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
             if isinstance(run, dict) and run.get("workspace_id") == workspace_id:
                 statuses.add(str(run.get("status") or ""))
         return bool(statuses) and not statuses & {"queued", "running"}
-
-    def get_workspace_owner_id(self, workspace_id: str) -> str | None:
-        return None
 
     def _get_current_workspace(self, ctx: Any, workspace_id: str) -> dict[str, Any]:
         path = self._workspace_dir(workspace_id) / "current.json"
@@ -1476,9 +1490,7 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
         agent_run_id: str | None = None,
         pipeline_run_id: str | None = None,
         expected_version_hash: str | None = None,
-        owner_id: str | None = None,
     ) -> str:
-        del owner_id  # files carry no owner
         actor_fields = _actor_fields(actor_type or actor, actor_id)
         if pipeline_run_id:
             active_run = self.get_pipeline_run(pipeline_run_id)

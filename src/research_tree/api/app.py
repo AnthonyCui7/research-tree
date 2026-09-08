@@ -15,7 +15,9 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from research_tree.agents.workspace.graph import build_workspace_agent_graph
+from langgraph.cache.memory import InMemoryCache
+from langgraph.checkpoint.memory import InMemorySaver
+
 from research_tree.api.auth import auth_dependency
 from research_tree.api.middleware import (
     BodyLimitMiddleware,
@@ -29,7 +31,6 @@ from research_tree.log_scrub import install_log_scrubbing
 from research_tree.principal import auth_mode
 from research_tree.redis_client import get_async_redis
 from research_tree.retrieval.env import load_dotenv_file
-from research_tree.services.agent import WorkspaceAgentService
 from research_tree.services.errors import WorkspaceServiceError, public_service_error_message
 from research_tree.workspace.repository import build_workspace_repository
 
@@ -43,22 +44,18 @@ logger = logging.getLogger("uvicorn.error")
 async def lifespan(app: FastAPI):
     """Build the long-lived objects once per process.
 
-    These used to be constructed per request, which quietly disabled the
-    agent's checkpointer and node cache: every call got a fresh graph with a
-    fresh InMemorySaver, so the thread_id handed back to the client could never
-    be resumed. With Postgres configured the checkpointer is Postgres too, so
-    a conversation thread survives a restart.
+    The repository is bound to each request's account by `get_repository`.
+    The assistant's checkpointer and context cache are shared here so a
+    conversation thread can be resumed and a workspace's context is built
+    once; the graph itself is compiled per request around the account's
+    repository. With Postgres configured the checkpointer is Postgres too, so
+    a thread survives a restart.
     """
 
-    repository = build_workspace_repository()
-    app.state.repository = repository
+    app.state.repository = build_workspace_repository()
     checkpointer, checkpoint_pool = _checkpointer()
-    app.state.agent_graph = build_workspace_agent_graph(
-        workspace_repository=repository, checkpointer=checkpointer
-    )
-    app.state.agent_service = WorkspaceAgentService(
-        repository, graph=app.state.agent_graph
-    )
+    app.state.agent_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
+    app.state.agent_cache = InMemoryCache()
     try:
         yield
     finally:

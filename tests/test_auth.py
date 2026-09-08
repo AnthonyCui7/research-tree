@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from research_tree.api.app import create_app
 from research_tree.api.dependencies import get_repository
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository, WorkspaceRepository
+from tests.conftest import owner_scoped
 
 TEST_DATABASE_URL_ENV = "RESEARCH_TREE_TEST_DATABASE_URL"
 SESSION_SECRET = "test-session-secret-that-is-long-enough-0123456789"
@@ -48,7 +49,7 @@ def accounts_client(
 
     throttle.reset()
     app = create_app()
-    app.dependency_overrides[get_repository] = lambda: repository
+    app.dependency_overrides[get_repository] = owner_scoped(repository)
     return TestClient(app)
 
 
@@ -160,9 +161,24 @@ def test_allowlist_gates_registration_and_every_request(
     assert accounts_client.get("/account/me").status_code == 403
 
 
+def _document(workspace_id: str, title: str) -> dict:
+    return {
+        "schema_version": "research_tree_workspace.v1",
+        "workspace_id": workspace_id,
+        "topic": title,
+        "title": title,
+        "root": {},
+        "tree": {"root_node_id": "root", "nodes": []},
+        "paper_paths": [],
+        "paper_cards": {},
+    }
+
+
 def test_two_accounts_see_disjoint_workspaces(
     accounts_client: TestClient, repository: WorkspaceRepository
 ) -> None:
+    """Each account has its own "shared"; neither can see the other's anything."""
+
     _postgres_only(repository)
     _register_and_sign_in(accounts_client, "one@example.com")
     one_id = accounts_client.get("/account/me").json()["user"]["id"]
@@ -170,31 +186,26 @@ def test_two_accounts_see_disjoint_workspaces(
     _register_and_sign_in(accounts_client, "two@example.com")
     two_id = accounts_client.get("/account/me").json()["user"]["id"]
 
-    for owner, workspace_id in ((one_id, "ws-one"), (two_id, "ws-two")):
-        repository.save_workspace_version(
+    for owner, workspace_id, title in (
+        (one_id, "shared", "Mine"),
+        (one_id, "mine-only", "Mine only"),
+        (two_id, "shared", "Theirs"),
+    ):
+        repository.for_owner(owner).save_workspace_version(
             workspace_id,
-            {
-                "schema_version": "research_tree_workspace.v1",
-                "workspace_id": workspace_id,
-                "topic": workspace_id,
-                "title": workspace_id,
-                "root": {},
-                "tree": {"root_node_id": "root", "nodes": []},
-                "paper_paths": [],
-                "paper_cards": {},
-            },
+            _document(workspace_id, title),
             actor="system",
             parent_version_hash=None,
             reason="seed",
-            owner_id=owner,
         )
 
     listed = accounts_client.get("/workspaces").json()["workspaces"]
-    assert [item["workspace_id"] for item in listed] == ["ws-two"]
-    assert accounts_client.get("/workspaces/ws-two").status_code == 200
-    assert accounts_client.get("/workspaces/ws-one").status_code == 404
-    assert accounts_client.get("/workspaces/ws-one/versions").status_code == 404
-    assert accounts_client.delete("/workspaces/ws-one").status_code == 404
+    assert [(item["workspace_id"], item["title"]) for item in listed] == [("shared", "Theirs")]
+    assert accounts_client.get("/workspaces/shared").json()["workspace"]["title"] == "Theirs"
+    assert accounts_client.get("/workspaces/mine-only").status_code == 404
+    assert accounts_client.get("/workspaces/mine-only/versions").status_code == 404
+    assert accounts_client.delete("/workspaces/mine-only").status_code == 404
+    assert repository.for_owner(one_id).get_current_workspace("shared")["title"] == "Mine"
 
 
 def test_stale_running_pipeline_is_reclaimed(repository: WorkspaceRepository) -> None:
@@ -365,7 +376,7 @@ def test_one_account_per_email_whatever_the_case(
 def test_two_accounts_building_one_topic_never_touch_each_other(
     accounts_client: TestClient, repository: WorkspaceRepository
 ) -> None:
-    """Both were handed the same name, and whoever finished second overwrote the first."""
+    """Both get "prompting", each their own; a name is only taken within an account."""
 
     _postgres_only(repository)
 
@@ -376,77 +387,95 @@ def test_two_accounts_building_one_topic_never_touch_each_other(
         assert created.status_code == 201, created.text
         return str(created.json()["id"])
 
-    first = account("racer-one@example.com")
-    second = account("racer-two@example.com")
+    first = repository.for_owner(account("racer-one@example.com"))
+    second = repository.for_owner(account("racer-two@example.com"))
 
     # Both start before either has published anything.
-    first_id = repository.claim_workspace_id("prompting", owner_id=first)
-    second_id = repository.claim_workspace_id("prompting", owner_id=second)
-    assert first_id == "prompting"
-    assert second_id == "prompting-2"
+    assert first.claim_workspace_id("prompting") == "prompting"
+    assert second.claim_workspace_id("prompting") == "prompting"
 
-    document = {
-        "schema_version": "research_tree_workspace.v1",
-        "workspace_id": first_id,
-        "topic": "Prompting",
-        "title": "Prompting",
-        "root": {},
-        "tree": {},
-        "paper_paths": [],
-        "paper_cards": {},
-    }
-    repository.save_workspace_version(
-        first_id, document, actor="system", parent_version_hash=None,
-        reason="built", owner_id=first,
+    first.save_workspace_version(
+        "prompting", _document("prompting", "Prompting"), actor="system",
+        parent_version_hash=None, reason="built",
     )
-    repository.save_workspace_version(
-        second_id, {**document, "workspace_id": second_id, "title": "Theirs"},
-        actor="system", parent_version_hash=None, reason="built", owner_id=second,
+    second.save_workspace_version(
+        "prompting", {**_document("prompting", "Prompting"), "title": "Theirs"}, actor="system",
+        parent_version_hash=None, reason="built",
     )
 
-    assert repository.get_current_workspace(first_id)["title"] == "Prompting"
-    assert repository.get_current_workspace(second_id)["title"] == "Theirs"
-    assert repository.get_workspace_owner_id(first_id) == first
-    assert repository.get_workspace_owner_id(second_id) == second
-
-
-def test_a_build_will_not_publish_into_another_accounts_workspace(
-    accounts_client: TestClient, repository: WorkspaceRepository
-) -> None:
-    """A backstop for the claim above: nothing may write into a name it does not hold."""
-
-    _postgres_only(repository)
-
-    created = accounts_client.post(
-        "/auth/register", json={"email": "holder@example.com", "password": "correct-horse-battery"}
-    )
-    assert created.status_code == 201, created.text
-    holder = str(created.json()["id"])
-    stranger = str(
-        accounts_client.post(
-            "/auth/register",
-            json={"email": "stranger@example.com", "password": "correct-horse-battery"},
-        ).json()["id"]
-    )
-    document = {
-        "schema_version": "research_tree_workspace.v1",
-        "workspace_id": "held",
-        "topic": "Held",
-        "title": "Held",
-        "root": {},
-        "tree": {},
-        "paper_paths": [],
-        "paper_cards": {},
-    }
-    repository.save_workspace_version(
-        "held", document, actor="system", parent_version_hash=None,
-        reason="built", owner_id=holder,
-    )
-
-    with pytest.raises(RuntimeError, match="took that name"):
-        repository.save_workspace_version(
-            "held", {**document, "title": "Someone else"}, actor="system",
-            parent_version_hash=None, reason="built", owner_id=stranger,
+    assert first.get_current_workspace("prompting")["title"] == "Prompting"
+    assert second.get_current_workspace("prompting")["title"] == "Theirs"
+    assert [item["title"] for item in first.list_workspaces()] == ["Prompting"]
+    assert [item["title"] for item in second.list_workspaces()] == ["Theirs"]
+    # The second account's next build of the same topic is the one that is refused.
+    with pytest.raises(ValueError, match="already exists"):
+        second.reserve_new_workspace_run(
+            {"run_id": "pipeline_again", "workspace_id": "prompting-2", "topic": "Prompting", "status": "queued"}
         )
 
-    assert repository.get_current_workspace("held")["title"] == "Held"
+
+def test_runs_and_reviews_are_the_accounts_own(
+    accounts_client: TestClient, repository: WorkspaceRepository
+) -> None:
+    """A run id is global, but only its owner can read, cancel or stream it."""
+
+    _postgres_only(repository)
+    _register_and_sign_in(accounts_client, "builder@example.com")
+    builder = repository.for_owner(accounts_client.get("/account/me").json()["user"]["id"])
+    builder.save_workspace_version(
+        "held", _document("held", "Held"), actor="system", parent_version_hash=None, reason="built"
+    )
+    builder.save_pipeline_run(
+        {"run_id": "pipeline_theirs", "workspace_id": "held", "status": "completed", "artifacts": {}}
+    )
+    builder.save_pending_review(
+        "held",
+        review_id="review-theirs",
+        agent_run_id="agent-1",
+        base_workspace_version_hash="a" * 64,
+        user_message="",
+        proposed_workspace=_document("held", "Held"),
+        proposed_operations=[],
+        diff_summary={},
+        validation_summary={},
+        interrupt_payload={},
+    )
+    assert accounts_client.get("/workspaces/pipeline-runs/pipeline_theirs").status_code == 200
+    assert accounts_client.get("/workspaces/held/reviews/review-theirs").status_code == 200
+
+    accounts_client.post("/auth/logout")
+    _register_and_sign_in(accounts_client, "stranger@example.com")
+    assert accounts_client.get("/workspaces/pipeline-runs/pipeline_theirs").status_code == 404
+    assert accounts_client.post("/workspaces/pipeline-runs/pipeline_theirs/cancel").status_code == 404
+    assert accounts_client.get("/workspaces/pipeline-runs/pipeline_theirs/events").status_code == 404
+    assert accounts_client.get("/workspaces/held/reviews/review-theirs").status_code == 404
+    # Runs are listed under a name the stranger may use; there are none of theirs.
+    assert accounts_client.get("/workspaces/held/pipeline-runs").json()["pipeline_runs"] == []
+    # The stranger's own "held" is a different workspace entirely.
+    stranger = repository.for_owner(accounts_client.get("/account/me").json()["user"]["id"])
+    stranger.save_workspace_version(
+        "held", _document("held", "Someone else"), actor="system", parent_version_hash=None, reason="built"
+    )
+    assert accounts_client.get("/workspaces/held").json()["workspace"]["title"] == "Someone else"
+    assert accounts_client.get("/workspaces/held/pipeline-runs").json()["pipeline_runs"] == []
+    assert builder.get_current_workspace("held")["title"] == "Held"
+
+
+def test_an_assistant_thread_stays_inside_its_workspace(
+    accounts_client: TestClient, repository: WorkspaceRepository
+) -> None:
+    """Conversation threads are stored by id alone, so the id carries its owner."""
+
+    from research_tree.services.agent import WorkspaceAgentService
+    from research_tree.services.errors import InvalidPayloadError
+
+    _postgres_only(repository)
+    _register_and_sign_in(accounts_client, "talker@example.com")
+    owner = accounts_client.get("/account/me").json()["user"]["id"]
+    service = WorkspaceAgentService(repository.for_owner(owner))
+    fresh = service.thread_id("held", None)
+    assert fresh.startswith(f"{owner}:held:")
+    assert service.thread_id("held", fresh) == fresh
+    for foreign in ("workspace-agent:held:abc123", f"{owner}:other:abc123", "someone-else:held:abc123"):
+        with pytest.raises(InvalidPayloadError):
+            service.thread_id("held", foreign)

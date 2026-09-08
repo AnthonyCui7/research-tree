@@ -1,9 +1,19 @@
+"""What a request handler is handed: the acting account's repository and services.
+
+The lifespan builds one repository per process; `get_repository` binds it to
+the account behind the request, so every service below sees that account's
+workspaces and nothing else. The binding is the whole of authorization for
+workspace data: a handler cannot name another account's workspace because the
+repository it holds has no way to reach one.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from fastapi import Depends, Request
 
+from research_tree.principal import acting_user_id
 from research_tree.services.agent import WorkspaceAgentService
 from research_tree.services.annotations import PaperAnnotationService
 from research_tree.services.edits import WorkspaceEditService
@@ -18,12 +28,13 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def get_repository(request: Request) -> WorkspaceRepository:
-    # The lifespan builds one repository per process. Constructing one here is
-    # the fallback for apps created without it (tests build them directly).
+    # The router-level auth dependency has bound the principal by the time a
+    # handler's own dependencies resolve; apps created without a lifespan
+    # (tests build them directly) get a repository constructed here.
     repository = getattr(request.app.state, "repository", None)
-    if repository is not None:
-        return repository
-    return build_workspace_repository()
+    if repository is None:
+        repository = build_workspace_repository()
+    return repository.for_owner(acting_user_id())
 
 
 def get_workspace_query_service(
@@ -48,12 +59,13 @@ def get_workspace_agent_service(
     request: Request,
     repository: WorkspaceRepository = Depends(get_repository),
 ) -> WorkspaceAgentService:
-    # Reuse the process-wide service: it owns the compiled graph, whose
-    # checkpointer and node cache are worthless if rebuilt per request.
-    service = getattr(request.app.state, "agent_service", None)
-    if service is not None and service.repository is repository:
-        return service
-    return WorkspaceAgentService(repository)
+    # The graph is compiled per request around this account's repository;
+    # the checkpointer and the context cache are the process-wide parts.
+    return WorkspaceAgentService(
+        repository,
+        checkpointer=getattr(request.app.state, "agent_checkpointer", None),
+        cache=getattr(request.app.state, "agent_cache", None),
+    )
 
 
 def get_workspace_review_service(

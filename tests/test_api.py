@@ -455,7 +455,7 @@ def test_agent_request_passes_bounded_conversation_history(repository) -> None:
         "/workspaces/workspace-1/agent",
         json={
             "message": "Use that previous point.",
-            "thread_id": "thread-1",
+            "thread_id": "local_user:workspace-1:thread-1",
             "conversation_history": [
                 {"role": "user", "text": "First question."},
                 {"role": "assistant", "text": "First answer."},
@@ -464,7 +464,7 @@ def test_agent_request_passes_bounded_conversation_history(repository) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["thread_id"] == "thread-1"
+    assert response.json()["thread_id"] == "local_user:workspace-1:thread-1"
     assert captured["graph_input"]["conversation_history"] == [
         {"role": "user", "text": "First question."},
         {"role": "assistant", "text": "First answer."},
@@ -811,7 +811,7 @@ def test_failed_pipeline_does_not_publish_a_partial_workspace(repository) -> Non
     service = WorkspacePipelineService(
         repository,
         repo_root=_temp_dir(),
-        dispatch=lambda run_id, execute: execute(run_id),
+        dispatch=lambda owner_id, run_id, execute: execute(run_id),
     )
 
     with patch(
@@ -832,7 +832,7 @@ def test_workspace_pipeline_always_uses_luna_for_construction(repository) -> Non
     service = WorkspacePipelineService(
         repository,
         repo_root=_temp_dir(),
-        dispatch=lambda run_id, execute: execute(run_id),
+        dispatch=lambda owner_id, run_id, execute: execute(run_id),
     )
 
     with patch(
@@ -868,7 +868,7 @@ def test_failed_partial_rerun_keeps_source_artifacts_unchanged(repository) -> No
     service = WorkspacePipelineService(
         repository,
         repo_root=repo_root,
-        dispatch=lambda run_id, execute: execute(run_id),
+        dispatch=lambda owner_id, run_id, execute: execute(run_id),
     )
 
     with (

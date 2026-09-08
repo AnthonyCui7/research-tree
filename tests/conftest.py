@@ -12,6 +12,7 @@ from research_tree.api.dependencies import get_repository
 from research_tree.billing.keywrap import forget_key_wrapper
 from research_tree.credentials import forget_user_key
 from research_tree.db import get_engine
+from research_tree.principal import acting_user_id
 from research_tree.redis_client import forget_redis_clients
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository, WorkspaceRepository
 
@@ -215,12 +216,23 @@ def redis_env(redis_client, monkeypatch: pytest.MonkeyPatch):
     forget_redis_clients()
 
 
+def owner_scoped(repository: WorkspaceRepository) -> Callable[[], WorkspaceRepository]:
+    """What `get_repository` does in the app, over a test's repository.
+
+    The request's principal decides whose workspaces a handler sees; with
+    accounts off that is always the local user, so the fixture repository
+    itself.
+    """
+
+    return lambda: repository.for_owner(acting_user_id())
+
+
 @pytest.fixture
 def client(repository: WorkspaceRepository) -> TestClient:
     """A TestClient whose routes all share `repository`."""
 
     app = create_app()
-    app.dependency_overrides[get_repository] = lambda: repository
+    app.dependency_overrides[get_repository] = owner_scoped(repository)
     return TestClient(app)
 
 

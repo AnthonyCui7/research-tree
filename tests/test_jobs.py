@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from research_tree.api.dependencies import get_paper_annotation_service
 from research_tree.artifact_store import FilesystemArtifactStore
 from research_tree.retrieval.cache import RateLimiter
-from research_tree.services.annotations import PaperAnnotationService
+from research_tree.services.annotations import PaperAnnotationService, load_annotation_job
 from research_tree.services.pipeline import (
     _dispatch_celery,
     _dispatch_local_thread,
@@ -74,9 +74,9 @@ def test_annotation_miss_becomes_a_job_the_worker_completes(client: TestClient, 
     status_url = f"/workspaces/sampling/paper-annotations/jobs/{job['job_id']}"
     assert client.get(status_url).json()["status"] == "queued"
 
-    service.run_annotation_job(job["job_id"])
+    service.run_annotation_job(load_annotation_job(job["job_id"], redis=service._redis))
     # Redelivery is harmless: a finished job is left alone.
-    service.run_annotation_job(job["job_id"])
+    service.run_annotation_job(load_annotation_job(job["job_id"], redis=service._redis))
     assert annotator.calls == 1
     assert client.get(status_url).json()["status"] == "completed"
 
@@ -92,7 +92,7 @@ def test_a_failed_job_reports_why(client: TestClient, job_service) -> None:
     client.app.dependency_overrides[get_paper_annotation_service] = lambda: service
 
     job = client.get(annotations_url()).json()
-    service.run_annotation_job(job["job_id"])
+    service.run_annotation_job(load_annotation_job(job["job_id"], redis=service._redis))
 
     status = client.get(f"/workspaces/sampling/paper-annotations/jobs/{job['job_id']}").json()
     assert status["status"] == "failed"
@@ -230,7 +230,7 @@ class _RecordingRedis:
 
 
 def test_the_postgres_repository_announces_committed_changes(postgres_engine, tmp_path) -> None:
-    from research_tree.workspace.postgres_repository import PostgresWorkspaceRepository
+    from research_tree.workspace.postgres_repository import PostgresWorkspaceRepository, workspaces_channel
 
     redis = _RecordingRedis()
     repository = PostgresWorkspaceRepository(
@@ -253,12 +253,12 @@ def test_the_postgres_repository_announces_committed_changes(postgres_engine, tm
         parent_version_hash=None,
         reason="seed",
     )
-    assert redis.channels == ["research_tree:workspaces"]
+    assert redis.channels == [workspaces_channel(repository.owner_id)]
     run_id = f"pipeline_{uuid.uuid4().hex}"
     repository.save_pipeline_run(
         {"run_id": run_id, "workspace_id": workspace_id, "status": "completed", "artifacts": {}}
     )
-    assert redis.channels[1:] == [f"research_tree:runs:{run_id}", "research_tree:workspaces"]
+    assert redis.channels[1:] == [f"research_tree:runs:{run_id}", workspaces_channel(repository.owner_id)]
     # A read that changes nothing announces nothing.
     repository.list_pipeline_runs(workspace_id)
     assert len(redis.channels) == 3
@@ -290,18 +290,22 @@ def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPa
             assert redis_env.get(tasks.BUILD_SLOT_KEY) == run_id.encode("utf-8")
 
     class Repository:
+        def for_owner(self, owner_id: str) -> "Repository":
+            assert owner_id == "local_user"
+            return self
+
         def touch_pipeline_run(self, run_id: str) -> None:
             touched.append(run_id)
 
     monkeypatch.setattr("research_tree.services.pipeline.WorkspacePipelineService", Service)
     monkeypatch.setattr(tasks, "_repository", lambda: Repository())
-    tasks.run_pipeline.apply(args=["pipeline_one"], throw=True)
+    tasks.run_pipeline.apply(args=["local_user", "pipeline_one"], throw=True)
     assert executed == ["pipeline_one"]
     assert redis_env.get(tasks.BUILD_SLOT_KEY) is None
 
     redis_env.set(tasks.BUILD_SLOT_KEY, "pipeline_other")
     with pytest.raises(Retry):
-        tasks.run_pipeline.apply(args=["pipeline_two"], throw=True)
+        tasks.run_pipeline.apply(args=["local_user", "pipeline_two"], throw=True)
     assert executed == ["pipeline_one"]
     assert touched == ["pipeline_two"]
     assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"pipeline_other"
