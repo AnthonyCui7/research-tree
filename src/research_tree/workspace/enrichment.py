@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Mapping
 
@@ -16,6 +17,8 @@ from research_tree.retrieval.semantic_scholar import (
 from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.schemas import CandidatePaperMetadata
 from research_tree.workspace.tldr import TldrGenerator, apply_generated_tldr
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def prefetch_paper_content(
@@ -149,8 +152,11 @@ def load_paper_content_context(
     for paper_id in dict.fromkeys(paper_ids):
         try:
             content = repository.get_paper_content(workspace_id, paper_id)
-        except (FileNotFoundError, OSError, ValueError) as error:
-            warnings.append(f"Full text could not be loaded for {paper_id}: {error}")
+        except (FileNotFoundError, OSError, ValueError):
+            # The reason is a storage path or key, which belongs in the log,
+            # not in a review payload the browser renders.
+            logger.info("full text unavailable workspace_id=%s paper_id=%s", workspace_id, paper_id)
+            warnings.append(f"Full text is not available for {paper_id}.")
             continue
         contents[paper_id] = content
     return contents, warnings

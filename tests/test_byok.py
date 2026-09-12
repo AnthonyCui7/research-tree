@@ -24,6 +24,7 @@ from research_tree.billing.keywrap import (
 from research_tree.billing.pricing import cost_usd, price_for
 from research_tree.billing.usage import TokenUsage, record_llm_usage, usage_from_response
 from research_tree.billing.user_keys import open_secret, seal_secret
+from research_tree.llm import call_responses_api
 from research_tree.principal import LOCAL_PRINCIPAL, Principal, bind_principal, current_binding
 from research_tree.services.errors import AllowanceExhaustedError, NoLlmCredentialsError
 from test_auth import _postgres_only, _register_and_sign_in, accounts_client  # noqa: F401 - fixture
@@ -93,7 +94,6 @@ def _fake_stores(
     monkeypatch.setenv(
         "RESEARCH_TREE_DATABASE_URL", "postgresql+psycopg://nobody:nothing@127.0.0.1:1/none"
     )
-    credentials.forget_user_key()
 
 
 def test_the_local_profile_spends_the_environment_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,24 +140,6 @@ def test_nothing_to_spend_is_a_402(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY")
     with bind_principal(ACCOUNT), pytest.raises(NoLlmCredentialsError):
         credentials.openai_api_key()
-
-
-def test_account_keys_are_cached_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    loads: list[str] = []
-
-    def load(user_id: str) -> str:
-        loads.append(user_id)
-        return SECRET
-
-    _fake_stores(monkeypatch)
-    monkeypatch.setattr(credentials, "_load_user_key", load)
-    with bind_principal(ACCOUNT):
-        credentials.openai_api_key()
-        credentials.openai_api_key()
-        assert loads == [ACCOUNT.user_id]
-        credentials.forget_user_key(ACCOUNT.user_id)
-        credentials.openai_api_key()
-        assert len(loads) == 2
 
 
 # ---- prices and metering ----------------------------------------------------
@@ -265,7 +247,6 @@ def test_saving_a_key_checks_it_stores_it_sealed_and_never_echoes_it(
 
     # The resolver spends the account's own key, not the platform one.
     monkeypatch.setenv("OPENAI_API_KEY", PLATFORM_KEY)
-    credentials.forget_user_key()
     with bind_principal(Principal(user_id=user_id, email="keys@example.com", is_verified=True)):
         assert credentials.openai_api_key() == SECRET
         assert current_binding().credential_source == "byok"
@@ -349,7 +330,6 @@ def test_allowances_attach_to_verified_accounts_and_spend_down(
     assert accounts_client.get("/account/api-keys").json()["allowance"]["remaining_usd"] == 1.0
 
     monkeypatch.setenv("OPENAI_API_KEY", PLATFORM_KEY)
-    credentials.forget_user_key()
     principal = Principal(user_id=user_id, email="friend@example.com", is_verified=True)
     with bind_principal(principal, feature="test", request_id="r1"):
         assert credentials.openai_api_key() == PLATFORM_KEY
@@ -359,6 +339,16 @@ def test_allowances_attach_to_verified_accounts_and_spend_down(
             raw_response={"usage": {"input_tokens": 100_000, "output_tokens": 20_000}},
             label="test call",
         )
+        # The charge that emptied the allowance stops the very next call of
+        # the same piece of work, before it reaches the provider.
+        assert current_binding().spend.exhausted is True
+        with pytest.raises(AllowanceExhaustedError):
+            call_responses_api(
+                {"model": "gpt-5.6-luna", "input": "x"},
+                api_key=PLATFORM_KEY,
+                timeout_seconds=1.0,
+                label="next call",
+            )
     summary = allowance_summary(user_id, "friend@example.com", verified=True)
     assert summary["spent_usd"] == pytest.approx(1.10)
     assert summary["exhausted"] is True

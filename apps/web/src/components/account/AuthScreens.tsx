@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import { cx } from "../../lib/cx";
-import { messageFrom } from "../../lib/apiError";
+import { ApiError, messageFrom } from "../../lib/apiError";
 import { register, signIn, signInWithGoogle } from "../../data/session";
 import { SignInBackdrop } from "./SignInBackdrop";
 
@@ -64,6 +64,10 @@ export function AuthScreens({ notice, initialMode = "sign-in" }: AuthScreensProp
       }
     } catch (requestError) {
       setError(authError(requestError, mode));
+    } finally {
+      // A sign-in that succeeded but whose session was then refused (the
+      // address is off the allowlist) resolves without throwing; the store
+      // shows the reason above, and the form has to be usable under it.
       setBusy(null);
     }
   }
@@ -262,8 +266,8 @@ function FieldError({ id, children }: { id: string; children: ReactNode }) {
 
 function authError(error: unknown, mode: AuthMode): AuthError {
   const message = messageFrom(error);
-  const code = (error as { code?: string })?.code ?? "";
-  const status = (error as { status?: number })?.status;
+  const code = error instanceof ApiError ? error.code : "";
+  const status = error instanceof ApiError ? error.status : undefined;
   if (code === "LOGIN_BAD_CREDENTIALS" || (mode === "sign-in" && status === 400)) {
     return { field: "password", message: "Incorrect email or password." };
   }

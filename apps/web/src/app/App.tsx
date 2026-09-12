@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell, type UtilityPanel } from "../components/layout/AppShell";
 import { useWorkspaceCollection } from "../data/useWorkspaceCollection";
 import { useActiveWorkspace } from "../data/useActiveWorkspace";
+import { repositoryWorkspaceGateway } from "../data/workspaceApi";
 import { normalizeWorkspaceForTree } from "../lib/workspaceAdapter";
+import { isRunActive } from "../lib/pipelineStages";
 import type { PipelineRun, TreeNodeId, TreeViewModel } from "../lib/types";
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "research-tree.sidebar-collapsed";
@@ -28,6 +30,29 @@ export function App() {
     }
   });
   const [buildingRun, setBuildingRun] = useState<PipelineRun | null>(null);
+
+  // A build lives on the server; the page only watches it. A page reloaded
+  // mid-build has no other way to find the build again: the workspace is not
+  // listed until its first version lands, so the sidebar would show nothing
+  // and offer a second build. Asked once, when the collection first loads.
+  const recoveredRunsRef = useRef(false);
+  useEffect(() => {
+    if (status !== "ready" || recoveredRunsRef.current) return;
+    recoveredRunsRef.current = true;
+    let cancelled = false;
+    repositoryWorkspaceGateway
+      .listActivePipelineRuns()
+      .then((runs) => {
+        const newest = runs.find(isRunActive) ?? null;
+        if (!cancelled && newest) setBuildingRun((current) => current ?? newest);
+      })
+      // A build that cannot be recovered is a build the sidebar does not
+      // show until it lands; nothing else is lost.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
 
   const activeSummary = useMemo(() => {
     if (workspaces.length === 0) {
@@ -113,12 +138,17 @@ export function App() {
   const handleCreated = useCallback(
     async (workspaceId: string, run: PipelineRun) => {
       await refresh();
+      // Called once when the workspace becomes openable and again when the
+      // build finishes. A reader already inside it keeps their panel and
+      // selection the second time; only arriving resets the view.
+      if (shownWorkspaceRef.current !== workspaceId) {
+        setPanel(null);
+        setSelectedNodeId(null);
+      }
       setSelectedWorkspaceId(workspaceId);
-      setPanel(null);
-      setSelectedNodeId(null);
       setCreatorOpen(false);
       setCreatorTopic("");
-      setBuildingRun(run.status === "queued" || run.status === "running" ? run : null);
+      setBuildingRun(isRunActive(run) ? run : null);
     },
     [refresh],
   );

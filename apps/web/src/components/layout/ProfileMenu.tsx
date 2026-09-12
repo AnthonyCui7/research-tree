@@ -1,6 +1,7 @@
 import { MenuItem, MenuSection, PopoverMenu, type MenuAnchor } from "../ui/PopoverMenu";
 import { BugIcon, GearIcon, HelpIcon, KeyIcon, SignOutIcon } from "../ui/icons";
 import { Avatar, displayName } from "./Avatar";
+import { isLocalSession } from "../../data/session";
 import type { SessionInfo } from "../../lib/types";
 
 /** The screens this menu opens; the shell owns which one is showing. */
@@ -29,7 +30,7 @@ export function ProfileMenu({
   onSignOut,
   apiKeyLabel,
 }: ProfileMenuProps) {
-  const local = session.auth_mode === "none";
+  const local = isLocalSession(session);
   const { user } = session;
 
   return (
@@ -41,7 +42,7 @@ export function ProfileMenu({
             {displayName(user)}
           </span>
           <span className="block truncate text-[12px] text-text-muted">
-            {local ? "Signed in on this device" : user.email}
+            {local ? "Runs without accounts" : user.email}
           </span>
         </span>
       </div>

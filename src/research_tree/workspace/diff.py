@@ -27,6 +27,11 @@ def derive_operations_and_diff_summary(
         for key in sorted(set(workspace) | set(proposed_workspace))
         if workspace.get(key) != proposed_workspace.get(key)
     ]
+    # Removing one paper rewrites the reading order, the removal ledger and
+    # the root's references along with the cards, the tree and the paths:
+    # six fields for one change. Only the editorial fields say how wide an
+    # edit reaches.
+    editorial_changes = [key for key in changed_top_level if key not in _BOOKKEEPING_FIELDS]
 
     operations.extend(_branch_operations(workspace, proposed_workspace))
     operations.extend(_paper_card_operations(workspace, proposed_workspace))
@@ -51,7 +56,8 @@ def derive_operations_and_diff_summary(
             }
         )
 
-    if len(changed_top_level) > 5:
+    appears_global = len(editorial_changes) > 5
+    if appears_global:
         warnings.append(
             "Proposed workspace changes many top-level fields; review for unrelated rewrites."
         )
@@ -64,9 +70,14 @@ def derive_operations_and_diff_summary(
         "operation_types": sorted({operation["operation_type"] for operation in operations}),
         "visible_paper_count_before": len(_mapping(workspace.get("paper_cards"))),
         "visible_paper_count_after": len(_mapping(proposed_workspace.get("paper_cards"))),
-        "appears_global": len(changed_top_level) > 5,
+        "appears_global": appears_global,
     }
     return operations, diff_summary, warnings
+
+
+_BOOKKEEPING_FIELDS = frozenset(
+    {"reading_order", "removed_paper_placements", "provenance", "discarded_candidates"}
+)
 
 
 def _branch_operations(

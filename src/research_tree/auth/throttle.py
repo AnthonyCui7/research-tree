@@ -6,6 +6,14 @@ route, where every attempt is one guess. Registration is counted from the user
 manager instead, which is the first point a request has a real email and
 password behind it — counting it at the route charged people for typing their
 address wrong.
+
+Sign-in is counted per address, and per address and email together, never per
+email alone. Counted per email, ten wrong passwords from anywhere locked the
+account they named out for fifteen minutes, and a stranger who knew an address
+could keep that up indefinitely: an account lockout is a denial of service
+anyone can aim. Scoped to the address, one address cannot guess at one account
+for long, and what stops a guess from many addresses is the password itself:
+ten characters at least, off the common list, behind argon2.
 """
 
 from __future__ import annotations
@@ -20,8 +28,8 @@ from research_tree.services.errors import RateLimitedError
 
 logger = logging.getLogger("uvicorn.error")
 
-LOGIN_ATTEMPTS_PER_EMAIL = (10, 15 * 60)
-LOGIN_ATTEMPTS_PER_IP = (30, 15 * 60)
+LOGIN_ATTEMPTS_PER_ADDRESS_AND_EMAIL = (10, 15 * 60)
+LOGIN_ATTEMPTS_PER_ADDRESS = (30, 15 * 60)
 # An account with no key and no allowance cannot spend anything, so the only
 # cost of a new one is a row. Five an hour refused people sharing an office
 # address or a mobile carrier's; twenty still stops a script.
@@ -89,7 +97,7 @@ def _client_ip(request: Request) -> str:
 
 
 async def throttle_login(request: Request) -> None:
-    """Count one sign-in attempt, per email and per address.
+    """Count one sign-in attempt, per address and per address-and-email.
 
     Attached to the router that also carries `/auth/logout`; signing out is not
     an attempt and must never be refused because the sign-in budget is spent.
@@ -100,8 +108,12 @@ async def throttle_login(request: Request) -> None:
     form = await request.form()
     email = str(form.get("username") or "").strip().casefold()
     ip = _client_ip(request)
-    ok_email = _limiter.hit(f"login:email:{email}", *LOGIN_ATTEMPTS_PER_EMAIL) if email else True
-    ok_ip = _limiter.hit(f"login:ip:{ip}", *LOGIN_ATTEMPTS_PER_IP)
+    ok_email = (
+        _limiter.hit(f"login:ip:{ip}:email:{email}", *LOGIN_ATTEMPTS_PER_ADDRESS_AND_EMAIL)
+        if email
+        else True
+    )
+    ok_ip = _limiter.hit(f"login:ip:{ip}", *LOGIN_ATTEMPTS_PER_ADDRESS)
     if not (ok_email and ok_ip):
         raise RateLimitedError("Too many sign-in attempts. Wait a few minutes and try again.")
 

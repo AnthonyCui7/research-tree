@@ -34,6 +34,16 @@ export function useSession(): SessionState {
   return useSyncExternalStore(subscribe, () => state);
 }
 
+/** The store's current value, for code that runs outside React's render. */
+export function sessionState(): SessionState {
+  return state;
+}
+
+/** The single implicit local user, as opposed to an account behind sign-in. */
+export function isLocalSession(session: SessionInfo): boolean {
+  return session.auth_mode === "none";
+}
+
 /** The session when signed in, or null; for components that render either way. */
 export function useSessionInfo(): SessionInfo | null {
   const current = useSession();
@@ -57,12 +67,18 @@ onUnauthenticated(() => {
  * typed, for a session that was fine.
  */
 export async function loadSession(options: { recheck?: boolean } = {}): Promise<void> {
+  // Read and cleared whatever the outcome: a reader who already holds a
+  // session should not carry a stale `auth_error` in the address bar.
+  const urlNotice = consumeAuthErrorFromUrl();
   try {
     const session = await requestJson<SessionInfo>("/account/me", { method: "GET" });
     setState({ status: "ready", session });
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
-      setState({ status: "signed-out", notice: consumeAuthErrorFromUrl() });
+      // A notice already on the screen (the stream saw the session end, the
+      // 401 listener said so) is the better explanation; keep it.
+      const current = state.status === "signed-out" ? state.notice : null;
+      setState({ status: "signed-out", notice: urlNotice ?? current });
       return;
     }
     if (error instanceof ApiError && error.status === 403) {

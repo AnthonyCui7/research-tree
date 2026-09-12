@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { repositoryWorkspaceGateway, workspaceEventsUrl } from "./workspaceApi";
 import { messageFrom } from "../lib/apiError";
-import { loadSession } from "./session";
+import { loadSession, sessionState } from "./session";
 import type { WorkspaceSummary } from "../lib/types";
+
+// EventSource reconnects on its own after a dropped connection but gives up
+// for good on a response it cannot use (a 5xx from the ingress during a
+// rollout, a 401 once the session ends). The session is rechecked first; if
+// it still stands, the stream is opened again, waiting a little longer each
+// time so a deploy in progress is not hammered.
+const RECONNECT_DELAYS_MS = [2_000, 5_000, 10_000, 30_000];
 
 type WorkspaceCollectionState = {
   status: "loading" | "ready" | "error";
@@ -48,32 +55,47 @@ export function useWorkspaceCollection(): WorkspaceCollectionState & {
 
   useEffect(() => {
     let active = true;
+    let events: EventSource | null = null;
+    let retry: number | null = null;
+    let attempts = 0;
+
+    function connect() {
+      events = new EventSource(workspaceEventsUrl);
+      events.addEventListener("workspaces_updated", () => {
+        if (active) void loadWorkspaces();
+      });
+      events.onopen = () => {
+        if (!active) return;
+        attempts = 0;
+        setState((current) => ({ ...current, live: true }));
+        // Anything that changed while the stream was down is fetched now.
+        void loadWorkspaces();
+      };
+      events.onerror = () => {
+        if (!active || !events) return;
+        if (events.readyState !== EventSource.OPEN) {
+          setState((current) => ({ ...current, live: false }));
+        }
+        if (events.readyState !== EventSource.CLOSED) return;
+        events.close();
+        events = null;
+        void loadSession({ recheck: true }).then(() => {
+          // An ended session unmounts the app, and this effect with it.
+          if (!active || sessionState().status !== "ready") return;
+          const delay = RECONNECT_DELAYS_MS[Math.min(attempts, RECONNECT_DELAYS_MS.length - 1)];
+          attempts += 1;
+          retry = window.setTimeout(connect, delay);
+        });
+      };
+    }
 
     void loadWorkspaces();
-    const events = new EventSource(workspaceEventsUrl);
-    events.addEventListener("workspaces_updated", () => {
-      if (active) {
-        void loadWorkspaces();
-      }
-    });
-    events.onopen = () => {
-      if (active) setState((current) => ({ ...current, live: true }));
-    };
-    events.onerror = () => {
-      // EventSource reconnects on its own; surface the gap rather than fail.
-      if (active && events.readyState !== EventSource.OPEN) {
-        setState((current) => ({ ...current, live: false }));
-      }
-      // A stream the browser gives up on (CLOSED, not reconnecting) is what an
-      // expired session looks like from here: EventSource cannot read the 401.
-      if (active && events.readyState === EventSource.CLOSED) {
-        void loadSession({ recheck: true });
-      }
-    };
+    connect();
 
     return () => {
       active = false;
-      events.close();
+      if (retry !== null) window.clearTimeout(retry);
+      events?.close();
     };
   }, [loadWorkspaces]);
 

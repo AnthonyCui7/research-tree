@@ -104,17 +104,26 @@ def allowance_status(user_id: str, email: str, *, verified: bool) -> str:
     return "exhausted" if summary["exhausted"] else "ok"
 
 
-def charge_allowance(conn: Connection, user_id: str, cost_usd: Decimal) -> bool:
-    """Add one call's cost to the active allowance inside the caller's transaction."""
+def charge_allowance(conn: Connection, user_id: str, cost_usd: Decimal) -> bool | None:
+    """Add one call's cost to the active allowance inside the caller's transaction.
+
+    Returns whether the allowance is now used up, or None when the account
+    has no active allowance to charge.
+    """
 
     row = _active_row(conn, user_id, lock=True)
     if row is None:
-        return False
-    conn.execute(
-        text("UPDATE allowances SET spent_usd = spent_usd + :cost WHERE id = :id"),
+        return None
+    charged = conn.execute(
+        text(
+            "UPDATE allowances SET spent_usd = spent_usd + :cost WHERE id = :id "
+            "RETURNING spent_usd, limit_usd"
+        ),
         {"cost": cost_usd, "id": row["id"]},
-    )
-    return True
+    ).mappings().first()
+    if charged is None:
+        return None
+    return Decimal(charged["spent_usd"]) >= Decimal(charged["limit_usd"])
 
 
 def grant_allowance(

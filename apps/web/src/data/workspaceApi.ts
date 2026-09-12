@@ -78,6 +78,9 @@ export type WorkspaceGateway = {
     topicReviewToken: string,
     instructions: string,
   ) => Promise<PipelineRun>;
+  getPipelineRun: (runId: string) => Promise<PipelineRun>;
+  /** The account's builds still queued or running, newest first. */
+  listActivePipelineRuns: () => Promise<PipelineRun[]>;
   cancelPipelineRun: (runId: string) => Promise<PipelineRun>;
   restoreWorkspace: (workspaceId: string, versionHash: string, expectedHash: string) => Promise<void>;
   editWorkspace: (
@@ -106,6 +109,7 @@ export type WorkspaceGateway = {
     workspaceId: string,
     paperId: string,
     options?: PaperAnnotationOptions,
+    signal?: AbortSignal,
   ) => Promise<PaperAnnotationsResult>;
 };
 
@@ -133,7 +137,9 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     return requestJson<TopicReview>("/workspaces/topic-review", {
       method: "POST",
       body: JSON.stringify({ topic }),
-      signal: AbortSignal.timeout(12_000),
+      // One model call; the server gives it 30 s. Giving up sooner here
+      // made the reader retry a review that was about to answer.
+      signal: AbortSignal.timeout(TOPIC_REVIEW_TIMEOUT_MS),
     });
   },
 
@@ -144,6 +150,20 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
       instructions,
     });
     return payload.pipeline_run;
+  },
+
+  async getPipelineRun(runId) {
+    const payload = await getJson<{ pipeline_run: PipelineRun }>(
+      `/workspaces/pipeline-runs/${encodeURIComponent(runId)}`,
+    );
+    return payload.pipeline_run;
+  },
+
+  async listActivePipelineRuns() {
+    const payload = await getJson<{ pipeline_runs: PipelineRun[] }>(
+      "/workspaces/pipeline-runs/active",
+    );
+    return Array.isArray(payload.pipeline_runs) ? payload.pipeline_runs : [];
   },
 
   async cancelPipelineRun(runId) {
@@ -253,7 +273,7 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     return postJson<BugReportResult>("/account/bug-reports", { summary, details, area });
   },
 
-  async getPaperAnnotations(workspaceId, paperId, options) {
+  async getPaperAnnotations(workspaceId, paperId, options, signal) {
     const query = new URLSearchParams({ paper_id: paperId });
     if (options?.mode) query.set("mode", options.mode);
     if (options?.refresh) query.set("refresh", "true");
@@ -262,25 +282,26 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
     // Annotating a paper the server has not seen before is a model call per
     // passage. A server with a worker answers 202 with a job to poll; one
     // without does the work inside this request, so the timeout stays long.
+    // The caller's signal ends the wait when the reader moves on: a closed
+    // reader used to keep polling its job for as long as the job ran.
     const deadline = Date.now() + ANNOTATION_REQUEST_TIMEOUT_MS;
-    let response = await requestRaw(path, {
-      method: "GET",
-      signal: AbortSignal.timeout(ANNOTATION_REQUEST_TIMEOUT_MS),
-    });
+    const timed = AbortSignal.timeout(ANNOTATION_REQUEST_TIMEOUT_MS);
+    const combined = signal ? AbortSignal.any([signal, timed]) : timed;
+    let response = await requestRaw(path, { method: "GET", signal: combined });
     if (response.status === 202) {
-      const job = (await response.json()) as AnnotationJob;
-      await waitForAnnotationJob(workspaceId, job.job_id, deadline);
+      const job = (await readJson(response)) as AnnotationJob;
+      await waitForAnnotationJob(workspaceId, job.job_id, deadline, combined);
       // The job left its result in the cache; a plain read now serves it.
       query.delete("refresh");
       response = await requestRaw(
         `/workspaces/${encodeURIComponent(workspaceId)}/paper-annotations?${query.toString()}`,
-        { method: "GET" },
+        { method: "GET", signal: combined },
       );
       if (response.status === 202) {
         throw new ApiError("Annotations are still being prepared. Try again shortly.", 202);
       }
     }
-    const payload = (await response.json()) as PaperAnnotationsResult;
+    const payload = (await readJson(response)) as PaperAnnotationsResult;
     return {
       annotations: Array.isArray(payload.annotations) ? payload.annotations : [],
       retrieval_mode: payload.retrieval_mode ?? null,
@@ -325,13 +346,14 @@ async function waitForAnnotationJob(
   workspaceId: string,
   jobId: string,
   deadline: number,
+  signal: AbortSignal,
 ): Promise<void> {
   const path =
     `/workspaces/${encodeURIComponent(workspaceId)}/paper-annotations/jobs/` +
     encodeURIComponent(jobId);
   while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, ANNOTATION_JOB_POLL_MS));
-    const job = await requestJson<AnnotationJob>(path, { method: "GET" });
+    await sleep(ANNOTATION_JOB_POLL_MS, signal);
+    const job = await requestJson<AnnotationJob>(path, { method: "GET", signal });
     if (job.status === "completed") return;
     if (job.status === "failed") {
       throw new ApiError(
@@ -343,6 +365,25 @@ async function waitForAnnotationJob(
     }
   }
   throw new ApiError("Annotating this paper is taking too long. Try again later.", 0);
+}
+
+/** A pause the caller's signal can cut short. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(ApiError.fromNetworkFailure(signal.reason));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(ApiError.fromNetworkFailure(signal.reason));
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function isAgentActivity(payload: unknown): payload is AgentActivity {
@@ -371,9 +412,15 @@ async function readEventResult<T>(
   const decoder = new TextDecoder();
   let buffer = "";
   for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      // The request's own timeout, or the network, ended the stream mid-turn.
+      throw ApiError.fromNetworkFailure(error);
+    }
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
     let boundary = buffer.indexOf("\n\n");
     while (boundary !== -1) {
       const frame = buffer.slice(0, boundary);
@@ -381,17 +428,14 @@ async function readEventResult<T>(
       boundary = buffer.indexOf("\n\n");
       const parsed = parseEventFrame(frame);
       if (!parsed) continue;
+      const data = parseEventData(parsed.data);
       if (parsed.event === "progress") {
-        onProgress?.(JSON.parse(parsed.data));
+        onProgress?.(data);
         continue;
       }
-      if (parsed.event === "result") return JSON.parse(parsed.data) as T;
+      if (parsed.event === "result") return data as T;
       if (parsed.event === "error") {
-        const payload = JSON.parse(parsed.data) as {
-          status?: number;
-          detail?: string;
-          error_code?: string;
-        };
+        const payload = (data ?? {}) as { status?: number; detail?: string; error_code?: string };
         const status = payload.status ?? 500;
         if (status === 401) unauthenticatedListener?.();
         throw new ApiError(
@@ -406,6 +450,15 @@ async function readEventResult<T>(
   throw new ApiError("The connection closed before the assistant answered.", 0);
 }
 
+/** A frame's JSON, or the unreadable-response error rather than a parser's. */
+function parseEventData(data: string): unknown {
+  try {
+    return JSON.parse(data);
+  } catch {
+    throw UNREADABLE_RESPONSE;
+  }
+}
+
 function parseEventFrame(frame: string): { event: string; data: string } | null {
   let event = "message";
   const data: string[] = [];
@@ -418,14 +471,26 @@ function parseEventFrame(frame: string): { event: string; data: string } | null 
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const TOPIC_REVIEW_TIMEOUT_MS = 35_000;
 // Keepalives make a long turn safe from the proxy; this is the client's own
 // patience for one answer.
 const AGENT_REQUEST_TIMEOUT_MS = 600_000;
 const ANNOTATION_REQUEST_TIMEOUT_MS = 900_000;
 
+const UNREADABLE_RESPONSE = new ApiError("The server sent a response this app could not read.", 0);
+
 export async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
   const response = await requestRaw(path, init);
-  return (await response.json()) as T;
+  return (await readJson(response)) as T;
+}
+
+/** The body as JSON, or one fixed sentence: a proxy's HTML error page is not a parser bug to show. */
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    throw UNREADABLE_RESPONSE;
+  }
 }
 
 /** A request whose body the caller reads itself (or ignores, for a 204). */

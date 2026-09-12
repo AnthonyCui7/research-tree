@@ -29,6 +29,21 @@ from research_tree.annotation.validation import (
 
 logger = logging.getLogger("uvicorn.error")
 
+# Every passage is a high-effort model call and every page a review call, so
+# a paper's cost and running time grow with its length and nothing else. A
+# thesis at 200 pages would run past the worker's time limit and be killed
+# half-done; the ceiling keeps a job inside that limit with room to spare.
+MAX_ANNOTATION_PAGES = 60
+
+
+class PaperTooLongError(ValueError):
+    def __init__(self, page_count: int) -> None:
+        super().__init__(
+            f"This paper has {page_count} pages; annotation covers papers up to "
+            f"{MAX_ANNOTATION_PAGES} pages."
+        )
+        self.page_count = page_count
+
 
 def generate_paper_annotations(
     pdf_bytes: bytes,
@@ -44,6 +59,8 @@ def generate_paper_annotations(
 
     document = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
+        if document.page_count > MAX_ANNOTATION_PAGES:
+            raise PaperTooLongError(document.page_count)
         blocks = extract_blocks(document)
         page_sources = build_page_sources(blocks)
         chunks = chunk_blocks(blocks)

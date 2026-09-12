@@ -71,7 +71,7 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
             className="grid h-[26px] w-[26px] flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
             type="button"
             onClick={dismiss}
-            aria-label={`Close ${title.toLowerCase()}`}
+            aria-label={`Close ${title}`}
             title="Close"
           >
             <CloseIcon className="h-3 w-3" />

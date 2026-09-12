@@ -16,6 +16,9 @@ import urllib.request
 from typing import Any
 
 from research_tree.billing.usage import record_llm_usage
+from research_tree.credentials import ALLOWANCE_EXHAUSTED_MESSAGE
+from research_tree.principal import current_binding
+from research_tree.services.errors import AllowanceExhaustedError
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -60,6 +63,7 @@ def call_responses_api(
     controlled through `reasoning.effort` and the prompt instead.
     """
 
+    _refuse_when_allowance_is_spent()
     started_at = time.monotonic()
     raw_response = _request_with_retries(
         OPENAI_RESPONSES_URL,
@@ -93,6 +97,7 @@ def call_embeddings_api(
     its corpus is; this stays a single request, like `call_responses_api`.
     """
 
+    _refuse_when_allowance_is_spent()
     started_at = time.monotonic()
     raw_response = _request_with_retries(
         OPENAI_EMBEDDINGS_URL,
@@ -123,6 +128,23 @@ def call_embeddings_api(
             raise LlmRequestError(f"OpenAI {label} call returned an entry without an embedding.")
         vectors.append([float(value) for value in embedding])
     return vectors
+
+
+def _refuse_when_allowance_is_spent() -> None:
+    """Stop sponsored work the moment its allowance runs out.
+
+    The key was chosen when the work began; every call since has been metered
+    and charged, and the charge that empties the allowance marks the binding.
+    The refusal is the same 402 the account would have received at the start.
+    """
+
+    binding = current_binding()
+    if (
+        binding is not None
+        and binding.credential_source == "sponsored"
+        and binding.spend.exhausted
+    ):
+        raise AllowanceExhaustedError(ALLOWANCE_EXHAUSTED_MESSAGE)
 
 
 def _request_with_retries(

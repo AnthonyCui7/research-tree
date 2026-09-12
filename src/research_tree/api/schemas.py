@@ -176,7 +176,8 @@ class PipelineRunResponse(BaseModel):
 
 
 class PipelineRunsResponse(BaseModel):
-    workspace_id: str
+    # Absent when the list spans the account rather than one workspace.
+    workspace_id: str | None = None
     pipeline_runs: list[dict[str, Any]]
 
 

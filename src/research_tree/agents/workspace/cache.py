@@ -5,10 +5,26 @@ import json
 from typing import Any, Mapping
 
 
-def workspace_context_cache_key(state: Mapping[str, Any]) -> str:
+def workspace_context_cache_key(state: Mapping[str, Any], *, owner_id: str = "") -> str:
+    """What one cached workspace context is good for.
+
+    The cache is process-wide, so the key carries the account and the workspace
+    as well as the document's content hash: the context holds full text read
+    through that account's repository, and identical documents in two accounts
+    must not share a store entry. The action is in the key too. The node's
+    writes are what the cache replays, and a context built for a critique is
+    not the one an edit reads.
+    """
+
+    next_action = state.get("next_action")
+    action = dict(next_action) if isinstance(next_action, Mapping) else {}
     payload = {
-        "context_schema": "workspace-context.v2",
+        "context_schema": "workspace-context.v3",
+        "owner_id": owner_id,
+        "workspace_id": state.get("workspace_id"),
         "workspace_version_hash": state.get("workspace_version_hash"),
+        "action_type": action.get("action_type"),
+        "edit_kind": action.get("edit_kind"),
         "target_branch_id": _target_branch_id(state),
         "target_paper_ids": _target_paper_ids(state),
         "include_similar_papers": needs_similar_paper_context(state),

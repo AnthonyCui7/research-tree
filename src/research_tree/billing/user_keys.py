@@ -172,8 +172,14 @@ def load_user_key(user_id: str, *, wrapper: KeyWrapper | None = None) -> str | N
         )
         if row is None:
             return None
+        # Read on every model call, so the timestamp is refreshed at most once
+        # a minute rather than written back on each of them.
         conn.execute(
-            text("UPDATE user_api_keys SET last_used_at = now() WHERE id = :id"), {"id": row["id"]}
+            text(
+                "UPDATE user_api_keys SET last_used_at = now() WHERE id = :id "
+                "AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')"
+            ),
+            {"id": row["id"]},
         )
     wrapper = wrapper or key_wrapper_from_env()
     if wrapper is None:

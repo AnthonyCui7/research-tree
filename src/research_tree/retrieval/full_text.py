@@ -37,8 +37,14 @@ def retrieve_open_access_paper_content(
     try:
         pdf_bytes = download_open_access_pdf(source_url, timeout_seconds=timeout_seconds)
         extracted = _extract_pdf(pdf_bytes)
-    except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
-        return _unavailable(paper_id, title, str(error), source_url=source_url)
+    except Exception as error:  # noqa: BLE001 - see below
+        # Everything a publisher can send is caught, not only the errors this
+        # code raises: pypdf's own exception types, a truncated chunked body
+        # (`http.client.IncompleteRead`), a zlib error inside a content
+        # stream. One of those failed the whole hydrate stage, and a rerun met
+        # the same PDF and failed the same way, so the workspace could never
+        # be built. A paper whose text cannot be read is a paper without text.
+        return _unavailable(paper_id, title, f"{type(error).__name__}: {error}", source_url=source_url)
 
     content = {
         "schema_version": "research_tree.paper_content.v1",
@@ -124,7 +130,10 @@ def _extract_pdf(pdf_bytes: bytes) -> dict[str, Any]:
     figure_count = 0
     truncated = page_count > page_limit
     for page in reader.pages[:page_limit]:
-        page_text = (page.extract_text() or "").strip()
+        try:
+            page_text = (page.extract_text() or "").strip()
+        except Exception:  # noqa: BLE001 - one unreadable page, not an unreadable paper
+            page_text = ""
         if page_text:
             remaining = MAX_EXTRACTED_CHARACTERS - character_count
             if remaining <= 0:

@@ -774,6 +774,19 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
             ).all()
         return [dict(row[0]) for row in rows]
 
+    def list_active_pipeline_runs(self) -> list[dict[str, Any]]:
+        with self._transaction() as conn:
+            self._reclaim_stale_runs(conn)
+            rows = conn.execute(
+                text(
+                    "SELECT record FROM pipeline_runs WHERE owner_id = :owner "
+                    "AND status IN ('queued', 'running') "
+                    "ORDER BY record->>'created_at' DESC, run_id"
+                ),
+                self._params(),
+            ).all()
+        return [dict(row[0]) for row in rows]
+
     def cancel_pipeline_runs(self, workspace_id: str) -> list[str]:
         with self._transaction(workspace_id) as conn:
             return self._cancel_pipeline_runs(conn, workspace_id)

@@ -141,13 +141,20 @@ export function AppShell({
   const activeRunning =
     buildingRun?.workspace_id === activeWorkspaceId && isRunActive(buildingRun);
   const refreshError = status !== "error" && error && error !== dismissedError ? error : null;
-  const session = useAgentSession(activeWorkspace?.workspace_id ?? null, onWorkspaceChanged);
+  const session = useAgentSession(
+    activeWorkspace?.workspace_id ?? null,
+    onWorkspaceChanged,
+    onPipelineStarted,
+  );
   const editor = useWorkspaceEditor(
     activeWorkspaceId,
     tree?.currentVersionHash ?? null,
     onWorkspaceChanged,
   );
-  const apiKeyLabel = useApiKeyLabel();
+  // The label beside "API keys" is reread when that screen closes: it is the
+  // one place the key can change.
+  const [apiKeyEpoch, setApiKeyEpoch] = useState(0);
+  const apiKeyLabel = useApiKeyLabel(apiKeyEpoch);
   const sessionInfo = useSessionInfo();
 
   useEffect(() => {
@@ -464,7 +471,10 @@ export function AppShell({
 
       <AccountScreens
         screen={accountScreen}
-        onClose={() => setAccountScreen(null)}
+        onClose={() => {
+          if (accountScreen === "api-keys") setApiKeyEpoch((epoch) => epoch + 1);
+          setAccountScreen(null);
+        }}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={onToggleSidebar}
         live={live}

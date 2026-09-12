@@ -169,6 +169,16 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         )
         revoke_sessions(str(existing.id))
 
+    async def authenticate(self, credentials: Any) -> User | None:
+        # The allowlist is checked on every request once signed in, but the
+        # sign-in route itself is fastapi-users' own and knew nothing of it:
+        # a removed address still got a 204 and a cookie, and only the next
+        # request said no. Refusing here says so at the door instead.
+        user = await super().authenticate(credentials)
+        if user is not None:
+            ensure_email_allowed(user.email)
+        return user
+
     async def on_after_login(
         self,
         user: User,

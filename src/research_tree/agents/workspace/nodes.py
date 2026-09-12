@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from langgraph.config import get_stream_writer
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from research_tree.agents.workspace.cache import needs_similar_paper_context
 from research_tree.agents.workspace.llm import (
@@ -39,6 +40,7 @@ from research_tree.agents.workspace.tools import (
 )
 from research_tree.agents.workspace.state import WorkspaceAgentState
 from research_tree.llm import DEFAULT_MODEL
+from research_tree.paths import data_root
 from research_tree.retrieval.pipeline_args import validate_pipeline_rerun_request
 from research_tree.retrieval.semantic_scholar import paper_from_semantic_scholar
 from research_tree.retrieval.text import looks_like_survey
@@ -187,11 +189,9 @@ class WorkspaceAgentNodes:
             "validation_round": 0,
             "transcript_items": [],
             "tool_rounds": 0,
-            "pending_tool_call_id": None,
             "next_action": None,
             "semantic_scholar_calls": 0,
             "chat_context": None,
-            "modification_context": None,
             "similar_papers_context": {},
             "off_path_papers": [],
             "retrieval_request": None,
@@ -266,7 +266,13 @@ class WorkspaceAgentNodes:
             tools=(
                 []
                 if out_of_budget
-                else tool_schemas(include_web_search=self._web_search_available())
+                else tool_schemas(
+                    include_web_search=self._web_search_available(),
+                    # A rerun the caller has not allowed is refused by the
+                    # guardrail either way; not offering the tool keeps the
+                    # model from spending a turn on a proposal that cannot land.
+                    include_pipeline_rerun=bool(state.get("allow_pipeline_rerun", False)),
+                )
             ),
             model_name=state.get("agent_model"),
             **self._request_profile_kwargs(AGENT_TOOL_LOOP_PROFILE),
@@ -292,7 +298,6 @@ class WorkspaceAgentNodes:
         }
         if terminal is not None and not out_of_budget:
             update["next_action"] = _next_action_from_tool_call(terminal, state)
-            update["pending_tool_call_id"] = terminal.call_id
             return Command(update=update, goto=_TERMINAL_TOOL_NODES[terminal.name])
         if turn.tool_calls and not out_of_budget:
             return Command(update=update, goto="execute_tools")
@@ -320,7 +325,6 @@ class WorkspaceAgentNodes:
             workspace_id=_workspace_id(state),
             repository=self.workspace_repository,
             repo_root=self.repo_root,
-            chat_context=state.get("chat_context") or {},
             discovered_papers=dict(state.get("session_discovered_papers") or {}),
             semantic_scholar_calls=int(state.get("semantic_scholar_calls", 0)),
         )
@@ -351,16 +355,17 @@ class WorkspaceAgentNodes:
         # live client.
         return isinstance(self.llm_client, OpenAIResponsesAgentClient) and web_search_enabled()
 
-    def build_workspace_context(
-        self,
-        state: WorkspaceAgentState,
-    ) -> Command[Literal["construct_workspace_modification", "critique_workspace"]]:
+    def build_workspace_context(self, state: WorkspaceAgentState) -> dict[str, Any]:
         """Assemble the heavy context the editing and critique nodes need.
 
         This runs only on the paths that use it. It downloads nothing, but it
         does read every relevant paper's stored full text and rank similar
         papers, which is wasted work for a question the model can answer by
         calling a read tool.
+
+        The node is cached (see `graph.py`), so it returns only the context
+        it built. Which node reads it is decided by the edge after it: a
+        routing decision inside these writes would be replayed from the cache.
         """
 
         _report_progress({"kind": "stage", "stage": "reading_workspace"})
@@ -404,23 +409,14 @@ class WorkspaceAgentNodes:
             )
             context["paper_full_text"] = _bounded_full_text_context(paper_contents)
             context["requested_full_text_paper_ids"] = content_paper_ids
-        action_type = str(next_action.get("action_type") or "")
-        return Command(
-            update={
-                "chat_context": context,
-                "modification_context": context,
-                "similar_papers_context": similar_papers_context,
-                "off_path_papers": context.get("off_path_papers") or [],
-                "workspace_summary": build_workspace_summary(workspace),
-                "warnings": content_warnings,
-                "node_trace": [_trace("build_workspace_context")],
-            },
-            goto=(
-                "critique_workspace"
-                if action_type == "critique_workspace"
-                else "construct_workspace_modification"
-            ),
-        )
+        return {
+            "chat_context": context,
+            "similar_papers_context": similar_papers_context,
+            "off_path_papers": context.get("off_path_papers") or [],
+            "workspace_summary": build_workspace_summary(workspace),
+            "warnings": content_warnings,
+            "node_trace": [_trace("build_workspace_context")],
+        }
 
     def critique_workspace(self, state: WorkspaceAgentState) -> dict[str, Any]:
         _report_progress({"kind": "stage", "stage": "critiquing"})
@@ -458,7 +454,30 @@ class WorkspaceAgentNodes:
             or next_action.get("reason")
             or "More candidate papers are needed for the requested workspace action.",
         }
-        request = PipelineRerunRequest.model_validate(raw_request)
+        try:
+            request = PipelineRerunRequest.model_validate(raw_request)
+        except ValidationError as error:
+            # The tool schemas are not strict, so the model can hand over a
+            # number where text belongs. That is a request to refuse with a
+            # reason, the way the guardrail refuses one, not a crashed turn.
+            fields = ", ".join(
+                ".".join(str(part) for part in item.get("loc") or ()) or "request"
+                for item in error.errors()
+            )
+            return {
+                "retrieval_request": {},
+                "retrieval_guardrail_result": {
+                    "allowed": False,
+                    "normalized_args": {},
+                    "rejection_reason": f"the rerun request was malformed ({fields})",
+                    "warnings": [],
+                    "expensive": False,
+                    "prior_defaults": {},
+                    "new_values": {},
+                },
+                "status": "retrieving",
+                "node_trace": [_trace("prepare_retrieval_rerun:malformed")],
+            }
         return {
             "retrieval_request": request.model_dump(),
             "status": "retrieving",
@@ -466,6 +485,9 @@ class WorkspaceAgentNodes:
         }
 
     def validate_rerun_args(self, state: WorkspaceAgentState) -> dict[str, Any]:
+        already_refused = state.get("retrieval_guardrail_result")
+        if isinstance(already_refused, Mapping) and already_refused.get("allowed") is False:
+            return {"node_trace": [_trace("validate_rerun_args:skipped")]}
         result = validate_pipeline_rerun_request(
             state.get("retrieval_request") or {},
             repo_root=self.repo_root,
@@ -1121,20 +1143,27 @@ def _next_action_from_tool_call(
             "action_type": "critique_workspace",
             "reason": str(arguments.get("focus") or "workspace critique"),
         }
+    # The tool schemas are not strict, so every field is coerced to the shape
+    # the action nodes read: a list of ids handed over as one string is one
+    # id, not a list of its characters.
     return {
         "action_type": "construct_workspace_modification",
         "reason": str(arguments.get("instruction") or ""),
-        "modification_instruction": arguments.get("instruction"),
-        "edit_kind": arguments.get("edit_kind") or "structural",
+        "modification_instruction": str(arguments.get("instruction") or "") or None,
+        "edit_kind": str(arguments.get("edit_kind") or "structural"),
         "message_to_user": str(arguments.get("message_to_user") or ""),
-        "target_branch_id": arguments.get("target_branch_id"),
-        "target_paper_ids": [
-            str(paper_id) for paper_id in arguments.get("target_paper_ids") or []
-        ],
-        "add_paper_ids": [
-            str(paper_id) for paper_id in arguments.get("add_paper_ids") or []
-        ],
+        "target_branch_id": str(arguments.get("target_branch_id") or "") or None,
+        "target_paper_ids": _id_list(arguments.get("target_paper_ids")),
+        "add_paper_ids": _id_list(arguments.get("add_paper_ids")),
     }
+
+
+def _id_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return []
 
 
 def _pending_tool_calls(state: WorkspaceAgentState) -> list[dict[str, Any]]:
@@ -1602,12 +1631,21 @@ def _paper_database_path_for_workspace(
 
 
 def _existing_artifact_path(value: Any, repo_root: Path) -> Path | None:
+    """A pipeline artifact the document names, if it is one this process may read.
+
+    The path comes out of the workspace's provenance, which a review edit can
+    rewrite, so only a file under the data directory counts: that is where
+    every pipeline artifact lives, and nothing else on disk is an answer.
+    """
+
     if not value:
         return None
     path = Path(str(value))
     if not path.is_absolute():
         path = repo_root / path
     path = path.resolve()
+    if not path.is_relative_to(data_root().resolve()):
+        return None
     return path if path.is_file() else None
 
 

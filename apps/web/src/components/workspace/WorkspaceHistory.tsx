@@ -26,12 +26,6 @@ export function WorkspaceHistory({
   const [busyHash, setBusyHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // A restore stays pending until the refreshed hash arrives, so the next
-  // restore cannot be sent against a version the server already replaced.
-  useEffect(() => {
-    setBusyHash(null);
-  }, [currentVersionHash]);
-
   // The version list is read by this panel alone, so it loads when the panel
   // opens. The current hash keys it: any change produces a new hash and a
   // fresh list.
@@ -53,6 +47,9 @@ export function WorkspaceHistory({
     };
   }, [currentVersionHash, workspaceId]);
 
+  // A restore stays pending until the reload after it settles, so the next
+  // restore cannot be sent against a version the server already replaced.
+  // A reload that fails ends the wait too; the list keeps working.
   async function restore(versionHash: string) {
     if (versionHash === currentVersionHash) return;
     setBusyHash(versionHash);
@@ -63,12 +60,13 @@ export function WorkspaceHistory({
     } catch (requestError) {
       const conflict = isVersionConflict(requestError);
       setError(conflict ? VERSION_CONFLICT_MESSAGE : messageFrom(requestError));
-      setBusyHash(null);
       if (conflict) {
         // The restore was aimed at a hash the server has already replaced.
         // Reloading is what makes the next attempt valid.
-        await onChanged();
+        await onChanged().catch(() => undefined);
       }
+    } finally {
+      setBusyHash(null);
     }
   }
 

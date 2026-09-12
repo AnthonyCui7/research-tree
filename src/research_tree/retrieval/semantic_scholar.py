@@ -292,23 +292,42 @@ class SemanticScholarClient:
     ) -> dict[str, dict[str, Any]]:
         """Fetch full source metadata, including Semantic Scholar's own TLDRs."""
 
+        ids = _unique_ids(paper_ids)
         details: dict[str, dict[str, Any]] = {}
-        for chunk in _chunked(_unique_ids(paper_ids), SEMANTIC_SCHOLAR_BATCH_ID_LIMIT):
-            try:
-                payload = self.client.post_json(
-                    f"{self.base_url}/paper/batch?fields={SEMANTIC_SCHOLAR_DETAIL_FIELDS}",
-                    {"ids": chunk},
+        for chunk in _chunked(ids, SEMANTIC_SCHOLAR_BATCH_ID_LIMIT):
+            details.update(self._details_for_chunk(chunk))
+        # The batch endpoint answers 200 with `null` for some ids under load,
+        # and that answer is cached under the request that got it. Asking for
+        # the missing ids alone is a different request, so it can be answered
+        # afresh; ids still missing after that are unknown to the provider.
+        missing = [paper_id for paper_id in ids if paper_id not in details]
+        if missing:
+            for chunk in _chunked(missing, SEMANTIC_SCHOLAR_REFERENCE_RETRY_CHUNK_SIZE):
+                details.update(self._details_for_chunk(chunk))
+            still_missing = [paper_id for paper_id in missing if paper_id not in details]
+            if still_missing and len(still_missing) < len(ids):
+                _append_warning(
+                    warnings,
+                    f"Semantic Scholar returned no metadata for {len(still_missing)} of "
+                    f"{len(ids)} papers even after a retry.",
                 )
-            except JsonRequestError as error:
-                raise JsonRequestError(
-                    f"Semantic Scholar paper metadata fetch failed after "
-                    f"retries: {error}"
-                ) from error
-            details.update({
-                str(item["paperId"]): item
-                for item in payload if isinstance(item, dict) and item.get("paperId")
-            })
         return details
+
+    def _details_for_chunk(self, chunk: list[str]) -> dict[str, dict[str, Any]]:
+        try:
+            payload = self.client.post_json(
+                f"{self.base_url}/paper/batch?fields={SEMANTIC_SCHOLAR_DETAIL_FIELDS}",
+                {"ids": chunk},
+            )
+        except JsonRequestError as error:
+            raise JsonRequestError(
+                f"Semantic Scholar paper metadata fetch failed after retries: {error}"
+            ) from error
+        return {
+            str(item["paperId"]): item
+            for item in payload
+            if isinstance(item, dict) and item.get("paperId")
+        }
 
 
 def s2_api_key() -> str | None:

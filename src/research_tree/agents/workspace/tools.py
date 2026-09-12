@@ -38,6 +38,10 @@ MAX_SEARCH_RESULTS = 20
 # Tool results are replayed on every later turn, so a large one is paid for
 # repeatedly.
 MAX_TOOL_RESULT_CHARACTERS = 20_000
+# Full text is read a window at a time; the window fits inside the result cap
+# with room for the JSON around it, so a page of text is never truncated
+# twice.
+FULL_TEXT_WINDOW_CHARACTERS = 15_000
 WEB_SEARCH_ENV_FLAG = "RESEARCH_TREE_AGENT_WEB_SEARCH"
 
 
@@ -49,7 +53,6 @@ class ToolContext:
     workspace_id: str
     repository: WorkspaceRepository | None
     repo_root: Path
-    chat_context: Mapping[str, Any] = field(default_factory=dict)
     discovered_papers: dict[str, dict[str, Any]] = field(default_factory=dict)
     semantic_scholar_calls: int = 0
     _semantic_scholar: SemanticScholarClient | None = None
@@ -145,7 +148,7 @@ def _get_paper(context: ToolContext, arguments: dict[str, Any]) -> Any:
         return {"error": f"no paper card with id {paper_id!r}"}
     result: dict[str, Any] = {"paper_card": dict(card)}
     if arguments.get("include_full_text") and context.repository is not None:
-        result["full_text"] = _paper_full_text(context, paper_id)
+        result.update(_paper_full_text_window(context, paper_id, 0))
     return result
 
 
@@ -189,7 +192,7 @@ def _get_paper_full_text(context: ToolContext, arguments: dict[str, Any]) -> Any
     paper_id = str(arguments.get("paper_id") or "")
     if context.repository is None:
         return {"error": "no workspace repository is available"}
-    return {"paper_id": paper_id, "full_text": _paper_full_text(context, paper_id)}
+    return {"paper_id": paper_id, **_paper_full_text_window(context, paper_id, arguments.get("offset"))}
 
 
 def _search_semantic_scholar(context: ToolContext, arguments: dict[str, Any]) -> Any:
@@ -374,9 +377,19 @@ READ_TOOLS: tuple[AgentTool, ...] = (
         name="get_paper_full_text",
         description=(
             "Read the extracted open-access full text of a workspace paper, "
-            "when one was downloaded."
+            "when one was downloaded. The text comes back one window at a "
+            "time; pass the `next_offset` a result gives you to read on."
         ),
-        parameters=_object({"paper_id": {"type": "string"}}, ["paper_id"]),
+        parameters=_object(
+            {
+                "paper_id": {"type": "string"},
+                "offset": {
+                    "type": "integer",
+                    "description": "Character offset to start from; 0 or omitted for the beginning.",
+                },
+            },
+            ["paper_id"],
+        ),
         handler=_get_paper_full_text,
     ),
     AgentTool(
@@ -540,8 +553,14 @@ ALL_TOOLS: dict[str, AgentTool] = {
 }
 
 
-def tool_schemas(*, include_web_search: bool) -> list[dict[str, Any]]:
-    schemas = [tool.schema() for tool in ALL_TOOLS.values()]
+def tool_schemas(
+    *, include_web_search: bool, include_pipeline_rerun: bool = True
+) -> list[dict[str, Any]]:
+    schemas = [
+        tool.schema()
+        for tool in ALL_TOOLS.values()
+        if include_pipeline_rerun or tool.name != "propose_pipeline_rerun"
+    ]
     if include_web_search:
         # Executed by OpenAI, not by us: no key, no HTTP client, no SSRF surface.
         schemas.append({"type": "web_search"})
@@ -605,14 +624,27 @@ def _tree_nodes(workspace: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [node for node in nodes or [] if isinstance(node, Mapping)]
 
 
-def _paper_full_text(context: ToolContext, paper_id: str) -> str:
-    if context.repository is None:
-        return ""
+def _paper_full_text_window(context: ToolContext, paper_id: str, offset: Any) -> dict[str, Any]:
+    """One window of a paper's stored text, and where the next one starts."""
+
+    text = ""
+    if context.repository is not None:
+        try:
+            content = context.repository.get_paper_content(context.workspace_id, paper_id)
+        except (FileNotFoundError, ValueError):
+            content = {}
+        text = str(content.get("full_text") or content.get("text") or "")
     try:
-        content = context.repository.get_paper_content(context.workspace_id, paper_id)
-    except FileNotFoundError:
-        return ""
-    return _clip(content.get("full_text") or content.get("text"), 40_000) or ""
+        start = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        start = 0
+    end = min(len(text), start + FULL_TEXT_WINDOW_CHARACTERS)
+    return {
+        "full_text": text[start:end],
+        "offset": start,
+        "next_offset": end if end < len(text) else None,
+        "total_characters": len(text),
+    }
 
 
 def _clip(value: Any, limit: int) -> str | None:

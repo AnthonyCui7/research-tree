@@ -244,10 +244,20 @@ def _apply_set(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
     value = operation.get("value")
     if shape == "text" and not isinstance(value, str):
         raise WorkspacePatchError(f"{entity_type}.{field_name} must be text.")
-    if shape == "list" and not isinstance(value, list):
-        raise WorkspacePatchError(f"{entity_type}.{field_name} must be a list.")
+    if shape == "list":
+        if not isinstance(value, list):
+            raise WorkspacePatchError(f"{entity_type}.{field_name} must be a list.")
+        # The canvas joins these lists and reads `paper_id` off each similar
+        # paper; an element of another shape renders as nothing or throws.
+        if field_name == "similar_papers":
+            if not all(isinstance(item, Mapping) and isinstance(item.get("paper_id"), str) for item in value):
+                raise WorkspacePatchError(f"{entity_type}.{field_name} must be a list of papers with a paper_id.")
+        elif not all(isinstance(item, str) for item in value):
+            raise WorkspacePatchError(f"{entity_type}.{field_name} must be a list of text.")
     target = _target_object(workspace, operation, entity_type)
     target[field_name] = copy.deepcopy(value)
+    if entity_type == "branch" and field_name == "label":
+        _refresh_card_location_labels(workspace, str(operation.get("branch_id") or ""), str(value))
 
 
 def _apply_insert(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
@@ -362,9 +372,8 @@ def _insert_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> N
     value = operation.get("value")
     if not isinstance(value, Mapping):
         raise WorkspacePatchError("insert branch requires value object.")
-    node = copy.deepcopy(dict(value))
-    node_id = str(node.get("node_id") or operation.get("branch_id") or "")
-    parent_id = str(node.get("parent_id") or operation.get("parent_id") or "")
+    node_id = str(value.get("node_id") or operation.get("branch_id") or "")
+    parent_id = str(value.get("parent_id") or operation.get("parent_id") or "")
     if not node_id or not parent_id:
         raise WorkspacePatchError("insert branch requires node_id and parent_id.")
     nodes_by_id = _nodes_by_id(workspace)
@@ -372,11 +381,23 @@ def _insert_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> N
         raise WorkspacePatchError(f"branch already exists: {node_id}.")
     if parent_id != _root_id(workspace) and parent_id not in nodes_by_id:
         raise WorkspacePatchError(f"parent branch does not exist: {parent_id}.")
-    node["node_id"] = node_id
-    node["parent_id"] = parent_id
-    node.setdefault("child_node_ids", [])
-    node.setdefault("primary_paper_ids", [])
-    node.setdefault("secondary_paper_ids", [])
+    # A new branch is empty and a leaf. Its papers arrive by `move`, and its
+    # children by `insert`, each of which keeps the tree consistent; a value
+    # that named papers or children directly claimed them without doing so.
+    node: dict[str, Any] = {
+        "node_id": node_id,
+        "parent_id": parent_id,
+        "label": _text_field(value, "label", node_id),
+        "description": _text_field(value, "description"),
+        "why_it_matters": _text_field(value, "why_it_matters"),
+        "is_leaf": True,
+        "child_node_ids": [],
+        "primary_paper_ids": [],
+        "secondary_paper_ids": [],
+        "survey_anchor_paper_id": None,
+        "tags": _text_list_field(value, "tags"),
+        "open_questions": _text_list_field(value, "open_questions"),
+    }
     tree = _required_mapping(workspace.get("tree"), "tree")
     nodes = tree.setdefault("nodes", [])
     if not isinstance(nodes, list):
@@ -387,6 +408,7 @@ def _insert_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> N
         children = parent.setdefault("child_node_ids", [])
         if isinstance(children, list) and node_id not in children:
             children.insert(_bounded_index(operation.get("index"), len(children)), node_id)
+    _refresh_leaf_flags(workspace)
 
 
 def _move_paper_placement(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
@@ -394,9 +416,9 @@ def _move_paper_placement(workspace: dict[str, Any], operation: Mapping[str, Any
 
     The canvas draws a branch's papers from its reading paths, so a paper that
     merely joined `primary_paper_ids` would disappear from view. Without an
-    explicit `path_id` the paper lands at the end of the destination's first
-    path; a branch that has none shows its `primary_paper_ids` as a row of its
-    own, so the placement is still visible.
+    explicit `path_id` the paper lands on the destination's first path, and a
+    branch that has none gets one: the paper keeps its reading-path step
+    either way.
     """
 
     paper_id = str(operation.get("paper_id") or "")
@@ -419,15 +441,13 @@ def _move_paper_placement(workspace: dict[str, Any], operation: Mapping[str, Any
                 f"paper path {path_id} does not belong to branch {to_branch_id}."
             )
     else:
-        path_id = _first_path_id_for_branch(workspace, to_branch_id)
+        path_id = _first_path_id_for_branch(workspace, to_branch_id) or _create_paper_path(
+            workspace, destination
+        )
     step = _detach_paper_placement(workspace, paper_id, keep_path_id=path_id)
     index = _optional_int(operation.get("index"))
     if index is None:
-        row = (
-            _string_list(_required_path(workspace, path_id).get("paper_ids"))
-            if path_id
-            else _string_list(destination.get("primary_paper_ids"))
-        )
+        row = _string_list(_required_path(workspace, path_id).get("paper_ids"))
         index = _chronological_index(cards, paper_id, row)
     _place_visible_paper(
         workspace,
@@ -486,17 +506,16 @@ def _insert_paper_placement(workspace: dict[str, Any], operation: Mapping[str, A
         raise WorkspacePatchError(f"branch does not exist: {branch_id}.")
     cards = _required_mapping(workspace.get("paper_cards"), "paper_cards")
     if paper_id not in cards:
+        # A paper card is written by the pipeline or the assistant, from
+        # provider metadata; one written by the caller could name any URL as
+        # the paper's PDF and any file as its text. The only card an insert
+        # may bring back is the one a removal recorded.
         restored = _removed_placement_for_paper(workspace, paper_id)
-        # A card is an object whichever source it comes from. The restored one
-        # was checked and the one in the operation was not, so a `paper_card`
-        # that arrived as a string or a number reached `card.get` below and
-        # answered 500 instead of the refusal underneath.
-        card = copy.deepcopy(
-            _mapping(restored.get("paper_card") if restored else None)
-            or _mapping(_mapping(operation.get("value")).get("paper_card"))
-        )
+        card = copy.deepcopy(_mapping(restored.get("paper_card") if restored else None))
         if not card:
-            raise WorkspacePatchError(f"paper card data is required for {paper_id}.")
+            raise WorkspacePatchError(
+                f"paper {paper_id} was not removed from this workspace, so it cannot be put back."
+            )
         card["paper_id"] = card.get("paper_id") or paper_id
         cards[paper_id] = card
     _place_visible_paper(
@@ -515,8 +534,27 @@ def _remove_branch(workspace: dict[str, Any], branch_id: str) -> None:
     node = _required_node(workspace, branch_id)
     if _string_list(node.get("primary_paper_ids")) or _string_list(node.get("secondary_paper_ids")):
         raise WorkspacePatchError("cannot remove branch while it still contains papers.")
-    if _string_list(node.get("child_node_ids")):
+    if _string_list(node.get("child_node_ids")) or _child_branch_ids(workspace, branch_id):
         raise WorkspacePatchError("cannot remove branch while it still has children.")
+    cards = _required_mapping(workspace.get("paper_cards"), "paper_cards")
+    # A survey anchor sits on its branch without joining its paper lists, and
+    # its card points at the branch; removing the branch under it left the
+    # card pointing at nothing.
+    located_here = [
+        paper_id
+        for paper_id, card in cards.items()
+        if isinstance(card, Mapping)
+        and str(_mapping(card.get("primary_tree_location")).get("node_id") or "") == branch_id
+    ]
+    if located_here:
+        raise WorkspacePatchError("cannot remove branch while it still contains papers.")
+    for path in workspace.get("paper_paths") or []:
+        if (
+            isinstance(path, Mapping)
+            and str(path.get("branch_node_id") or "") == branch_id
+            and _string_list(path.get("paper_ids"))
+        ):
+            raise WorkspacePatchError("cannot remove branch while its reading path still has papers.")
     tree = _required_mapping(workspace.get("tree"), "tree")
     tree["nodes"] = [
         item
@@ -530,6 +568,14 @@ def _remove_branch(workspace: dict[str, Any], branch_id: str) -> None:
                 for child_id in _string_list(item.get("child_node_ids"))
                 if child_id != branch_id
             ]
+    # The branch's empty paths go with it; one left behind names a branch that
+    # no longer exists.
+    workspace["paper_paths"] = [
+        path
+        for path in workspace.get("paper_paths") or []
+        if not (isinstance(path, Mapping) and str(path.get("branch_node_id") or "") == branch_id)
+    ]
+    _refresh_leaf_flags(workspace)
 
 
 def _move_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
@@ -541,7 +587,6 @@ def _move_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> Non
         raise WorkspacePatchError(f"destination parent does not exist: {parent_id}.")
     if branch_id == parent_id:
         raise WorkspacePatchError("branch cannot be moved under itself.")
-    old_parent_id = str(node.get("parent_id") or "")
     node["parent_id"] = parent_id
     for item in nodes_by_id.values():
         if isinstance(item, dict):
@@ -555,8 +600,7 @@ def _move_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> Non
         children = parent.setdefault("child_node_ids", [])
         if isinstance(children, list):
             children.insert(_bounded_index(operation.get("index"), len(children)), branch_id)
-    if old_parent_id and parent_id == _root_id(workspace):
-        return
+    _refresh_leaf_flags(workspace)
 
 
 def _remove_paper_placement(
@@ -711,6 +755,81 @@ def _recorded_step(placement: Mapping[str, Any] | None) -> dict[str, Any] | None
     return None
 
 
+def _create_paper_path(workspace: dict[str, Any], branch: Mapping[str, Any]) -> str:
+    """A reading path for a leaf branch that had none, so a moved paper has a row."""
+
+    branch_id = str(branch.get("node_id") or "")
+    taken = {
+        str(path.get("path_id") or "")
+        for path in workspace.get("paper_paths") or []
+        if isinstance(path, Mapping)
+    }
+    path_id = f"{branch_id}-path"
+    suffix = 2
+    while path_id in taken:
+        path_id = f"{branch_id}-path-{suffix}"
+        suffix += 1
+    paths = workspace.setdefault("paper_paths", [])
+    if not isinstance(paths, list):
+        raise WorkspacePatchError("paper_paths must be a list.")
+    paths.append(
+        {
+            "path_id": path_id,
+            "branch_node_id": branch_id,
+            "path_type": "primary_timeline",
+            "label": str(branch.get("label") or branch_id),
+            "description": "",
+            "paper_ids": [],
+            "paper_steps": [],
+            "rationale": "",
+        }
+    )
+    return path_id
+
+
+def _refresh_leaf_flags(workspace: dict[str, Any]) -> None:
+    """`is_leaf` follows the children, and the sidebar counts leaves."""
+
+    nodes = _nodes_by_id(workspace)
+    parents = {str(node.get("parent_id") or "") for node in nodes.values()}
+    for node_id, node in nodes.items():
+        if isinstance(node, dict):
+            node["is_leaf"] = not _string_list(node.get("child_node_ids")) and node_id not in parents
+
+
+def _refresh_card_location_labels(workspace: dict[str, Any], branch_id: str, label: str) -> None:
+    """Cards spell their branch's label out in `primary_tree_location.path`."""
+
+    cards = workspace.get("paper_cards")
+    if not isinstance(cards, Mapping):
+        return
+    for card in cards.values():
+        location = card.get("primary_tree_location") if isinstance(card, dict) else None
+        if not isinstance(location, dict) or str(location.get("node_id") or "") != branch_id:
+            continue
+        path = location.get("path")
+        if isinstance(path, list) and path:
+            location["path"] = [*path[:-1], label]
+
+
+def _text_field(value: Mapping[str, Any], field_name: str, default: str = "") -> str:
+    item = value.get(field_name)
+    if item is None:
+        return default
+    if not isinstance(item, str):
+        raise WorkspacePatchError(f"branch.{field_name} must be text.")
+    return item
+
+
+def _text_list_field(value: Mapping[str, Any], field_name: str) -> list[str]:
+    item = value.get(field_name)
+    if item is None:
+        return []
+    if not isinstance(item, list) or not all(isinstance(entry, str) for entry in item):
+        raise WorkspacePatchError(f"branch.{field_name} must be a list of text.")
+    return list(item)
+
+
 def _first_path_id_for_branch(workspace: Mapping[str, Any], branch_id: str) -> str | None:
     for path in workspace.get("paper_paths") or []:
         if isinstance(path, Mapping) and str(path.get("branch_node_id") or "") == branch_id:
@@ -825,6 +944,8 @@ def _remove_paper_references(workspace: dict[str, Any], paper_id: str) -> None:
                 for item in _string_list(node.get(field_name))
                 if item != paper_id
             ]
+        if str(node.get("survey_anchor_paper_id") or "") == paper_id:
+            node["survey_anchor_paper_id"] = None
     root = workspace.get("root")
     if isinstance(root, dict):
         for field_name in ("representative_paper_ids", "survey_anchor_paper_ids"):

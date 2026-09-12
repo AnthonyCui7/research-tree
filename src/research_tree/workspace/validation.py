@@ -146,7 +146,10 @@ def _validate_tree(
     node_ids: set[str] = {root_node_id} if root_node_id else set()
     parent_by_node: dict[str, str] = {}
 
-    for node in workspace.tree.get("nodes") or []:
+    raw_nodes = workspace.tree.get("nodes")
+    if raw_nodes is not None and not isinstance(raw_nodes, list):
+        errors.append("tree.nodes must be a list.")
+    for node in _entries(raw_nodes):
         if not isinstance(node, Mapping):
             errors.append("tree.nodes contains a non-object entry.")
             continue
@@ -168,11 +171,11 @@ def _validate_tree(
                 f"tree node {node_id} has unknown parent_id {parent_id!r}."
             )
 
-    for node in workspace.tree.get("nodes") or []:
+    for node in _entries(workspace.tree.get("nodes")):
         if not isinstance(node, Mapping):
             continue
         node_id = str(node.get("node_id") or "")
-        for child_id in node.get("child_node_ids") or []:
+        for child_id in _string_list(node.get("child_node_ids")):
             if child_id not in node_ids:
                 errors.append(
                     f"tree node {node_id} references unknown child_node_id {child_id!r}."
@@ -338,12 +341,12 @@ def _validate_node_paper_references(
     visible_paper_ids: set[str],
     errors: list[str],
 ) -> None:
-    for node in workspace.tree.get("nodes") or []:
+    for node in _entries(workspace.tree.get("nodes")):
         if not isinstance(node, Mapping):
             continue
         node_id = str(node.get("node_id") or "")
         for field_name in ("primary_paper_ids", "secondary_paper_ids"):
-            for paper_id in node.get(field_name) or []:
+            for paper_id in _string_list(node.get(field_name)):
                 if paper_id not in visible_paper_ids:
                     errors.append(
                         f"tree node {node_id} {field_name} references paper "
@@ -388,7 +391,7 @@ def _validate_survey_anchors(
             errors=errors,
             warnings=warnings,
         )
-    for node in workspace.tree.get("nodes") or []:
+    for node in _entries(workspace.tree.get("nodes")):
         if not isinstance(node, Mapping):
             continue
         paper_id = str(node.get("survey_anchor_paper_id") or "").strip()
@@ -433,7 +436,7 @@ def _validate_survey_placement(
     errors: list[str],
 ) -> None:
     anchor_ids = set(_string_list(workspace.root.get("survey_anchor_paper_ids")))
-    for node in workspace.tree.get("nodes") or []:
+    for node in _entries(workspace.tree.get("nodes")):
         if isinstance(node, Mapping) and node.get("survey_anchor_paper_id"):
             anchor_ids.add(str(node["survey_anchor_paper_id"]))
     for paper_id in visible_paper_ids & survey_ids:
@@ -483,3 +486,7 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if item is not None]
+
+
+def _entries(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []

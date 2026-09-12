@@ -81,6 +81,13 @@ def create_workspace(
     }
 
 
+@router.get("/pipeline-runs/active", response_model=PipelineRunsResponse)
+def list_active_pipeline_runs(
+    service: WorkspacePipelineService = Depends(get_workspace_pipeline_service),
+) -> dict[str, object]:
+    return service.list_active_runs()
+
+
 @router.get("/pipeline-runs/{run_id}", response_model=PipelineRunResponse)
 def get_pipeline_run(
     run_id: str,

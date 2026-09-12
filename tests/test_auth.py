@@ -156,9 +156,15 @@ def test_allowlist_gates_registration_and_every_request(
     _register_and_sign_in(accounts_client, "friend@example.com")
     assert accounts_client.get("/account/me").status_code == 200
 
-    # Removing the email locks the account out on its next request.
+    # Removing the email locks the account out on its next request, and at
+    # the door: signing in again with the right password is refused too.
     monkeypatch.setenv("RESEARCH_TREE_ALLOWED_EMAILS", "someone-else@example.com")
     assert accounts_client.get("/account/me").status_code == 403
+    signed_in_again = accounts_client.post(
+        "/auth/login", data={"username": "friend@example.com", "password": "correct-horse-battery"}
+    )
+    assert signed_in_again.status_code == 403
+    assert signed_in_again.json()["error_code"] == "not_allowed"
 
 
 def _document(workspace_id: str, title: str) -> dict:

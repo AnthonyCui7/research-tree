@@ -53,10 +53,17 @@ export function isVersionConflict(error: unknown): boolean {
   return error instanceof ApiError && error.isVersionConflict;
 }
 
-/** Message for any thrown value, so callers never have to guess a shape. */
+/**
+ * Message for any thrown value, so callers never have to guess a shape.
+ *
+ * Only an ApiError carries a sentence written for the reader. Anything else
+ * (a JSON parse failure, a browser abort, a library's own error text) is
+ * reported in one fixed sentence and logged whole, so "Unexpected token '<'"
+ * and "signal timed out" never appear in the interface.
+ */
 export function messageFrom(error: unknown): string {
   if (error instanceof ApiError) return error.message;
-  if (error instanceof Error && error.message) return error.message;
+  console.error(error);
   return "Something went wrong. Please try again.";
 }
 
@@ -99,7 +106,11 @@ function messageForStatus(status: number, detail: string, code: string): string 
       // every other status here already prefers what it said.
       return detail || "That workspace no longer exists.";
     case 409:
-      return "This workspace changed since you opened it. Refresh and try again.";
+      // A workspace that is busy (a build owns it, a turn is still running)
+      // says so itself; every other 409 is a version conflict.
+      return code === "workspace_busy" && detail
+        ? detail
+        : "This workspace changed since you opened it. Refresh and try again.";
     case 413:
       return "That request is too large.";
     case 429:

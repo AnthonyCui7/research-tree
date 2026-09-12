@@ -48,6 +48,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
     conversation,
     error,
     outcome,
+    pendingReview,
     result,
     steps,
     draft: message,
@@ -68,7 +69,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
     const element = conversationRef.current;
     if (!element) return;
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-  }, [conversation.length, busy, result, outcome, steps.length]);
+  }, [conversation.length, busy, pendingReview, result, outcome, steps.length]);
 
   useEffect(() => {
     const composer = composerRef.current;
@@ -91,7 +92,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
     composerRef.current?.focus();
   }
 
-  const showIntro = conversation.length === 0 && !busy && !result && !error;
+  const showIntro = conversation.length === 0 && !busy && !pendingReview && !result && !error;
 
   function onComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
@@ -148,9 +149,9 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
 
         {busy ? <ActivityTrail steps={steps} activity={activity} /> : null}
 
-        {result?.status === "pending_review" && result.review_id ? (
+        {pendingReview ? (
           <ProposedRevision
-            result={result}
+            result={pendingReview}
             tree={tree}
             busy={busy}
             onDecide={session.decide}
@@ -601,6 +602,18 @@ const markdownComponents = {
   },
   code({ node: _node, className, ...props }: MarkdownComponentProps<"code">) {
     return <code className={cx("rounded-sm bg-surface-subtle px-1 py-px font-mono text-[0.92em]", className)} {...props} />;
+  },
+  // An image in a reply would make the browser fetch whatever address the
+  // model wrote, from the reader's machine. The reference is kept as a link
+  // the reader can choose to follow.
+  img({ node: _node, src, alt }: MarkdownComponentProps<"img">) {
+    const href = typeof src === "string" ? src : "";
+    if (!href) return null;
+    return (
+      <a className="text-accent no-underline hover:text-accent-deep hover:underline" href={href} target="_blank" rel="noreferrer">
+        {alt || href}
+      </a>
+    );
   },
 };
 

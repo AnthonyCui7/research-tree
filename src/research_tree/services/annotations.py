@@ -14,10 +14,13 @@ import hashlib
 import json
 import logging
 import re
-import urllib.error
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from threading import Event, Thread
 from typing import Any, Callable
+from urllib.parse import urlparse
 from uuid import uuid4
+
+from redis.exceptions import RedisError
 
 from research_tree.annotation import (
     ANNOTATION_SCHEMA_VERSION,
@@ -25,6 +28,7 @@ from research_tree.annotation import (
     generate_paper_annotations,
 )
 from research_tree.annotation.config import annotation_model, retrieval_mode
+from research_tree.annotation.pipeline import PaperTooLongError
 from research_tree.artifact_store import ArtifactStore, default_artifact_store
 from research_tree.principal import bind_principal
 from research_tree.retrieval.full_text import download_open_access_pdf
@@ -32,6 +36,7 @@ from research_tree.services.errors import (
     InvalidPayloadError,
     InvalidResourceIdError,
     PaperUnavailableError,
+    ServiceUnavailableError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
     public_service_error_message,
@@ -49,6 +54,16 @@ ACTIVE_KEY_PREFIX = "annotations:active:"
 JOB_TTL_SECONDS = 24 * 60 * 60
 ACTIVE_TTL_SECONDS = 60 * 60
 JOB_STATUSES = ("queued", "running", "completed", "failed")
+PDF_SHA256 = re.compile(r"[0-9a-f]{64}")
+# A running job is heartbeaten by its worker; one that stops being touched
+# was killed (the time limit, memory, a rollout) and is failed on the next
+# read, the way a pipeline run is. A queued job gets longer: it may be
+# waiting behind a build.
+JOB_HEARTBEAT_SECONDS = 30.0
+RUNNING_JOB_RECLAIM_SECONDS = 3 * 60
+QUEUED_JOB_RECLAIM_SECONDS = 30 * 60
+RECLAIMED_JOB_DETAIL = "The worker stopped before it finished annotating this paper. Try again."
+QUEUE_UNAVAILABLE_MESSAGE = "The job queue is unavailable right now. Try again in a moment."
 
 
 class PaperAnnotationService:
@@ -136,13 +151,16 @@ class PaperAnnotationService:
             return self._generate_and_store(
                 safe_workspace_id, safe_paper_id, card, pdf_bytes, pdf_sha256, requested_mode
             )
-        return self._start_job(
-            redis,
-            workspace_id=safe_workspace_id,
-            paper_id=safe_paper_id,
-            mode=requested_mode,
-            pdf_sha256=pdf_sha256,
-        )
+        try:
+            return self._start_job(
+                redis,
+                workspace_id=safe_workspace_id,
+                paper_id=safe_paper_id,
+                mode=requested_mode,
+                pdf_sha256=pdf_sha256,
+            )
+        except RedisError as error:
+            raise ServiceUnavailableError(QUEUE_UNAVAILABLE_MESSAGE) from error
 
     def annotation_job(self, workspace_id: str, job_id: str) -> dict[str, Any]:
         """The state of one job, for the account that started it."""
@@ -150,7 +168,10 @@ class PaperAnnotationService:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
         safe_job_id = validate_resource_id(job_id, field_name="job_id")
         redis = self._redis_client()
-        job = _load_job(redis, safe_job_id) if redis is not None else None
+        try:
+            job = _load_job(redis, safe_job_id) if redis is not None else None
+        except RedisError as error:
+            raise ServiceUnavailableError(QUEUE_UNAVAILABLE_MESSAGE) from error
         if (
             job is None
             or job.get("owner_id") != self.repository.owner_id
@@ -179,10 +200,13 @@ class PaperAnnotationService:
         job_id = str(job["job_id"])
         if job.get("owner_id") != self.repository.owner_id:
             raise ValueError(f"annotation job {job_id} belongs to another account.")
-        if job.get("status") != "queued":
+        # Claimed with a compare-and-set: a job the broker delivered twice is
+        # started by exactly one of the deliveries.
+        if not _claim_queued_job(redis, job):
             logger.info("annotation job %s not started: status=%s", job_id, job.get("status"))
             return
-        _save_job(redis, {**job, "status": "running"})
+        job = {**job, "status": "running", "heartbeat_at": _now()}
+        heartbeat = _JobHeartbeat.start(redis, job)
         # Resolving the job's account is inside the try: an account that has
         # gone away is a reason to fail the job, not to run it as somebody else.
         try:
@@ -198,6 +222,7 @@ class PaperAnnotationService:
                     job["workspace_id"], safe_paper_id, card, pdf_bytes, pdf_sha256, job["mode"]
                 )
         except WorkspaceServiceError as error:
+            heartbeat.stop()
             _save_job(
                 redis,
                 {
@@ -209,6 +234,7 @@ class PaperAnnotationService:
                 },
             )
         except Exception:  # noqa: BLE001 - the reader gets a reason, the log the trace
+            heartbeat.stop()
             logger.exception("annotation job %s failed", job_id)
             _save_job(
                 redis,
@@ -221,8 +247,10 @@ class PaperAnnotationService:
                 },
             )
         else:
+            heartbeat.stop()
             _save_job(redis, {**job, "status": "completed"})
         finally:
+            heartbeat.stop()
             try:
                 redis.delete(self._active_key(job["workspace_id"], job["paper_id"], job["mode"]))
             except Exception:  # noqa: BLE001
@@ -262,12 +290,10 @@ class PaperAnnotationService:
         pdf_sha256: str,
     ) -> dict[str, Any]:
         active_key = self._active_key(workspace_id, paper_id, mode)
-        existing_id = redis.get(active_key)
-        if existing_id:
-            existing = _load_job(redis, existing_id.decode("utf-8"))
-            if existing is not None and existing.get("status") in {"queued", "running"}:
-                return _job_view(existing)
-        now = datetime.now(UTC).isoformat()
+        existing = _active_job(redis, active_key)
+        if existing is not None:
+            return _job_view(existing)
+        now = _now()
         job = {
             "job_id": f"annotation_{uuid4().hex}",
             "owner_id": self.repository.owner_id,
@@ -280,20 +306,27 @@ class PaperAnnotationService:
             "error_status": None,
             "detail": None,
             "created_at": now,
+            "heartbeat_at": now,
         }
-        if not redis.set(active_key, job["job_id"], nx=True, ex=ACTIVE_TTL_SECONDS):
-            existing_id = redis.get(active_key)
-            existing = _load_job(redis, existing_id.decode("utf-8")) if existing_id else None
-            if existing is not None:
-                return _job_view(existing)
+        # The record exists before the key names it, so a request that reads
+        # the key always finds the job behind it. Losing the race to another
+        # request for the same paper means joining that request's job; a key
+        # left pointing at a finished job (its worker lost the delete) is
+        # simply taken over.
         _save_job(redis, job)
+        if not redis.set(active_key, job["job_id"], nx=True, ex=ACTIVE_TTL_SECONDS):
+            existing = _active_job(redis, active_key)
+            if existing is not None:
+                redis.delete(f"{JOB_KEY_PREFIX}{job['job_id']}")
+                return _job_view(existing)
+            redis.set(active_key, job["job_id"], ex=ACTIVE_TTL_SECONDS)
         try:
             self._enqueue_job(job["job_id"])
         except Exception as error:  # noqa: BLE001 - the queue is down; say so, leave nothing pending
             logger.exception("annotation job %s could not be queued", job["job_id"])
             redis.delete(active_key)
             redis.delete(f"{JOB_KEY_PREFIX}{job['job_id']}")
-            raise WorkspaceServiceError("Annotation could not be queued. Try again.") from error
+            raise ServiceUnavailableError(QUEUE_UNAVAILABLE_MESSAGE) from error
         return _job_view(job)
 
     def _generate_and_store(
@@ -315,6 +348,8 @@ class PaperAnnotationService:
             )
         except WorkspaceServiceError:
             raise
+        except PaperTooLongError as error:
+            raise InvalidPayloadError(str(error)) from error
         except Exception as error:
             logger.warning("Annotating %r failed (%s): %s", title, type(error).__name__, error)
             raise PaperUnavailableError(f"could not annotate paper: {paper_id}") from error
@@ -398,7 +433,7 @@ class PaperAnnotationService:
             raise InvalidPayloadError("This paper has no open-access PDF to annotate.")
         try:
             return self.download_pdf(url)
-        except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
+        except Exception as error:  # noqa: BLE001 - whatever a publisher sends, the answer is 502
             logger.warning("Fetching %s failed: %s", url, error)
             raise PaperUnavailableError(f"could not fetch the paper PDF: {error}") from error
 
@@ -411,18 +446,27 @@ def paper_pdf_url(card: dict[str, Any]) -> str | None:
     if isinstance(resolved, str) and resolved.strip():
         return _https(resolved.strip())
 
+    # The link's host is checked, not its text: a card is part of a document
+    # the reader can edit, and "arxiv.org/abs/" appears in any URL that puts
+    # it in the query string.
     arxiv_link = card.get("arxiv_link")
-    if isinstance(arxiv_link, str) and "arxiv.org/abs/" in arxiv_link:
-        return _https(arxiv_link.replace("/abs/", "/pdf/"))
+    if isinstance(arxiv_link, str):
+        parsed = urlparse(arxiv_link)
+        if parsed.hostname in {"arxiv.org", "www.arxiv.org"} and parsed.path.startswith("/abs/"):
+            return f"https://arxiv.org/pdf/{parsed.path[len('/abs/'):]}"
     return None
 
 
 def _known_pdf_sha256(card: dict[str, Any]) -> str | None:
-    """The hash of the PDF the build extracted this paper's text from, if it did."""
+    """The hash of the PDF the build extracted this paper's text from, if it did.
+
+    The card is part of a document the reader can edit, so the value is only
+    trusted to name a file when it has the shape of one.
+    """
 
     content = card.get("paper_content")
     value = content.get("sha256") if isinstance(content, dict) else None
-    return value if isinstance(value, str) and value else None
+    return value if isinstance(value, str) and PDF_SHA256.fullmatch(value) else None
 
 
 def _https(url: str) -> str:
@@ -477,11 +521,122 @@ def _load_job(redis: Any, job_id: str) -> dict[str, Any] | None:
         job = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    return job if isinstance(job, dict) and job.get("job_id") == job_id else None
+    if not isinstance(job, dict) or job.get("job_id") != job_id:
+        return None
+    return _reclaimed_if_dead(redis, job)
+
+
+def _reclaimed_if_dead(redis: Any, job: dict[str, Any]) -> dict[str, Any]:
+    """A job nobody has touched for too long is failed on read.
+
+    The only writers of a terminal status are inside the worker's task, so a
+    worker killed mid-job left the job `running` for a day, and every request
+    for that paper joined it for an hour.
+    """
+
+    status = job.get("status")
+    limit = {
+        "running": RUNNING_JOB_RECLAIM_SECONDS,
+        "queued": QUEUED_JOB_RECLAIM_SECONDS,
+    }.get(str(status))
+    if limit is None:
+        return job
+    touched = _parse_time(job.get("heartbeat_at") or job.get("created_at"))
+    if touched is None or datetime.now(UTC) - touched < timedelta(seconds=limit):
+        return job
+    failed = {
+        **job,
+        "status": "failed",
+        "error_code": "paper_unavailable",
+        "error_status": 502,
+        "detail": RECLAIMED_JOB_DETAIL,
+    }
+    _save_job(redis, failed)
+    return failed
+
+
+def _active_job(redis: Any, active_key: str) -> dict[str, Any] | None:
+    """The job the active key names, if it is still queued or running."""
+
+    job_id = redis.get(active_key)
+    if not job_id:
+        return None
+    job = _load_job(redis, job_id.decode("utf-8"))
+    if job is not None and job.get("status") in {"queued", "running"}:
+        return job
+    return None
+
+
+# Replaces the stored job only if it is still the one the worker was handed,
+# so of two deliveries of one job exactly one starts it.
+_CLAIM_JOB_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+    return 1
+end
+return 0
+"""
+
+
+def _claim_queued_job(redis: Any, job: dict[str, Any]) -> bool:
+    if job.get("status") != "queued":
+        return False
+    current = redis.get(f"{JOB_KEY_PREFIX}{job['job_id']}")
+    if not current:
+        return False
+    running = json.dumps({**job, "status": "running", "heartbeat_at": _now()})
+    claimed = redis.eval(
+        _CLAIM_JOB_LUA, 1, f"{JOB_KEY_PREFIX}{job['job_id']}", current, running, JOB_TTL_SECONDS
+    )
+    return bool(claimed)
+
+
+class _JobHeartbeat:
+    """Touches the job record while the worker is on it."""
+
+    def __init__(self, redis: Any, job: dict[str, Any]) -> None:
+        self._redis = redis
+        self._job = job
+        self._stop = Event()
+        self._thread = Thread(
+            target=self._loop, name=f"annotation-heartbeat-{job['job_id']}", daemon=True
+        )
+
+    @classmethod
+    def start(cls, redis: Any, job: dict[str, Any]) -> "_JobHeartbeat":
+        heartbeat = cls(redis, job)
+        heartbeat._thread.start()
+        return heartbeat
+
+    def stop(self) -> None:
+        # Joined, so no beat lands after the terminal status is written.
+        self._stop.set()
+        self._thread.join(timeout=JOB_HEARTBEAT_SECONDS)
+
+    def _loop(self) -> None:
+        while not self._stop.wait(JOB_HEARTBEAT_SECONDS):
+            try:
+                _save_job(self._redis, {**self._job, "status": "running", "heartbeat_at": _now()})
+            except Exception as error:  # noqa: BLE001 - a missed beat is not fatal
+                logger.warning("annotation heartbeat failed job=%s: %s", self._job["job_id"], error)
 
 
 def _save_job(redis: Any, job: dict[str, Any]) -> None:
     redis.set(f"{JOB_KEY_PREFIX}{job['job_id']}", json.dumps(job), ex=JOB_TTL_SECONDS)
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _pdf_filename(card: dict[str, Any]) -> str:

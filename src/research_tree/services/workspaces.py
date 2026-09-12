@@ -12,7 +12,7 @@ from research_tree.services.errors import (
 )
 from research_tree.services.validation import validate_resource_id, validate_version_hash
 from research_tree.workspace.context import workspace_version_hash
-from research_tree.workspace.repository import WorkspaceRepository
+from research_tree.workspace.repository import StaleVersionError, WorkspaceRepository
 
 
 # A full workspace document, twice over on a review that was edited. Nothing
@@ -158,9 +158,7 @@ class WorkspaceQueryService:
     ) -> dict[str, Any]:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")
         safe_version_hash = validate_version_hash(version_hash)
-        current = self.get_current_workspace(safe_workspace_id)
-        if expected_version_hash and current["workspace_version_hash"] != expected_version_hash:
-            raise ReviewConflictError("Workspace changed. Refresh history before restoring.")
+        self.get_current_workspace(safe_workspace_id)
         try:
             result = self.repository.restore_workspace_version(
                 safe_workspace_id,
@@ -169,7 +167,10 @@ class WorkspaceQueryService:
                 actor_type="user",
                 actor_id=acting_user_id(),
                 reason=reason,
+                expected_version_hash=expected_version_hash or None,
             )
+        except StaleVersionError as error:
+            raise ReviewConflictError("Workspace changed. Refresh history before restoring.") from error
         except FileNotFoundError as error:
             raise WorkspaceVersionNotFoundError("workspace version does not exist") from error
         return {

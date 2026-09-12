@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Iterator
 
 AUTH_MODE_ENV = "RESEARCH_TREE_AUTH_MODE"
@@ -43,6 +43,18 @@ LOCAL_PRINCIPAL = Principal(
 )
 
 
+@dataclass
+class SpendGuard:
+    """Whether the sponsored allowance behind this work has run out.
+
+    Deliberately mutable and shared: `replace` on the binding keeps the same
+    guard, and a context copied into a worker thread carries the same object,
+    so the metering hook in one thread stops the model calls in all of them.
+    """
+
+    exhausted: bool = False
+
+
 @dataclass(frozen=True)
 class Binding:
     principal: Principal
@@ -51,6 +63,7 @@ class Binding:
     # Set by the credential resolver once a model call has chosen whose key
     # it is spending ("byok" or "sponsored"); read back by usage metering.
     credential_source: str | None = None
+    spend: SpendGuard = field(default_factory=SpendGuard)
 
 
 _binding: ContextVar[Binding | None] = ContextVar("research_tree_principal", default=None)

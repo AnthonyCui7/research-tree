@@ -98,7 +98,7 @@ def branch_integrity_validator(payload: ValidatorPayload) -> dict[str, Any]:
     parent_by_node: dict[str, str] = {}
     if not root_id:
         errors.append("tree.root_node_id is missing.")
-    for node in tree.get("nodes") or []:
+    for node in _entries(tree.get("nodes")):
         if not isinstance(node, Mapping):
             errors.append("tree.nodes contains a non-object entry.")
             continue
@@ -122,13 +122,13 @@ def paper_path_validator(payload: ValidatorPayload) -> dict[str, Any]:
     tree_ids = {str(tree.get("root_node_id") or "")}
     tree_ids.update(
         str(node.get("node_id"))
-        for node in tree.get("nodes") or []
+        for node in _entries(tree.get("nodes"))
         if isinstance(node, Mapping) and node.get("node_id")
     )
     visible_ids = set(_mapping(proposed.get("paper_cards")))
     survey_ids = _survey_ids(payload)
     errors: list[str] = []
-    for path in proposed.get("paper_paths") or []:
+    for path in _entries(proposed.get("paper_paths")):
         if not isinstance(path, Mapping):
             errors.append("paper_paths contains a non-object entry.")
             continue
@@ -235,7 +235,14 @@ def operation_target_validator(payload: ValidatorPayload) -> dict[str, Any]:
         target_ids = _mapping(operation.get("target_ids"))
         branch_id = target_ids.get("branch_id") or target_ids.get("to_branch_id")
         paper_id = target_ids.get("paper_id")
-        if branch_id and branch_id not in branch_ids:
+        # A removed path names the branch it belonged to, and a proposal that
+        # removes a branch removes its paths with it: that branch is gone from
+        # the proposed tree by design, not by mistake.
+        if (
+            branch_id
+            and branch_id not in branch_ids
+            and operation.get("operation_type") != "remove_paper_path"
+        ):
             errors.append(f"operation targets unknown branch {branch_id!r}.")
         if paper_id and paper_id not in paper_ids and operation.get("operation_type") != "demote_visible_paper":
             errors.append(f"operation targets non-visible paper {paper_id!r}.")
@@ -292,11 +299,15 @@ def _candidate_artifact_for_validation(payload: ValidatorPayload) -> dict[str, A
         if isinstance(item, Mapping)
     ]
     proposed = _mapping(payload.get("proposed_workspace"))
+    # Without the pipeline's artifact the document itself says which papers
+    # exist, and a card's role says which of them are surveys: the placement
+    # rule for surveys holds for a hand edit as it does for the assistant.
     visible_fallback = [
         {
             "paper_id": paper_id,
             "title": card.get("title") or paper_id,
             "abstract": card.get("abstract") or "",
+            "is_survey": "survey" in str(card.get("paper_role") or "").casefold(),
         }
         for paper_id, card in _mapping(proposed.get("paper_cards")).items()
         if isinstance(card, Mapping)
@@ -306,16 +317,27 @@ def _candidate_artifact_for_validation(payload: ValidatorPayload) -> dict[str, A
             "paper_id": str(item.get("paper_id")),
             "title": item.get("title") or item.get("paper_id"),
             "abstract": item.get("abstract") or "",
+            "is_survey": bool(item.get("is_survey")),
         }
-        for item in proposed.get("discarded_candidates") or []
+        for item in _entries(proposed.get("discarded_candidates"))
         if isinstance(item, Mapping) and item.get("paper_id")
     ]
+    # A survey anchor can be referenced by the root or a branch without a
+    # card of its own. It is part of the document already, so it must not
+    # make every later edit "reference a paper that is not a candidate".
+    named = {paper["paper_id"] for paper in [*visible_fallback, *discarded_fallback]}
+    anchor_fallback = [
+        {"paper_id": anchor_id, "title": anchor_id, "abstract": "", "is_survey": True}
+        for anchor_id in _survey_anchor_ids(proposed)
+        if anchor_id not in named
+    ]
+    fallback = candidate_pool or [*visible_fallback, *discarded_fallback, *anchor_fallback]
     return {
         "schema_version": "llm_candidate_papers.v1",
         "topic": proposed.get("topic") or "",
         "workspace": proposed.get("topic") or "",
-        "non_survey_papers": candidate_pool or [*visible_fallback, *discarded_fallback],
-        "survey_papers": [],
+        "non_survey_papers": [paper for paper in fallback if not paper.get("is_survey")],
+        "survey_papers": [paper for paper in fallback if paper.get("is_survey")],
     }
 
 
@@ -356,12 +378,20 @@ def _survey_ids(payload: ValidatorPayload) -> set[str]:
     }
 
 
+def _survey_anchor_ids(workspace: Mapping[str, Any]) -> list[str]:
+    anchors = _string_list(_mapping(workspace.get("root")).get("survey_anchor_paper_ids"))
+    for node in _entries(_mapping(workspace.get("tree")).get("nodes")):
+        if isinstance(node, Mapping) and node.get("survey_anchor_paper_id"):
+            anchors.append(str(node["survey_anchor_paper_id"]))
+    return list(dict.fromkeys(anchor for anchor in anchors if anchor))
+
+
 def _branch_ids(workspace: Mapping[str, Any]) -> set[str]:
     tree = _mapping(workspace.get("tree"))
     branch_ids = {str(tree.get("root_node_id") or "")}
     branch_ids.update(
         str(node.get("node_id"))
-        for node in tree.get("nodes") or []
+        for node in _entries(tree.get("nodes"))
         if isinstance(node, Mapping) and node.get("node_id")
     )
     return branch_ids
@@ -369,6 +399,13 @@ def _branch_ids(workspace: Mapping[str, Any]) -> set[str]:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _entries(value: Any) -> list[Any]:
+    """A field that should be a list; anything else reads as empty here and is
+    reported by the schema validator, rather than raised on iteration."""
+
+    return value if isinstance(value, list) else []
 
 
 def _string_list(value: Any) -> list[str]:

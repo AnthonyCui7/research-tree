@@ -930,6 +930,35 @@ class WorkspaceAgentPureHelperTest(unittest.TestCase):
             workspace_context_cache_key(changed_state),
         )
 
+    def test_context_cache_key_separates_accounts_workspaces_and_actions(self) -> None:
+        """The cache is process-wide: one entry answers one account's one
+        question about one version, never a different account's or action's."""
+
+        base = {
+            "workspace_id": "rag",
+            "workspace_version_hash": "a" * 64,
+            "next_action": {"action_type": "critique_workspace"},
+        }
+        edit = {**base, "next_action": {"action_type": "construct_workspace_modification"}}
+        other_workspace = {**base, "workspace_id": "prompting"}
+
+        self.assertEqual(
+            workspace_context_cache_key(base, owner_id="u1"),
+            workspace_context_cache_key(dict(base), owner_id="u1"),
+        )
+        self.assertNotEqual(
+            workspace_context_cache_key(base, owner_id="u1"),
+            workspace_context_cache_key(base, owner_id="u2"),
+        )
+        self.assertNotEqual(
+            workspace_context_cache_key(base, owner_id="u1"),
+            workspace_context_cache_key(edit, owner_id="u1"),
+        )
+        self.assertNotEqual(
+            workspace_context_cache_key(base, owner_id="u1"),
+            workspace_context_cache_key(other_workspace, owner_id="u1"),
+        )
+
     def test_workspace_summary_carries_shape_and_paper_gists(self) -> None:
         workspace = _workspace()
         workspace["paper_cards"]["p1"]["tldr"] = "  A method that does the thing. "
@@ -1587,3 +1616,58 @@ def _paper_card(paper_id: str, title: str, branch_label: str) -> dict[str, objec
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
+class WorkspaceContextCacheRoutingTest(unittest.TestCase):
+    def test_a_critique_does_not_turn_the_next_edit_of_the_same_version_into_a_critique(self) -> None:
+        """Both turns build the same cached context; only the edge after it
+        decides who reads it. Routing inside the cached node was replayed:
+        "critique, then act on it" answered the edit with the critique again."""
+
+        from langgraph.cache.memory import InMemoryCache
+
+        cache = InMemoryCache()
+        workspace = _workspace()
+        critique_graph = build_workspace_agent_graph(
+            llm_client=DeterministicWorkspaceAgentLlmClient(
+                tool_turns=[_tool_turn("critique_workspace", {})]
+            ),
+            cache=cache,
+        )
+        constructed: list[str] = []
+
+        def constructor(**_kwargs: object) -> dict[str, object]:
+            constructed.append("called")
+            return _workspace(branch_label="Renamed Branch")
+
+        edit_graph = build_workspace_agent_graph(
+            llm_client=_modify_llm(),
+            workspace_constructor=constructor,
+            cache=cache,
+        )
+
+        critique = run_workspace_agent(
+            {
+                "workspace": workspace,
+                "candidate_artifact": _candidate_artifact(),
+                "user_message": "Critique this workspace.",
+            },
+            graph=critique_graph,
+        )
+        edit = run_workspace_agent(
+            {
+                "workspace": workspace,
+                "candidate_artifact": _candidate_artifact(),
+                "user_message": "Rename the main branch.",
+            },
+            graph=edit_graph,
+        )
+
+        critique_nodes = [item["node"] for item in critique.final_output["node_trace"]]
+        edit_nodes = [item["node"] for item in edit.final_output["node_trace"]]
+        self.assertIn("critique_workspace", critique_nodes)
+        self.assertIn("construct_workspace_modification", edit_nodes)
+        self.assertNotIn("critique_workspace", edit_nodes)
+        self.assertEqual(constructed, ["called"])
+        self.assertTrue(edit.final_output["approval_required"])

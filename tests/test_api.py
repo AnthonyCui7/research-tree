@@ -428,7 +428,9 @@ def test_agent_request_passes_bounded_conversation_history(repository) -> None:
     captured: dict[str, Any] = {}
 
     class RecordingGraph:
-        def stream(self, graph_input: Any, *, config: dict[str, Any], stream_mode: str) -> list[dict[str, Any]]:
+        def stream(
+            self, graph_input: Any, *, config: dict[str, Any], stream_mode: str, durability: str
+        ) -> list[dict[str, Any]]:
             captured["graph_input"] = graph_input
             captured["config"] = config
             captured["stream_mode"] = stream_mode

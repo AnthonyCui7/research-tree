@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 from langgraph.cache.memory import InMemoryCache
@@ -13,12 +14,19 @@ from research_tree.agents.workspace.nodes import WorkspaceAgentNodes
 from research_tree.agents.workspace.routing import (
     fan_out_validators_with_send,
     route_after_rerun_guardrail,
+    route_after_workspace_context,
 )
 from research_tree.agents.workspace.state import (
     WorkspaceAgentInput,
     WorkspaceAgentOutput,
     WorkspaceAgentState,
 )
+
+
+# A context is keyed by workspace version, and a version is superseded by
+# the first approved change, so an entry is only useful for as long as a
+# conversation keeps returning to the same version.
+CONTEXT_CACHE_TTL_SECONDS = 60 * 60
 
 
 def build_workspace_agent_graph(
@@ -29,6 +37,7 @@ def build_workspace_agent_graph(
     workspace_constructor: Any = None,
     workspace_repository: Any = None,
 ) -> Any:
+    owner_id = str(getattr(workspace_repository, "owner_id", "") or "")
     nodes = WorkspaceAgentNodes(
         llm_client=llm_client,
         **(
@@ -52,8 +61,10 @@ def build_workspace_agent_graph(
     builder.add_node(
         "build_workspace_context",
         nodes.build_workspace_context,
-        cache_policy=CachePolicy(key_func=workspace_context_cache_key),
-        destinations=("construct_workspace_modification", "critique_workspace"),
+        cache_policy=CachePolicy(
+            key_func=partial(workspace_context_cache_key, owner_id=owner_id),
+            ttl=CONTEXT_CACHE_TTL_SECONDS,
+        ),
     )
     builder.add_node(
         "agent_loop",
@@ -106,6 +117,11 @@ def build_workspace_agent_graph(
     # The loop opens on the workspace summary alone; the heavy context is built
     # only for the paths that read it.
     builder.add_edge("load_workspace", "agent_loop")
+    # Which node reads the context is decided here, from the tool call that
+    # asked for it. Deciding it inside the node put the decision into the
+    # cached writes, and a cached critique's routing was replayed onto the
+    # next edit of the same workspace version.
+    builder.add_conditional_edges("build_workspace_context", route_after_workspace_context)
     builder.add_edge("critique_workspace", "finalize_response")
     builder.add_edge("prepare_retrieval_rerun", "validate_rerun_args")
     builder.add_conditional_edges("validate_rerun_args", route_after_rerun_guardrail)

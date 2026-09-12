@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 from typing import Any, Mapping
 
@@ -62,7 +63,7 @@ def _reader_instructions_section(instructions: str | None) -> str:
     inventing papers or breaking the output contract.
     """
 
-    text = " ".join((instructions or "").split()).strip()
+    text = html.escape(" ".join((instructions or "").split()).strip(), quote=False)
     if not text:
         return ""
     return f"""

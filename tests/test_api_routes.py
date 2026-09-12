@@ -120,7 +120,7 @@ def test_rerun_starts_a_run(client, repository, seed_workspace) -> None:
 
 
 def test_create_workspace_records_reader_instructions_on_the_run(client, repository) -> None:
-    token = _issue_topic_review_approval("Prompting")
+    token = _issue_topic_review_approval(repository.owner_id, "Prompting")
 
     # The run is reserved for real; only the worker that would execute it is
     # stubbed, so the stored run is exactly what the pipeline would read.
@@ -140,7 +140,7 @@ def test_create_workspace_records_reader_instructions_on_the_run(client, reposit
 
 
 def test_create_workspace_without_instructions_stores_none(client, repository) -> None:
-    token = _issue_topic_review_approval("Prompting")
+    token = _issue_topic_review_approval(repository.owner_id, "Prompting")
 
     with patch("research_tree.services.pipeline._dispatch_local_thread"):
         response = client.post(
@@ -159,7 +159,7 @@ def test_create_workspace_requires_a_valid_topic_token(client) -> None:
     )
 
     assert response.status_code == 400
-    assert response.json()["error_code"] == "invalid_payload"
+    assert response.json()["error_code"] == "topic_review_expired"
 
 
 def test_agent_rejects_a_malformed_thread_id(client, seed_workspace) -> None:
@@ -524,3 +524,17 @@ def test_the_assistant_refuses_a_model_it_cannot_price(client, seed_workspace) -
     assert refused.status_code == 400
     assert refused.json()["error_code"] == "invalid_payload"
     assert "gpt-5.6-luna" in refused.json()["detail"]
+
+
+def test_a_non_finite_number_is_refused_before_it_is_stored(client, seed_workspace) -> None:
+    # Python's parser admits NaN; JSON, Postgres and the browser do not, so the
+    # stored document and the served one would disagree.
+    version_hash = seed_workspace()
+    response = client.post(
+        "/workspaces/workspace-1/edits",
+        content=_edit_body(version_hash, "[NaN]"),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert "finite" in response.json()["detail"]

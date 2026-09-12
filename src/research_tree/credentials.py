@@ -8,35 +8,35 @@ key when the operator has granted the account an allowance that is not used
 up, otherwise a 402 the API turns into a sentence. The choice is stamped on
 the request's binding (`credential_source`) so the metering hook knows whose
 money moved.
+
+The account's key is read from the database on every call, never from a
+per-process cache. The API and the worker are separate processes, so a cache
+in one could not be told when the account page in the other saved or removed
+a key: a build that failed for want of a key kept failing for five minutes
+after the key was added, and a removed key went on being spent for as long.
+The read is one indexed row and one unwrap, milliseconds beside the model
+call it precedes.
 """
 
 from __future__ import annotations
 
 import os
-import time
-from threading import Lock
 
 from research_tree.db import database_url
 from research_tree.principal import current_principal, set_credential_source
 from research_tree.services.errors import AllowanceExhaustedError, NoLlmCredentialsError
 
-CACHE_TTL_SECONDS = 300.0
 NO_CREDENTIALS_MESSAGE = "Add an OpenAI API key to your account before running this."
 ALLOWANCE_EXHAUSTED_MESSAGE = (
     "Your sponsored allowance is used up. Add your own OpenAI API key to keep going."
 )
-
-# user id -> (key or None, expires at). Other replicas catch up within the TTL;
-# this one is told directly when the account page saves or removes a key.
-_user_keys: dict[str, tuple[str | None, float]] = {}
-_user_keys_lock = Lock()
 
 
 def openai_api_key() -> str | None:
     principal = current_principal()
     if principal is None or principal.is_local or database_url() is None:
         return _platform_key()
-    key = _cached_user_key(principal.user_id)
+    key = _load_user_key(principal.user_id)
     if key:
         set_credential_source("byok")
         return key
@@ -50,28 +50,8 @@ def openai_api_key() -> str | None:
     raise NoLlmCredentialsError(NO_CREDENTIALS_MESSAGE)
 
 
-def forget_user_key(user_id: str | None = None) -> None:
-    with _user_keys_lock:
-        if user_id is None:
-            _user_keys.clear()
-        else:
-            _user_keys.pop(user_id, None)
-
-
 def _platform_key() -> str | None:
     return (os.environ.get("OPENAI_API_KEY") or "").strip() or None
-
-
-def _cached_user_key(user_id: str) -> str | None:
-    now = time.monotonic()
-    with _user_keys_lock:
-        cached = _user_keys.get(user_id)
-        if cached is not None and cached[1] > now:
-            return cached[0]
-    key = _load_user_key(user_id)
-    with _user_keys_lock:
-        _user_keys[user_id] = (key, now + CACHE_TTL_SECONDS)
-    return key
 
 
 def _load_user_key(user_id: str) -> str | None:

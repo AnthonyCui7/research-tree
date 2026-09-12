@@ -4,6 +4,12 @@
 It is a no-op for the local profile and for code paths with no bound
 principal (the CLIs), and it never raises: a metering failure is logged, the
 answer the user paid for is still returned.
+
+A sponsored call that uses the allowance up marks the binding's spend guard,
+which `llm.py` reads before every later call in the same piece of work. The
+allowance is otherwise checked when the work starts, and a build or an
+annotation job is hundreds of calls: without the guard, an account with a
+cent left could spend a whole job on the platform key.
 """
 
 from __future__ import annotations
@@ -101,7 +107,8 @@ def record_llm_usage(*, model: str, raw_response: dict[str, Any], label: str) ->
                 },
             )
             if source == "sponsored" and cost > 0:
-                charge_allowance(conn, binding.principal.user_id, cost)
+                if charge_allowance(conn, binding.principal.user_id, cost):
+                    binding.spend.exhausted = True
     except Exception as error:  # noqa: BLE001 - metering must never fail the call it meters
         logger.warning("usage not recorded for %s (%s): %s", label, model, error)
 

@@ -78,20 +78,22 @@ def resolve_bounding_box(
         return None
 
     page = document.load_page(annotation.page_number - 1)
-    matches = search_page(page, quote)
-    if not matches:
+    hits = search_page(page, quote)
+    if not hits:
         return None
 
-    rectangles = _rectangles_for_occurrence(annotation, matches, page_text, quote)
+    rectangles = _rectangles_for_occurrence(annotation, hits)
     fragments = [normalize_rectangle(rectangle, page.rect) for rectangle in rectangles]
     return BoundingBox(**_covering_box(fragments).model_dump(), fragments=fragments)
 
 
-def search_page(page: fitz.Page, quote: str) -> list[fitz.Rect]:
-    """Every rectangle on the page matching the quote.
+def search_page(page: fitz.Page, quote: str) -> list[list[fitz.Rect]]:
+    """Every occurrence of the quote on the page, each as its rectangles.
 
-    A quote spanning a line break is returned as one rectangle per line, so a
-    single match can be several rectangles.
+    The viewer returns one rectangle per line and no boundary between
+    occurrences, so a quote that wraps once and repeats once comes back as
+    three rectangles. Each rectangle holds the words it covers, and the words
+    of one occurrence read the whole quote, which is what tells the hits apart.
     """
 
     queries = [quote]
@@ -100,33 +102,45 @@ def search_page(page: fitz.Page, quote: str) -> list[fitz.Rect]:
         queries.append(trimmed)
     for query in queries:
         try:
-            matches = page.search_for(query)
+            rectangles = list(page.search_for(query))
         except Exception:
             logger.warning("Searching page %s for a quote failed", page.number + 1, exc_info=True)
             return []
-        if matches:
-            return list(matches)
+        if rectangles:
+            return _group_by_occurrence(page, rectangles, query)
     return []
+
+
+def _group_by_occurrence(
+    page: fitz.Page, rectangles: list[fitz.Rect], quote: str
+) -> list[list[fitz.Rect]]:
+    target = _squash(quote)
+    hits: list[list[fitz.Rect]] = []
+    current: list[fitz.Rect] = []
+    covered = ""
+    for rectangle in rectangles:
+        current.append(rectangle)
+        covered += _squash(page.get_text("text", clip=rectangle))
+        if target in covered or len(covered) >= len(target):
+            hits.append(current)
+            current, covered = [], ""
+    if current:
+        hits.append(current)
+    return hits
+
+
+def _squash(text: str) -> str:
+    return "".join(text.split()).casefold()
 
 
 def _rectangles_for_occurrence(
     annotation: PaperAnnotation,
-    matches: list[fitz.Rect],
-    page_text: str,
-    quote: str,
+    hits: list[list[fitz.Rect]],
 ) -> list[fitz.Rect]:
-    """Narrow the page's matches down to the one occurrence meant.
+    """The occurrence the anchor names, or the first when it names none."""
 
-    When the quote appears once on the page, every rectangle belongs to it —
-    which is how a quote that wraps across lines keeps all of its lines. When
-    it repeats, the rectangles cannot be attributed to occurrences reliably, so
-    take the single one the anchor points at.
-    """
-
-    if len(find_occurrences(page_text, quote)) <= 1:
-        return matches
     position = annotation.anchor.occurrence_index if annotation.anchor else 0
-    return [matches[position]] if position < len(matches) else [matches[0]]
+    return hits[position] if position < len(hits) else hits[0]
 
 
 def normalize_rectangle(rectangle: fitz.Rect, page_rect: fitz.Rect) -> HighlightFragment:

@@ -99,6 +99,7 @@ class WorkspaceRepository(Protocol):
         actor_type: str | None = None,
         actor_id: str | None = None,
         reason: str,
+        expected_version_hash: str | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -233,6 +234,9 @@ class WorkspaceRepository(Protocol):
         ...
 
     def list_pipeline_runs(self, workspace_id: str) -> list[dict[str, Any]]:
+        ...
+
+    def list_active_pipeline_runs(self) -> list[dict[str, Any]]:
         ...
 
     def cancel_pipeline_runs(self, workspace_id: str) -> list[str]:
@@ -563,6 +567,7 @@ class WorkspaceRepositoryBase:
         actor_type: str | None = None,
         actor_id: str | None = None,
         reason: str,
+        expected_version_hash: str | None = None,
     ) -> dict[str, Any]:
         if actor not in ALLOWED_ACTOR_TYPES:
             raise ValueError(f"unsupported workspace actor: {actor!r}")
@@ -574,6 +579,13 @@ class WorkspaceRepositoryBase:
                 current_hash: str | None = workspace_version_hash(current_workspace)
             except FileNotFoundError:
                 current_hash = None
+            # Checked here, under the workspace's lock, so an edit landing
+            # between the caller's read and this write is not overwritten.
+            if expected_version_hash is not None and current_hash != expected_version_hash:
+                raise StaleVersionError(
+                    "workspace current version changed before restore: "
+                    f"expected {expected_version_hash}, found {current_hash}."
+                )
 
             if current_hash == target_hash:
                 return {
@@ -1425,9 +1437,15 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
 
     def claim_workspace_id(self, base_id: str) -> str:
         with self._lock:
+            trashed = self._trashed_workspace_ids()
             for candidate in _id_candidates(base_id):
                 directory = self._workspace_dir(candidate)
                 if (directory / "current.json").exists():
+                    continue
+                # A deleted workspace keeps its name, as it does in Postgres:
+                # its runs still carry the id, and a new workspace given the
+                # same one inherited them.
+                if candidate in trashed:
                     continue
                 # Failed hydration can leave cached paper content behind without
                 # ever publishing, so an empty directory is not a claim; the
@@ -1441,6 +1459,12 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
                 (directory / _CLAIM_FILE).write_text(_now(), encoding="utf-8")
                 return candidate
         raise ValueError(f"no workspace id is available for {base_id!r}")
+
+    def _trashed_workspace_ids(self) -> set[str]:
+        trash_dir = self.base_dir / ".trash"
+        if not trash_dir.is_dir():
+            return set()
+        return {path.name.rsplit("--", 1)[0] for path in trash_dir.iterdir() if path.is_dir()}
 
     def _build_gave_up(self, workspace_id: str) -> bool:
         """True when this name had a build and none is running now."""
@@ -1719,6 +1743,19 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
                 _reclaim_dead_pipeline_run(path, payload)
                 runs.append(payload)
         return sorted(runs, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+    def list_active_pipeline_runs(self) -> list[dict[str, Any]]:
+        runs_dir = self.base_dir / ".pipeline_runs"
+        if not runs_dir.is_dir():
+            return []
+        active = []
+        for path in runs_dir.glob("*.json"):
+            payload = _read_json(path)
+            if not isinstance(payload, dict) or _reclaim_dead_pipeline_run(path, payload):
+                continue
+            if payload.get("status") in {"queued", "running"}:
+                active.append(payload)
+        return sorted(active, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
     def cancel_pipeline_runs(self, workspace_id: str) -> list[str]:
         with self._lock:

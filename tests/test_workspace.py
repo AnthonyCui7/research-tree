@@ -24,6 +24,7 @@ from research_tree.workspace.schemas import (
 )
 from research_tree.workspace.repository import LocalJsonWorkspaceRepository
 from research_tree.workspace.diff import derive_operations_and_diff_summary
+from research_tree.services.reviews import validate_workspace_proposal
 from research_tree.workspace.operations import (
     WorkspacePatchError,
     apply_structured_workspace_patch,
@@ -1533,3 +1534,183 @@ def _paper_card(paper_id: str, title: str) -> dict[str, object]:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandEditConsistencyTest(unittest.TestCase):
+    def test_removing_a_branch_removes_its_path_and_the_parent_becomes_a_leaf(self) -> None:
+        workspace = _workspace_with_side_branch()
+        emptied = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[remove_visible_paper_operation(paper_id="p3")],
+        )
+
+        removed = apply_structured_workspace_patch(
+            base_workspace=emptied,
+            operations=[{"op": "remove", "entity_type": "branch", "branch_id": "branch-side"}],
+        )
+
+        self.assertEqual([node["node_id"] for node in removed["tree"]["nodes"]], ["branch-main"])
+        self.assertEqual([path["path_id"] for path in removed["paper_paths"]], ["path-main"])
+        self.assertTrue(removed["tree"]["nodes"][0]["is_leaf"])
+        operations, summary, _ = derive_operations_and_diff_summary(
+            workspace=emptied, proposed_workspace=removed
+        )
+        validation = validate_workspace_proposal(
+            current_workspace=emptied,
+            proposed_workspace=removed,
+            proposed_operations=operations,
+            diff_summary=summary,
+        )
+        self.assertTrue(validation["valid"], validation["errors"])
+
+    def test_a_branch_still_carrying_a_survey_anchor_card_cannot_be_removed(self) -> None:
+        workspace = _workspace_with_side_branch()
+        workspace["tree"]["nodes"][1]["survey_anchor_paper_id"] = "p3"
+        workspace["tree"]["nodes"][1]["primary_paper_ids"] = []
+        workspace["paper_paths"] = [workspace["paper_paths"][0]]
+
+        with self.assertRaisesRegex(WorkspacePatchError, "still contains papers"):
+            apply_structured_workspace_patch(
+                base_workspace=workspace,
+                operations=[{"op": "remove", "entity_type": "branch", "branch_id": "branch-side"}],
+            )
+
+    def test_removing_a_paper_clears_the_branch_anchor_that_named_it(self) -> None:
+        workspace = _workspace_with_side_branch()
+        workspace["tree"]["nodes"][1]["survey_anchor_paper_id"] = "p3"
+
+        proposed = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[remove_visible_paper_operation(paper_id="p3")],
+        )
+
+        self.assertIsNone(proposed["tree"]["nodes"][1]["survey_anchor_paper_id"])
+
+    def test_moving_a_paper_to_a_branch_without_a_path_gives_it_one(self) -> None:
+        workspace = _workspace_with_side_branch()
+        workspace["paper_paths"] = [workspace["paper_paths"][0]]
+
+        proposed = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p1",
+                    "to_branch_id": "branch-side",
+                }
+            ],
+        )
+
+        side_paths = [
+            path for path in proposed["paper_paths"] if path["branch_node_id"] == "branch-side"
+        ]
+        self.assertEqual(len(side_paths), 1)
+        self.assertEqual(side_paths[0]["paper_ids"], ["p1"])
+        self.assertEqual(side_paths[0]["paper_steps"][0]["paper_id"], "p1")
+        self.assertEqual(side_paths[0]["paper_steps"][0]["why_read_here"], "Start with the method.")
+
+    def test_a_new_branch_takes_only_editorial_fields_and_is_a_leaf(self) -> None:
+        proposed = apply_structured_workspace_patch(
+            base_workspace=_workspace(),
+            operations=[
+                {
+                    "op": "insert",
+                    "entity_type": "branch",
+                    "value": {
+                        "node_id": "branch-new",
+                        "parent_id": "branch-main",
+                        "label": "New",
+                        "primary_paper_ids": ["p1"],
+                        "child_node_ids": ["branch-main"],
+                    },
+                }
+            ],
+        )
+
+        new = next(node for node in proposed["tree"]["nodes"] if node["node_id"] == "branch-new")
+        parent = next(node for node in proposed["tree"]["nodes"] if node["node_id"] == "branch-main")
+        self.assertEqual(new["primary_paper_ids"], [])
+        self.assertEqual(new["child_node_ids"], [])
+        self.assertTrue(new["is_leaf"])
+        self.assertFalse(parent["is_leaf"])
+        self.assertEqual(parent["child_node_ids"], ["branch-new"])
+
+    def test_a_paper_card_written_by_the_caller_is_refused(self) -> None:
+        with self.assertRaisesRegex(WorkspacePatchError, "cannot be put back"):
+            apply_structured_workspace_patch(
+                base_workspace=_workspace(),
+                operations=[
+                    {
+                        "op": "insert",
+                        "entity_type": "paper_placement",
+                        "paper_id": "new-1",
+                        "branch_id": "branch-main",
+                        "value": {
+                            "paper_card": {
+                                "title": "Injected",
+                                "paper_content": {"source_url": "https://example.org/x.pdf"},
+                            }
+                        },
+                    }
+                ],
+            )
+
+    def test_set_refuses_list_elements_of_the_wrong_shape(self) -> None:
+        for field_name, value in (("key_terms", [{}]), ("open_questions", [None, "ok"])):
+            with self.assertRaisesRegex(WorkspacePatchError, "list of text"):
+                apply_structured_workspace_patch(
+                    base_workspace=_workspace(),
+                    operations=[
+                        {"op": "set", "entity_type": "root", "field": field_name, "value": value}
+                    ],
+                )
+
+    def test_renaming_a_branch_rewrites_its_cards_display_path(self) -> None:
+        proposed = apply_structured_workspace_patch(
+            base_workspace=_workspace(),
+            operations=[
+                {
+                    "op": "set",
+                    "entity_type": "branch",
+                    "branch_id": "branch-main",
+                    "field": "label",
+                    "value": "Core Methods",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            proposed["paper_cards"]["p1"]["primary_tree_location"]["path"][-1], "Core Methods"
+        )
+
+    def test_removing_one_paper_does_not_read_as_a_global_rewrite(self) -> None:
+        workspace = _workspace_with_side_branch()
+        proposed = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[remove_visible_paper_operation(paper_id="p3")],
+        )
+
+        _, summary, warnings = derive_operations_and_diff_summary(
+            workspace=workspace, proposed_workspace=proposed
+        )
+
+        self.assertFalse(summary["appears_global"])
+        self.assertEqual(warnings, [])
+
+    def test_a_malformed_container_is_a_validation_error_not_a_crash(self) -> None:
+        workspace = _workspace()
+        proposed = {**workspace, "tree": {"root_node_id": "root", "nodes": 1}, "paper_paths": 1}
+
+        operations, summary, _ = derive_operations_and_diff_summary(
+            workspace=workspace, proposed_workspace=proposed
+        )
+        validation = validate_workspace_proposal(
+            current_workspace=workspace,
+            proposed_workspace=proposed,
+            proposed_operations=operations,
+            diff_summary=summary,
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("tree.nodes must be a list" in error for error in validation["errors"]))

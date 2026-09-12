@@ -95,8 +95,6 @@ def save_api_key(request: SaveApiKeyRequest) -> dict[str, object]:
         store_user_key,
         validate_openai_key,
     )
-    from research_tree.credentials import forget_user_key
-
     api_key = request.api_key.strip()
     # Shape is checked here rather than by pydantic so a refusal never echoes
     # the value back in a validation error.
@@ -106,7 +104,6 @@ def save_api_key(request: SaveApiKeyRequest) -> dict[str, object]:
         raise ByokUnavailableError(SAVING_DISABLED_MESSAGE)
     validate_openai_key(api_key)
     last4 = store_user_key(principal.user_id, api_key)
-    forget_user_key(principal.user_id)
     logger.info("account %s saved an OpenAI key ending in %s", principal.user_id, last4)
     return {"stored": True, "detail": "", "openai": _account_key_status(last4, None)}
 
@@ -117,10 +114,8 @@ def remove_api_key() -> dict[str, object]:
     if principal is None:
         return {"removed": False, "detail": STORAGE_UNAVAILABLE}
     from research_tree.billing.user_keys import delete_user_key
-    from research_tree.credentials import forget_user_key
 
     removed = delete_user_key(principal.user_id)
-    forget_user_key(principal.user_id)
     return {"removed": removed, "detail": ""}
 
 

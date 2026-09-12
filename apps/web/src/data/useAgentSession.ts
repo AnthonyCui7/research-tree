@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { repositoryWorkspaceGateway } from "./workspaceApi";
-import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../lib/apiError";
-import type { AgentActivity, AgentRunResult, AgentStep, WorkspaceReview } from "../lib/types";
+import { ApiError, isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../lib/apiError";
+import type {
+  AgentActivity,
+  AgentRunResult,
+  AgentStep,
+  PipelineRun,
+  WorkspaceReview,
+} from "../lib/types";
 
 export type ConversationItem = {
   role: "user" | "agent";
@@ -19,7 +25,10 @@ const MAX_HISTORY_CHARACTERS = 4_000;
 
 export type AgentSession = {
   conversation: ConversationItem[];
+  /** The last turn's outcome, for its warnings and failures. */
   result: AgentRunResult | null;
+  /** The proposal awaiting a decision; it outlives the turns asked after it. */
+  pendingReview: AgentRunResult | null;
   outcome: ReviewOutcome;
   busy: boolean;
   /** What the running turn is doing right now; null when idle. */
@@ -43,6 +52,7 @@ export type AgentSession = {
 type SessionState = {
   conversation: ConversationItem[];
   result: AgentRunResult | null;
+  pendingReview: AgentRunResult | null;
   outcome: ReviewOutcome;
   busy: boolean;
   activity: AgentActivity | null;
@@ -57,6 +67,7 @@ type SessionState = {
 const NEW_SESSION: SessionState = {
   conversation: [],
   result: null,
+  pendingReview: null,
   outcome: null,
   busy: false,
   activity: null,
@@ -78,6 +89,7 @@ const NEW_SESSION: SessionState = {
 export function useAgentSession(
   workspaceId: string | null,
   onWorkspaceChanged: () => Promise<void>,
+  onPipelineStarted: (run: PipelineRun) => void,
 ): AgentSession {
   const [sessions, setSessions] = useState<Record<string, SessionState>>({});
   // Chat state is in-memory, so a reload orphans any review still pending on
@@ -104,18 +116,18 @@ export function useAgentSession(
         if (!pending) return;
         update(id, (state) => {
           // A live session owns the panel; restoration only fills silence.
-          if (state.result || state.busy || state.conversation.length > 0) return state;
+          if (state.pendingReview || state.busy || state.conversation.length > 0) return state;
           return {
             ...state,
-            result: restoredResult(id, pending),
+            pendingReview: restoredResult(id, pending),
             outcome: null,
             restoredUserMessage: pending.user_message?.trim() || null,
           };
         });
       })
       // Restoration is best-effort; an error strip about a background probe
-      // would be noise.
-      .catch(() => undefined);
+      // would be noise. A probe that failed is asked again on the next visit.
+      .catch(() => restoredWorkspaceIds.current.delete(id));
   }, [update, workspaceId]);
 
   const send = useCallback(
@@ -135,8 +147,9 @@ export function useAgentSession(
         steps: [],
         error: null,
         outcome: null,
-        // A previous failure is answered by this request; a pending review is not.
-        result: state.result && agentRunFailed(state.result.status) ? null : state.result,
+        // The previous turn's notices are answered by this request; a
+        // proposal still waiting on a decision is not.
+        result: null,
         conversation: [...state.conversation, { role: "user", text: trimmed }],
       }));
       try {
@@ -154,16 +167,26 @@ export function useAgentSession(
               steps: activity.kind === "thinking" ? state.steps : [...state.steps, activity],
             })),
         );
+        const proposal = next.status === "pending_review" && next.review_id ? next : null;
         const response =
           meaningfulResponse(next.final_response) ||
-          (next.status === "pending_review"
+          (proposal
             ? "I have prepared a structural revision for your review."
-            : "Analysis complete.");
+            : "The assistant finished without writing a reply. Try asking again.");
+        // The server keeps every proposal until it is decided, so a second one
+        // would leave the first pending out of sight: this panel shows one
+        // card, and a reload would resurrect whichever is newest. The reader
+        // asked for something else; the older proposal is withdrawn for them.
+        const superseded = proposal ? current.pendingReview?.review_id : null;
+        if (superseded && superseded !== proposal?.review_id) {
+          repositoryWorkspaceGateway.rejectReview(id, superseded).catch(() => undefined);
+        }
         update(id, (state) => ({
           ...state,
           result: next,
+          pendingReview: proposal ?? state.pendingReview,
           threadId: next.thread_id ?? state.threadId,
-          restoredUserMessage: null,
+          restoredUserMessage: proposal ? null : state.restoredUserMessage,
           // A failed run produced no answer. Reporting one would file a failure
           // as an assistant reply and leave it in the conversation history.
           conversation: agentRunFailed(next.status)
@@ -188,7 +211,7 @@ export function useAgentSession(
 
   const decide = useCallback(
     async (choice: "approve" | "reject") => {
-      const reviewId = workspaceId ? sessions[workspaceId]?.result?.review_id : null;
+      const reviewId = workspaceId ? sessions[workspaceId]?.pendingReview?.review_id : null;
       if (!workspaceId || !reviewId) return;
       const id = workspaceId;
       update(id, (state) => ({ ...state, busy: true, error: null }));
@@ -197,8 +220,14 @@ export function useAgentSession(
         if (choice === "approve") {
           const action = await repositoryWorkspaceGateway.approveReview(id, reviewId);
           // Approving a rerun review starts a pipeline stage instead of
-          // applying a patch; the strip should say which happened.
-          outcome = action.pipeline_run ? "rerun_started" : "applied";
+          // applying a patch; the strip should say which happened, and the
+          // sidebar should carry the build like any other.
+          if (action.pipeline_run) {
+            outcome = "rerun_started";
+            onPipelineStarted(action.pipeline_run);
+          } else {
+            outcome = "applied";
+          }
           await onWorkspaceChanged();
         } else {
           await repositoryWorkspaceGateway.rejectReview(id, reviewId);
@@ -207,17 +236,19 @@ export function useAgentSession(
         update(id, (state) => ({
           ...state,
           outcome,
-          result: null,
+          pendingReview: null,
           restoredUserMessage: null,
         }));
       } catch (requestError) {
-        if (isVersionConflict(requestError)) {
-          // The review was written against a workspace version the server has
-          // already moved past; reloading is what makes the next attempt valid.
+        // Stale (the workspace moved on) or gone (decided in another tab, or
+        // the workspace itself deleted): either way the card's buttons can
+        // never succeed, so it is taken down and the workspace reloaded.
+        const gone = requestError instanceof ApiError && requestError.status === 404;
+        if (isVersionConflict(requestError) || gone) {
           update(id, (state) => ({
             ...state,
-            error: VERSION_CONFLICT_MESSAGE,
-            result: null,
+            error: gone ? REVIEW_GONE_MESSAGE : VERSION_CONFLICT_MESSAGE,
+            pendingReview: null,
             restoredUserMessage: null,
           }));
           await onWorkspaceChanged();
@@ -228,7 +259,7 @@ export function useAgentSession(
         update(id, (state) => ({ ...state, busy: false }));
       }
     },
-    [onWorkspaceChanged, sessions, update, workspaceId],
+    [onPipelineStarted, onWorkspaceChanged, sessions, update, workspaceId],
   );
 
   const change = useCallback(
@@ -241,6 +272,7 @@ export function useAgentSession(
   return {
     conversation: session.conversation,
     result: session.result,
+    pendingReview: session.pendingReview,
     outcome: session.outcome,
     busy: session.busy,
     activity: session.activity,
@@ -259,9 +291,12 @@ export function useAgentSession(
   };
 }
 
+const REVIEW_GONE_MESSAGE =
+  "This proposal is no longer open to a decision. The workspace has been refreshed.";
+
 /** Backend failures are `failed`, `failed_validation`, `failed_guardrail`, `failed_exception`. */
-export function agentRunFailed(status: string): boolean {
-  return status.startsWith("failed");
+export function agentRunFailed(status: unknown): boolean {
+  return typeof status === "string" && status.startsWith("failed");
 }
 
 /** Treats the backend's old placeholder the same as no reply at all. */

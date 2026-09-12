@@ -15,8 +15,6 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 class WorkspaceAgentRunResult:
     thread_id: str
     final_output: dict[str, Any] | None
-    interrupted: bool
-    interrupt_payloads: list[dict[str, Any]] = field(default_factory=list)
     state_updates: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -62,11 +60,15 @@ def _run_graph(
 ) -> WorkspaceAgentRunResult:
     updates: list[dict[str, Any]] = []
     final_output: dict[str, Any] | None = None
-    interrupts: list[dict[str, Any]] = []
     # With a listener the stream carries the nodes' progress events alongside
     # the state snapshots, as (mode, chunk) pairs.
     stream_mode: Any = ["values", "custom"] if on_progress is not None else "values"
-    for chunk in graph.stream(graph_input, config=config, stream_mode=stream_mode):
+    # The graph never pauses, so only the state at the end of a turn is worth
+    # keeping: a checkpoint after every superstep wrote the whole state, full
+    # text and transcript included, forty times per edit.
+    for chunk in graph.stream(
+        graph_input, config=config, stream_mode=stream_mode, durability="exit"
+    ):
         if isinstance(chunk, tuple) and len(chunk) == 2:
             mode, snapshot = chunk
             if mode == "custom":
@@ -79,14 +81,9 @@ def _run_graph(
             continue
         updates.append(snapshot)
         final_output = snapshot
-        for item in snapshot.get("__interrupt__") or []:
-            value = getattr(item, "value", item)
-            interrupts.append(value if isinstance(value, dict) else {"value": value})
     return WorkspaceAgentRunResult(
         thread_id=thread_id,
         final_output=final_output,
-        interrupted=bool(interrupts),
-        interrupt_payloads=interrupts,
         state_updates=updates,
     )
 

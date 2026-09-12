@@ -52,6 +52,20 @@ class StaleWorkspaceError(ReviewConflictError):
     error_code = "stale_workspace"
 
 
+class WorkspaceBusyError(WorkspaceServiceError):
+    """The workspace is not free for this: a build owns it, or a turn is still running."""
+
+    status_code = 409
+    error_code = "workspace_busy"
+
+
+class TopicReviewExpiredError(WorkspaceServiceError):
+    """The build was asked for with a topic approval that has lapsed or was already spent."""
+
+    status_code = 400
+    error_code = "topic_review_expired"
+
+
 class UnauthenticatedError(WorkspaceServiceError):
     status_code = 401
     error_code = "unauthenticated"
@@ -100,11 +114,20 @@ class ProviderUnreachableError(WorkspaceServiceError):
     error_code = "provider_unreachable"
 
 
+class ServiceUnavailableError(WorkspaceServiceError):
+    """Something this request needs (the job queue) could not be reached."""
+
+    status_code = 503
+    error_code = "service_unavailable"
+
+
 # Error codes whose message is written by this codebase for the user to read.
 # Everything else gets a generic message so internal detail cannot leak.
 PUBLIC_ERROR_CODES = {
     "invalid_payload",
     "invalid_resource_id",
+    "workspace_busy",
+    "topic_review_expired",
     "unauthenticated",
     "not_allowed",
     "rate_limited",
@@ -113,6 +136,7 @@ PUBLIC_ERROR_CODES = {
     "api_key_invalid",
     "byok_unavailable",
     "provider_unreachable",
+    "service_unavailable",
 }
 
 

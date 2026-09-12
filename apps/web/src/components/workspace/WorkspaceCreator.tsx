@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { messageFrom } from "../../lib/apiError";
+import { ApiError, messageFrom } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
 import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { pipelineRunEventsUrl, repositoryWorkspaceGateway } from "../../data/workspaceApi";
@@ -96,18 +96,28 @@ export function WorkspaceCreator({
       return;
     }
     const runId = run.run_id;
-    const events = new EventSource(pipelineRunEventsUrl(runId));
-    events.addEventListener("pipeline_run_updated", (event) => {
-      const next = parsePipelineRun((event as MessageEvent<string>).data);
-      if (!next) {
-        setError("A build update could not be read. The build itself continues on the server.");
-        return;
-      }
+    let poll: number | null = null;
+    let finished = false;
+
+    function reset() {
+      readyRunIdRef.current = null;
+      setTopic("");
+      setInstructions("");
+      setReview(null);
+      setRun(null);
+      setError(null);
+      setCanceling(false);
+    }
+
+    function handleRun(next: PipelineRun) {
+      if (finished) return;
       if (isTerminalRunStatus(next.status)) {
         // The server stops streaming once a run leaves queued/running. Without
         // this close EventSource reconnects every few seconds and replays the
         // terminal update — and every replay re-runs the handlers below.
+        finished = true;
         events.close();
+        if (poll !== null) window.clearInterval(poll);
       }
       setRun(next);
       onRunStarted(next);
@@ -115,12 +125,7 @@ export function WorkspaceCreator({
         void onCreated(next.workspace_id, next)
           .then(() => {
             onRunFinished(next.run_id);
-            readyRunIdRef.current = null;
-            setTopic("");
-            setReview(null);
-            setRun(null);
-            setError(null);
-            setCanceling(false);
+            reset();
           })
           .catch((requestError: unknown) => setError(messageFrom(requestError)));
         return;
@@ -130,11 +135,7 @@ export function WorkspaceCreator({
           void onCreated(next.workspace_id, next)
             .then(() => {
               onRunFinished(next.run_id);
-              readyRunIdRef.current = null;
-              setTopic("");
-              setReview(null);
-              setRun(null);
-              setCanceling(false);
+              reset();
             })
             .catch((requestError: unknown) => setError(messageFrom(requestError)));
         }
@@ -147,14 +148,39 @@ export function WorkspaceCreator({
           setError(messageFrom(requestError));
         });
       }
+    }
+
+    const events = new EventSource(pipelineRunEventsUrl(runId));
+    events.addEventListener("pipeline_run_updated", (event) => {
+      const next = parsePipelineRun((event as MessageEvent<string>).data);
+      if (!next) {
+        setError("A build update could not be read. The build itself continues on the server.");
+        return;
+      }
+      handleRun(next);
     });
     // The server says when it is done on purpose; a backend that does not send
     // this still closes on the terminal status above.
     events.addEventListener("stream_complete", () => events.close());
-    // EventSource reconnects automatically after transient network failures.
-    // Treating every reconnect as a failed build leaves a stale error onscreen.
-    events.onerror = () => {};
-    return () => events.close();
+    events.onerror = () => {
+      // EventSource reconnects on its own after a dropped connection, and a
+      // reconnect is not a failed build. A stream it gives up on (a 5xx
+      // during a rollout, a 401 once the session ends) would leave this
+      // dialog saying "Building…" for ever, so the run is polled instead;
+      // a session that has ended answers the poll with a 401 that the
+      // session store hears.
+      if (events.readyState !== EventSource.CLOSED || finished || poll !== null) return;
+      poll = window.setInterval(() => {
+        repositoryWorkspaceGateway
+          .getPipelineRun(runId)
+          .then(handleRun)
+          .catch(() => undefined);
+      }, RUN_POLL_MS);
+    };
+    return () => {
+      events.close();
+      if (poll !== null) window.clearInterval(poll);
+    };
   }, [onCreated, onRunFinished, onRunStarted, run?.run_id]);
 
   if (!present) {
@@ -193,6 +219,12 @@ export function WorkspaceCreator({
       onRunStarted(next);
     } catch (requestError) {
       setError(messageFrom(requestError));
+      // The approval lasts fifteen minutes. Past that, the only way forward
+      // is to review the topic again, so the dialog goes back to that step
+      // with the reason rather than leaving a dead "Build workspace" button.
+      if (requestError instanceof ApiError && requestError.code === "topic_review_expired") {
+        setReview(null);
+      }
     } finally {
       setBusy(false);
     }
@@ -226,6 +258,7 @@ export function WorkspaceCreator({
     readyRunIdRef.current = null;
     setRun(null);
     setReview(null);
+    setInstructions("");
     setError(null);
     setCanceling(false);
   }
@@ -260,6 +293,11 @@ export function WorkspaceCreator({
       onCancel={(event) => {
         event.preventDefault();
         close();
+      }}
+      onKeyDown={(event) => {
+        // The dialog answers Escape through `cancel`; the shell's own Escape
+        // handler must not also close the panel behind it.
+        if (event.key === "Escape") event.stopPropagation();
       }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) close();
@@ -664,6 +702,9 @@ function InlineError({ message }: { message: string }) {
 }
 
 /* -------------------------------------------------------------- helpers --- */
+
+/** How often a run is read once its stream has been given up on. */
+const RUN_POLL_MS = 3_000;
 
 /** Statuses the server will send no further updates for. */
 const TERMINAL_RUN_STATUSES: PipelineRun["status"][] = [

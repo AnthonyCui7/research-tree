@@ -29,6 +29,7 @@ from research_tree.principal import (
 )
 from research_tree.services.errors import (
     InvalidPayloadError,
+    TopicReviewExpiredError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
 )
@@ -110,8 +111,8 @@ class WorkspacePipelineService:
             topic=topic,
         )
         if normalized_topic is None:
-            raise InvalidPayloadError(
-                "Review the research focus again before building a workspace."
+            raise TopicReviewExpiredError(
+                "That topic review has expired. Review the topic again to build it."
             )
         workspace_id = self.repository.claim_workspace_id(topic_slug(normalized_topic))
         return self._start(
@@ -187,6 +188,15 @@ class WorkspacePipelineService:
             self.repository.cancel_pipeline_runs(str(run.get("workspace_id") or ""))
             return self.get_run(run_id)
         return run
+
+    def list_active_runs(self) -> dict[str, Any]:
+        """The account's builds still queued or running, newest first.
+
+        A page reloaded mid-build has nothing else to recover the build from:
+        the workspace is not listed until its first version is published.
+        """
+
+        return {"pipeline_runs": self.repository.list_active_pipeline_runs()}
 
     def list_runs(self, workspace_id: str) -> dict[str, Any]:
         safe_workspace_id = validate_resource_id(workspace_id, field_name="workspace_id")

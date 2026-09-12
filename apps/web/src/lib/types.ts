@@ -247,7 +247,8 @@ export type ReviewActionResponse = {
   idempotent?: boolean;
   workspace_version_hash?: string | null;
   persisted_version_hash?: string | null;
-  pipeline_run?: Record<string, unknown> | null;
+  /** Set when approving a rebuild proposal: the run it started. */
+  pipeline_run?: PipelineRun | null;
 };
 
 export type WorkspaceTree = {

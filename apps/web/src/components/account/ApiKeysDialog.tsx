@@ -4,7 +4,7 @@ import { cx } from "../../lib/cx";
 import { longDateLabel, pluralize } from "../../lib/format";
 import { compactActionClass, primaryActionClass, textInputClass } from "../../lib/controlClasses";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
-import { useSessionInfo } from "../../data/session";
+import { isLocalSession, useSessionInfo } from "../../data/session";
 import { AccountDialog, AccountNotice, AccountSection } from "./AccountDialog";
 import type { AllowanceSummary, ApiKeysResult, UsageSummary } from "../../lib/types";
 
@@ -22,7 +22,7 @@ const RECENT_USAGE_ROWS = 5;
  */
 export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
   const session = useSessionInfo();
-  const local = session?.auth_mode !== "accounts";
+  const local = session === null || isLocalSession(session);
   const [keys, setKeys] = useState<ApiKeysResult | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +118,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
             aria-hidden="true"
           />
           <span className="min-w-0 flex-1 text-[12.5px] text-text-primary">
-            {keys === null ? "Checking…" : keyStatusText(keys, local)}
+            {keys ? keyStatusText(keys, local) : error ? "Key status unavailable" : "Checking…"}
           </span>
           {openai?.masked ? (
             <code className="flex-none font-mono text-[12px] text-text-muted">{openai.masked}</code>

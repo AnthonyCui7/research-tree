@@ -123,10 +123,9 @@ def test_deleted_workspace_is_hidden_and_keeps_its_id(repository) -> None:
     assert repository.list_workspace_versions("workspace-1") == []
     with pytest.raises(FileNotFoundError):
         repository.approve_review_once("workspace-1", "review-1")
-    # The files move to trash, so the id is free again; a row stays, so the
-    # id is taken and a rebuild gets the next suffix rather than old history.
-    expected_taken = not isinstance(repository, LocalJsonWorkspaceRepository)
-    assert (repository.claim_workspace_id("workspace-1") == "workspace-1") is not expected_taken
+    # The name stays taken in both stores: a rebuild gets the next suffix
+    # rather than the deleted workspace's runs and history.
+    assert repository.claim_workspace_id("workspace-1") == "workspace-1-2"
 
 
 

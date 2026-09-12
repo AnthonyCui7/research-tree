@@ -5,6 +5,16 @@ from typing import Any, Mapping
 from langgraph.types import Send
 
 
+def route_after_workspace_context(state: Mapping[str, Any]) -> str:
+    """The critique reads the context; every other terminal edit constructs."""
+
+    next_action = state.get("next_action")
+    action_type = next_action.get("action_type") if isinstance(next_action, Mapping) else None
+    if action_type == "critique_workspace":
+        return "critique_workspace"
+    return "construct_workspace_modification"
+
+
 def route_after_rerun_guardrail(state: Mapping[str, Any]) -> str:
     """A rerun either becomes a pending review or is refused outright.
 

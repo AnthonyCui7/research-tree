@@ -48,11 +48,11 @@ export function AccountScreens({
 }
 
 /**
- * The masked key the account menu shows beside "API keys". Read once per
- * session: it comes from the server's environment, which cannot change while
- * the page is open.
+ * The masked key the account menu shows beside "API keys". Read once, and
+ * again whenever `epoch` changes: the caller bumps it after the API keys
+ * screen closes, the one place the key is saved or removed.
  */
-export function useApiKeyLabel(): string | null {
+export function useApiKeyLabel(epoch: number): string | null {
   const [label, setLabel] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,7 +68,7 @@ export function useApiKeyLabel(): string | null {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [epoch]);
 
   return label;
 }

@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from research_tree.api.app import create_app
 from research_tree.api.dependencies import get_repository
 from research_tree.billing.keywrap import forget_key_wrapper
-from research_tree.credentials import forget_user_key
 from research_tree.db import get_engine
 from research_tree.principal import acting_user_id
 from research_tree.redis_client import forget_redis_clients
@@ -91,7 +90,6 @@ def _forget_process_caches() -> None:
 
     forget_redis_clients()
     forget_key_wrapper()
-    forget_user_key()
     if get_engine.cache_info().currsize:
         try:
             get_engine().dispose()

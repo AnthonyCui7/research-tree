@@ -156,12 +156,38 @@ class RateLimiter:
             handle.flush()
 
 
+# How long a cached provider response stays good for. Search results and
+# citation counts move; a pool cached once was frozen for every later build
+# of the same topic, by anyone, for ever. Thirty days keeps a build's own
+# repeats and reruns free while letting the field move underneath it.
+RESPONSE_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+
+
 class JsonResponseCache(Protocol):
-    """Where a provider's JSON responses are kept between runs."""
+    """Where a provider's JSON responses are kept between runs.
+
+    Entries are stored with the time they were written; one older than
+    `RESPONSE_CACHE_MAX_AGE_SECONDS` reads as a miss. Entries written before
+    the timestamp existed have no age and read as misses too.
+    """
 
     def get(self, key: str) -> Any | None: ...
 
     def put(self, key: str, payload: Any) -> None: ...
+
+
+def _stored(payload: Any) -> str:
+    return json.dumps({"cached_at": time.time(), "payload": payload}, indent=2)
+
+
+def _fresh(raw: Any) -> Any | None:
+    if not isinstance(raw, dict) or "cached_at" not in raw:
+        return None
+    try:
+        age = time.time() - float(raw["cached_at"])
+    except (TypeError, ValueError):
+        return None
+    return raw.get("payload") if age <= RESPONSE_CACHE_MAX_AGE_SECONDS else None
 
 
 class FileJsonResponseCache:
@@ -173,10 +199,10 @@ class FileJsonResponseCache:
         path = self.cache_dir / f"{key}.json"
         if not path.exists():
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        return _fresh(json.loads(path.read_text(encoding="utf-8")))
 
     def put(self, key: str, payload: Any) -> None:
-        _write_atomic(self.cache_dir / f"{key}.json", json.dumps(payload, indent=2))
+        _write_atomic(self.cache_dir / f"{key}.json", _stored(payload))
 
 
 class ArtifactJsonResponseCache:
@@ -192,12 +218,12 @@ class ArtifactJsonResponseCache:
         if raw is None:
             return None
         try:
-            return json.loads(raw.decode("utf-8"))
+            return _fresh(json.loads(raw.decode("utf-8")))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
 
     def put(self, key: str, payload: Any) -> None:
-        self.store.put(f"{self.prefix}/{key}", json.dumps(payload, indent=2).encode("utf-8"))
+        self.store.put(f"{self.prefix}/{key}", _stored(payload).encode("utf-8"))
 
 
 def default_response_cache(cache_dir: Path) -> JsonResponseCache:

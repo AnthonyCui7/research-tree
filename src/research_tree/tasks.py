@@ -25,6 +25,7 @@ from celery import Celery
 from celery.schedules import crontab
 from celery.signals import setup_logging
 
+from research_tree.auth.settings import SESSION_LIFETIME_SECONDS
 from research_tree.redis_client import redis_url
 
 logger = logging.getLogger("uvicorn.error")
@@ -117,9 +118,10 @@ def run_pipeline(self, owner_id: str, run_id: str) -> None:
 
     repository = _repository().for_owner(owner_id)
     redis = get_redis()
-    if redis is not None and not redis.set(BUILD_SLOT_KEY, run_id, nx=True, ex=BUILD_SLOT_TTL_SECONDS):
-        holder = redis.get(BUILD_SLOT_KEY)
-        if holder != run_id.encode("utf-8"):
+    slot = f"{owner_id}:{run_id}"
+    if redis is not None and not redis.set(BUILD_SLOT_KEY, slot, nx=True, ex=BUILD_SLOT_TTL_SECONDS):
+        holder = (redis.get(BUILD_SLOT_KEY) or b"").decode("utf-8")
+        if holder != slot and not _take_over_abandoned_slot(redis, holder, slot):
             logger.info("build %s waits for the slot held by %s", run_id, holder)
             repository.touch_pipeline_run(run_id)
             raise self.retry(countdown=BUILD_SLOT_RETRY_SECONDS)
@@ -127,12 +129,49 @@ def run_pipeline(self, owner_id: str, run_id: str) -> None:
         WorkspacePipelineService(repository, repo_root=REPO_ROOT)._execute(run_id)
     finally:
         if redis is not None:
-            _release_build_slot(redis, run_id)
+            _release_build_slot(redis, slot)
 
 
-def _release_build_slot(redis, run_id: str) -> None:
+def _take_over_abandoned_slot(redis, holder: str, slot: str) -> bool:
+    """Claim the slot when the run holding it is no longer running.
+
+    A worker that restarts mid-build never reaches the release in `finally`,
+    and the slot outlived the run by up to an hour while every other account's
+    build retried against it. The run record says whether the holder is
+    still alive: the reclaimer fails a run whose heartbeat stopped.
+    """
+
+    owner_id, _, run_id = holder.partition(":")
+    if not owner_id or not run_id:
+        return False
     try:
-        if redis.get(BUILD_SLOT_KEY) == run_id.encode("utf-8"):
+        run = _repository().for_owner(owner_id).get_pipeline_run(run_id)
+    except FileNotFoundError:
+        run = {}
+    except Exception as error:  # noqa: BLE001 - a read that fails is not a reason to jump the queue
+        logger.warning("could not check the build slot holder %s: %s", holder, error)
+        return False
+    if run.get("status") in {"queued", "running"}:
+        return False
+    # Compare-and-set: the slot is replaced only if it still names the dead run.
+    taken = redis.eval(_TAKE_OVER_SLOT_LUA, 1, BUILD_SLOT_KEY, holder, slot, BUILD_SLOT_TTL_SECONDS)
+    if taken:
+        logger.info("build slot held by finished run %s taken over by %s", holder, slot)
+    return bool(taken)
+
+
+_TAKE_OVER_SLOT_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+    return 1
+end
+return 0
+"""
+
+
+def _release_build_slot(redis, slot: str) -> None:
+    try:
+        if redis.get(BUILD_SLOT_KEY) == slot.encode("utf-8"):
             redis.delete(BUILD_SLOT_KEY)
     except Exception as error:  # noqa: BLE001 - the slot expires on its own
         logger.warning("could not release the build slot: %s", error)
@@ -151,6 +190,13 @@ def generate_annotations(job_id: str) -> None:
 
 @app.task(name="research_tree.keep_database_awake")
 def keep_database_awake() -> None:
+    """The daily touch, and the housekeeping that rides on it.
+
+    A session token past its lifetime can no longer sign anyone in, but
+    nothing deleted the row: signing out deletes one, and every sign-in adds
+    one, so the table only grew.
+    """
+
     from sqlalchemy import text
 
     from research_tree.db import get_engine
@@ -162,7 +208,14 @@ def keep_database_awake() -> None:
                 "ON CONFLICT (id) DO UPDATE SET touched_at = now()"
             )
         )
-    logger.info("database keep-alive recorded")
+        expired = conn.execute(
+            text(
+                "DELETE FROM accesstoken "
+                "WHERE created_at < now() - make_interval(secs => :lifetime)"
+            ),
+            {"lifetime": SESSION_LIFETIME_SECONDS},
+        )
+    logger.info("database keep-alive recorded, %d expired sessions dropped", expired.rowcount)
 
 
 @app.task(name="research_tree.backup_database")

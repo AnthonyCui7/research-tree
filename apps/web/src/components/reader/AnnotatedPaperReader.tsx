@@ -55,8 +55,9 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
   const [pageCount, setPageCount] = useState(0);
   const [selected, setSelected] = useState<PaperAnnotation | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [documentError, setDocumentError] = useState<string | null>(null);
-  const requestSequence = useRef(0);
+  // The request in flight. Annotating a paper the first time is minutes of
+  // polling; leaving the reader, or asking for another mode, ends it.
+  const requestRef = useRef<AbortController | null>(null);
 
   const file = useMemo(
     () => ({ url: paperPdfUrl(workspaceId, paper.paperId) }),
@@ -65,20 +66,22 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
 
   const fetchAnnotations = useCallback(
     (options?: { mode?: AnnotationRetrievalMode; refresh?: boolean }) => {
-      const sequence = ++requestSequence.current;
+      requestRef.current?.abort();
+      const request = new AbortController();
+      requestRef.current = request;
       setAnnotations(null);
       setError(null);
       repositoryWorkspaceGateway
-        .getPaperAnnotations(workspaceId, paper.paperId, options)
+        .getPaperAnnotations(workspaceId, paper.paperId, options, request.signal)
         .then((result) => {
-          if (sequence !== requestSequence.current) return;
+          if (request.signal.aborted) return;
           setAnnotations(result.annotations);
           if (result.retrieval_mode === "fast" || result.retrieval_mode === "dense") {
             setMode(result.retrieval_mode);
           }
         })
         .catch((requestError) => {
-          if (sequence !== requestSequence.current) return;
+          if (request.signal.aborted) return;
           setError(messageFrom(requestError));
         });
     },
@@ -87,10 +90,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
 
   useEffect(() => {
     fetchAnnotations();
-    return () => {
-      // Late responses for a previous paper must not land on this one.
-      requestSequence.current += 1;
-    };
+    return () => requestRef.current?.abort();
   }, [fetchAnnotations]);
 
   useEffect(() => {
@@ -209,9 +209,11 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
         <Document
           file={file}
           loading={<ReaderMessage>Loading the paper…</ReaderMessage>}
-          error={<ReaderMessage>{documentError ?? "This PDF could not be displayed."}</ReaderMessage>}
+          error={<ReaderMessage>This PDF could not be displayed.</ReaderMessage>}
           onLoadSuccess={({ numPages }) => setPageCount(numPages)}
-          onLoadError={(loadError) => setDocumentError(messageFrom(loadError))}
+          // The viewer's own error text is for its developers; the fixed
+          // sentence above is for the reader, and the cause goes to the console.
+          onLoadError={(loadError) => console.error(loadError)}
         >
           <div className="mx-auto grid w-fit gap-5">
             {Array.from({ length: pageCount }, (_, index) => (
@@ -253,9 +255,11 @@ function AnnotatedPage({
         renderTextLayer={false}
         renderAnnotationLayer={false}
       />
-      {annotations.map((annotation) => (
+      {annotations.map((annotation, index) => (
         <AnnotationMark
-          key={`${annotation.page_number}-${annotation.text_ref}`}
+          // Two annotations can quote the same words on one page; the index
+          // keeps their keys apart.
+          key={`${index}:${annotation.text_ref}`}
           annotation={annotation}
           open={selected === annotation}
           onSelect={onSelect}

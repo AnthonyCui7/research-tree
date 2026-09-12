@@ -62,14 +62,12 @@ class WorkspaceAgentState(TypedDict, total=False):
     transcript_items: list[dict[str, Any]]
     tool_rounds: int
     max_tool_rounds: int
-    pending_tool_call_id: str | None
     # Survives across turns on a thread: papers found in an earlier message
     # stay proposable in later ones.
     session_discovered_papers: dict[str, dict[str, Any]]
     semantic_scholar_calls: int
 
     chat_context: dict[str, Any] | None
-    modification_context: dict[str, Any] | None
 
     retrieval_request: dict[str, Any] | None
     retrieval_guardrail_result: dict[str, Any] | None

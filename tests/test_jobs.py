@@ -8,9 +8,12 @@ scratch instance (CI does); the others are keyless and always run.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -142,11 +145,14 @@ def test_agent_refusals_are_plain_errors_even_when_streaming(client: TestClient)
 
 
 def test_topic_review_tokens_are_shared_through_redis(redis_env, repository: WorkspaceRepository) -> None:
-    token = _issue_topic_review_approval("Prompting")
-    assert redis_env.get(f"topic_review:{token}") == b"Prompting"
+    token = _issue_topic_review_approval(repository.owner_id, "Prompting")
+    assert redis_env.get(f"topic_review:{repository.owner_id}:{token}") == b"Prompting"
     service = TopicReviewService(repository)
     assert service.consume_approved_topic(token=token, topic="Other") is None
-    token = _issue_topic_review_approval("Prompting")
+    token = _issue_topic_review_approval(repository.owner_id, "Prompting")
+    # The approval is the reviewing account's: another account cannot spend it.
+    stranger = TopicReviewService(SimpleNamespace(owner_id="someone-else"))
+    assert stranger.consume_approved_topic(token=token, topic="Prompting") is None
     assert service.consume_approved_topic(token=token, topic="Prompting") == "Prompting"
     assert service.consume_approved_topic(token=token, topic="Prompting") is None
 
@@ -280,6 +286,7 @@ def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPa
 
     executed: list[str] = []
     touched: list[str] = []
+    runs: dict[str, dict[str, Any]] = {}
 
     class Service:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -287,7 +294,7 @@ def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPa
 
         def _execute(self, run_id: str) -> None:
             executed.append(run_id)
-            assert redis_env.get(tasks.BUILD_SLOT_KEY) == run_id.encode("utf-8")
+            assert redis_env.get(tasks.BUILD_SLOT_KEY) == f"local_user:{run_id}".encode("utf-8")
 
     class Repository:
         def for_owner(self, owner_id: str) -> "Repository":
@@ -297,18 +304,32 @@ def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPa
         def touch_pipeline_run(self, run_id: str) -> None:
             touched.append(run_id)
 
+        def get_pipeline_run(self, run_id: str) -> dict[str, Any]:
+            if run_id not in runs:
+                raise FileNotFoundError(run_id)
+            return runs[run_id]
+
     monkeypatch.setattr("research_tree.services.pipeline.WorkspacePipelineService", Service)
     monkeypatch.setattr(tasks, "_repository", lambda: Repository())
     tasks.run_pipeline.apply(args=["local_user", "pipeline_one"], throw=True)
     assert executed == ["pipeline_one"]
     assert redis_env.get(tasks.BUILD_SLOT_KEY) is None
 
-    redis_env.set(tasks.BUILD_SLOT_KEY, "pipeline_other")
+    # A slot held by a run that is still running is waited for.
+    runs["pipeline_other"] = {"status": "running"}
+    redis_env.set(tasks.BUILD_SLOT_KEY, "local_user:pipeline_other")
     with pytest.raises(Retry):
         tasks.run_pipeline.apply(args=["local_user", "pipeline_two"], throw=True)
     assert executed == ["pipeline_one"]
     assert touched == ["pipeline_two"]
-    assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"pipeline_other"
+    assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"local_user:pipeline_other"
+
+    # A slot left behind by a run that is over (a worker restart skipped the
+    # release) is taken over rather than waited out.
+    runs["pipeline_other"] = {"status": "failed"}
+    tasks.run_pipeline.apply(args=["local_user", "pipeline_two"], throw=True)
+    assert executed == ["pipeline_one", "pipeline_two"]
+    assert redis_env.get(tasks.BUILD_SLOT_KEY) is None
 
 
 def test_the_worker_knows_every_task() -> None:
@@ -322,3 +343,28 @@ def test_the_worker_knows_every_task() -> None:
     ):
         assert name in app.tasks
     assert app.conf.broker_transport_options["global_keyprefix"] == "{research-tree}"
+
+
+def test_a_job_whose_worker_stopped_is_failed_on_read(client: TestClient, job_service) -> None:
+    from research_tree.services import annotations as jobs
+
+    service, _, queued = job_service
+    client.app.dependency_overrides[get_paper_annotation_service] = lambda: service
+
+    job = client.get(annotations_url()).json()
+    stored = json.loads(service._redis.get(f"annotations:job:{job['job_id']}"))
+    stale = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+    service._redis.set(
+        f"annotations:job:{job['job_id']}",
+        json.dumps({**stored, "status": "running", "heartbeat_at": stale}),
+    )
+
+    status = client.get(f"/workspaces/sampling/paper-annotations/jobs/{job['job_id']}").json()
+    assert status["status"] == "failed"
+    assert status["detail"] == jobs.RECLAIMED_JOB_DETAIL
+
+    # The next request does not join the dead job: it starts a fresh one.
+    again = client.get(annotations_url())
+    assert again.status_code == 202
+    assert again.json()["job_id"] != job["job_id"]
+    assert queued == [job["job_id"], again.json()["job_id"]]

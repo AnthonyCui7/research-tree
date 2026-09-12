@@ -290,3 +290,36 @@ def _annotation(text_ref: str, *, page_number: int = 1, importance: int = 2) -> 
         page_number=page_number,
         bbox=BoundingBox(x=0.1, y=0.1, width=0.5, height=0.2),
     )
+
+
+class TestOccurrenceGeometry:
+    def test_each_occurrence_keeps_its_own_lines_when_one_wraps(self) -> None:
+        """The viewer returns one rectangle per line and nothing between hits,
+        so the second occurrence's two lines used to be read as the second and
+        third hits; the annotation for it got one line and the wrong one."""
+
+        document = fitz.open()
+        page = document.new_page(width=300, height=200)
+        page.insert_textbox(
+            fitz.Rect(20, 20, 200, 180),
+            "alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon",
+            fontsize=11,
+        )
+        try:
+            page_sources = build_page_sources(extract_blocks(document))
+            page_text = page_sources[1]
+            quote = "gamma delta epsilon"
+            spans = find_occurrences(page_text, quote)
+            assert len(spans) == 2
+            first = _annotation(quote, page_number=1)
+            first.anchor = anchor_within_chunk(page_text, quote, spans[0][0], spans[0][1])
+            second = _annotation(quote, page_number=1)
+            second.anchor = anchor_within_chunk(page_text, quote, spans[1][0], spans[1][1])
+
+            resolve_annotation_geometry([first, second], document, page_sources)
+        finally:
+            document.close()
+
+        assert len(first.bbox.fragments) == 1
+        assert len(second.bbox.fragments) == 2
+        assert first.bbox.y < second.bbox.y

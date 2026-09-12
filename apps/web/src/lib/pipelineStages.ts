@@ -46,14 +46,18 @@ const STAGE_CEILING = 0.97;
  * progress should be read off its stages alone.
  */
 export function buildProgress(run: PipelineRun, elapsedMs = 0): BuildProgress {
+  // Read defensively: this runs inside the sidebar's render, above every
+  // error boundary, so a record missing a field must not blank the page.
+  const requestedStages = Array.isArray(run.requested_stages) ? run.requested_stages : [];
+  const stageStates = run.stages && typeof run.stages === "object" ? run.stages : {};
   const requested = STAGE_LABELS.filter(
-    ([id]) => run.requested_stages.includes(id) || run.stages[id] !== undefined,
+    ([id]) => requestedStages.includes(id) || stageStates[id] !== undefined,
   );
   const stageList = requested.length > 0 ? requested : STAGE_LABELS;
 
   let seenUnfinished = false;
   const stages: BuildStage[] = stageList.map(([id, label]) => {
-    const status = run.stages[id]?.status ?? "";
+    const status = stageStates[id]?.status ?? "";
     if (status === "failed") {
       seenUnfinished = true;
       return { id, label, state: "failed" };
@@ -117,7 +121,7 @@ const CLOCK_TICK_MS = 500;
 
 /** Structure plus paper details have landed; later stages only enrich it. */
 export function isOpenable(run: PipelineRun): boolean {
-  const status = run.stages.hydrate?.status ?? "";
+  const status = run.stages?.hydrate?.status ?? "";
   return status.startsWith("completed");
 }
 

@@ -29,8 +29,11 @@ TOPIC_REVIEW_TIMEOUT_SECONDS = 30.0
 TOPIC_REVIEW_APPROVAL_TTL_SECONDS = 15 * 60
 # Approvals live in Redis when it is configured, so the API replica that
 # reviewed a topic need not be the one that builds it. Otherwise in memory.
+# Either way an approval is keyed by the account that reviewed the topic as
+# well as by its token: the review checked the topic against that account's
+# workspaces, so the answer is that account's alone.
 TOPIC_REVIEW_KEY_PREFIX = "topic_review:"
-_topic_review_approvals: dict[str, tuple[str, float]] = {}
+_topic_review_approvals: dict[tuple[str, str], tuple[str, float]] = {}
 _topic_review_approvals_lock = threading.Lock()
 
 
@@ -86,28 +89,28 @@ class TopicReviewService:
         result["model"] = DEFAULT_MODEL if reviewed is not None else None
         result["source_paper"] = source_paper
         if result["can_create"]:
-            result["topic_review_token"] = _issue_topic_review_approval(normalized_topic)
+            result["topic_review_token"] = _issue_topic_review_approval(
+                self.repository.owner_id, normalized_topic
+            )
         return result
 
     def consume_approved_topic(self, *, token: str, topic: str) -> str | None:
         normalized_topic = " ".join(topic.split()).strip()
         redis = get_redis()
         if redis is not None:
-            approved_topic = redis.getdel(f"{TOPIC_REVIEW_KEY_PREFIX}{token}")
+            approved_topic = redis.getdel(_topic_review_key(self.repository.owner_id, token))
             if approved_topic is None:
                 return None
             approved_topic = approved_topic.decode("utf-8")
             return approved_topic if approved_topic == normalized_topic else None
         now = time.monotonic()
         with _topic_review_approvals_lock:
-            expired_tokens = [
-                approval_token
-                for approval_token, (_, expires_at) in _topic_review_approvals.items()
-                if expires_at <= now
+            expired = [
+                key for key, (_, expires_at) in _topic_review_approvals.items() if expires_at <= now
             ]
-            for approval_token in expired_tokens:
-                _topic_review_approvals.pop(approval_token, None)
-            approved = _topic_review_approvals.pop(token, None)
+            for key in expired:
+                _topic_review_approvals.pop(key, None)
+            approved = _topic_review_approvals.pop((self.repository.owner_id, token), None)
         if approved is None:
             return None
         approved_topic, expires_at = approved
@@ -246,18 +249,22 @@ def _result(raw: str, normalized: str, valid: bool, guidance: str) -> dict[str, 
     }
 
 
-def _issue_topic_review_approval(normalized_topic: str) -> str:
+def _issue_topic_review_approval(owner_id: str, normalized_topic: str) -> str:
     token = secrets.token_urlsafe(32)
     redis = get_redis()
     if redis is not None:
         redis.setex(
-            f"{TOPIC_REVIEW_KEY_PREFIX}{token}", TOPIC_REVIEW_APPROVAL_TTL_SECONDS, normalized_topic
+            _topic_review_key(owner_id, token), TOPIC_REVIEW_APPROVAL_TTL_SECONDS, normalized_topic
         )
         return token
     expires_at = time.monotonic() + TOPIC_REVIEW_APPROVAL_TTL_SECONDS
     with _topic_review_approvals_lock:
-        _topic_review_approvals[token] = (normalized_topic, expires_at)
+        _topic_review_approvals[(owner_id, token)] = (normalized_topic, expires_at)
     return token
+
+
+def _topic_review_key(owner_id: str, token: str) -> str:
+    return f"{TOPIC_REVIEW_KEY_PREFIX}{owner_id}:{token}"
 
 
 def _linked_paper_metadata(topic: str) -> dict[str, str] | None:
