@@ -17,7 +17,7 @@ const AREAS = [
 
 /**
  * A report goes to the server, which writes it to its log and says plainly that
- * it kept no copy — there is no database yet. Sending it anyway is what makes
+ * it kept no copy — there is no bug_reports table yet. Sending it anyway is what makes
  * the path real: when a store exists, only the route's body changes.
  */
 export function ReportBugDialog({ onClose }: { onClose: () => void }) {
