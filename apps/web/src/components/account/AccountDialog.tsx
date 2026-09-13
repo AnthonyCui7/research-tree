@@ -1,6 +1,7 @@
-import { useEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { cx } from "../../lib/cx";
-import { DIALOG_EXIT_MS, useDismissAnimation } from "../../lib/animation";
+import { DIALOG_EXIT_MS } from "../../lib/animation";
+import { useModalDialog } from "../../lib/modalDialog";
 import { CloseIcon } from "../ui/icons";
 
 type AccountDialogProps = {
@@ -18,28 +19,31 @@ type AccountDialogProps = {
  * entrance and exit are written once here.
  */
 export function AccountDialog({ title, subtitle, onClose, children, footer }: AccountDialogProps) {
-  const { closing, dismiss } = useDismissAnimation(onClose, DIALOG_EXIT_MS);
-
-  // Claimed in the capture phase so the shell does not unmount the dialog before
-  // it can play its exit.
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        dismiss();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [dismiss]);
+  const { ref, closing, dismiss } = useModalDialog(DIALOG_EXIT_MS);
 
   return (
-    <div
+    <dialog
+      ref={ref}
       className={cx(
-        "fixed inset-0 z-creator grid place-items-center bg-[rgb(31_35_40_/_28%)] p-6",
-        closing ? "animate-backdrop-exit" : "animate-backdrop-enter",
+        "fixed inset-0 m-0 grid h-full max-h-none w-full max-w-none place-items-center border-0 bg-transparent p-6 text-text-primary outline-none",
+        closing ? "[&::backdrop]:animate-backdrop-exit" : "[&::backdrop]:animate-backdrop-enter",
       )}
-      role="presentation"
+      // Focusable, so a click on its own chrome cannot send focus to the inert
+      // page behind and keys always arrive here. Never a tab stop, so no ring.
+      tabIndex={-1}
+      aria-labelledby="account-dialog-title"
+      onClose={onClose}
+      onCancel={(event) => {
+        event.preventDefault();
+        dismiss();
+      }}
+      onKeyDown={(event) => {
+        // The shell's shortcuts stop at a modal.
+        event.stopPropagation();
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        dismiss();
+      }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) dismiss();
       }}
@@ -49,9 +53,6 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
           "flex max-h-[min(620px,calc(100vh-48px))] w-[480px] max-w-full flex-col overflow-hidden rounded-[14px] bg-surface shadow-dialog",
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="account-dialog-title"
       >
         <header className="flex flex-none items-start gap-2 border-b border-hairline px-5 py-3.5">
           <div className="min-w-0 flex-1">
@@ -88,7 +89,7 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
           </div>
         ) : null}
       </section>
-    </div>
+    </dialog>
   );
 }
 

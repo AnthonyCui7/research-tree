@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "../../lib/cx";
-import { DIALOG_EXIT_MS, useDismissAnimation } from "../../lib/animation";
+import { DIALOG_EXIT_MS } from "../../lib/animation";
+import { useModalDialog } from "../../lib/modalDialog";
 import { branchTint } from "../../lib/familyTint";
 import { pluralize } from "../../lib/format";
 import { SearchIcon } from "../ui/icons";
@@ -20,24 +21,17 @@ type Result =
 const MAX_PAPER_RESULTS = 6;
 const IDLE_PAPER_RESULTS = 4;
 
+/**
+ * One text box that filters the tree. Focus stays in the box the whole time:
+ * the rows are options the arrow keys move through, not controls to tab to,
+ * and the box tells assistive technology which row is current.
+ */
 export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const { closing, dismiss } = useDismissAnimation(onClose, DIALOG_EXIT_MS);
-
-  // Escape is claimed here rather than left to the shell, so the overlay gets to
-  // play its exit instead of being unmounted the moment the key lands.
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        dismiss();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [dismiss]);
+  const { ref, closing, dismiss } = useModalDialog(DIALOG_EXIT_MS, inputRef);
 
   const { branches, papers, results } = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -67,7 +61,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
   // the highlighted row in view as it moves.
   useEffect(() => {
     listRef.current
-      ?.querySelector<HTMLElement>('[data-active="true"]')
+      ?.querySelector<HTMLElement>('[aria-selected="true"]')
       ?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
@@ -78,7 +72,13 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
   }
 
   function onKeyDown(event: React.KeyboardEvent) {
-    if (event.key === "ArrowDown") {
+    // The shell's shortcuts stop at a modal, so the one that opened this
+    // overlay is answered here: pressed again, it closes it.
+    event.stopPropagation();
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      dismiss();
+    } else if (event.key === "ArrowDown") {
       event.preventDefault();
       setActiveIndex((index) => (results.length === 0 ? 0 : (index + 1) % results.length));
     } else if (event.key === "ArrowUp") {
@@ -89,41 +89,52 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
     } else if (event.key === "Enter") {
       event.preventDefault();
       open(results[activeIndex]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      dismiss();
     }
   }
 
   return (
-    <div
+    <dialog
+      ref={ref}
       className={cx(
-        "fixed inset-0 z-overlay flex items-start justify-center bg-[rgb(31_35_40_/_30%)] pt-[92px] max-[720px]:pt-14",
-        closing ? "animate-backdrop-exit" : "animate-backdrop-enter",
+        "fixed inset-0 m-0 flex h-full max-h-none w-full max-w-none items-start justify-center border-0 bg-transparent p-6 pt-[92px] text-text-primary outline-none max-[720px]:pt-14",
+        closing ? "[&::backdrop]:animate-backdrop-exit" : "[&::backdrop]:animate-backdrop-enter",
       )}
-      role="presentation"
+      tabIndex={-1}
+      aria-label="Search this workspace"
+      onClose={onClose}
+      onCancel={(event) => {
+        event.preventDefault();
+        dismiss();
+      }}
+      onKeyDown={onKeyDown}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) dismiss();
       }}
     >
       <div
         className={cx(
-          "flex max-h-[60vh] w-[620px] max-w-[calc(100vw-48px)] flex-col overflow-hidden rounded-[13px] bg-surface shadow-dialog",
+          "flex max-h-[60vh] w-[620px] max-w-full flex-col overflow-hidden rounded-[13px] bg-surface shadow-dialog",
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Search this workspace"
-        onKeyDown={onKeyDown}
       >
         <div className="flex flex-none items-center gap-[11px] border-b border-hairline px-[18px] py-3.5">
           <SearchIcon className="h-[15px] w-[15px] flex-none text-text-muted" />
-          {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
           <input
+            ref={inputRef}
             className="min-w-0 flex-1 border-0 bg-transparent text-[14.5px] text-text-primary outline-0 placeholder:text-text-muted"
-            autoFocus
             type="text"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search branches and papers…"
             aria-label="Search branches and papers"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
+            aria-controls="search-results"
+            aria-activedescendant={results.length > 0 ? optionId(activeIndex) : undefined}
           />
           <kbd className="flex-none rounded-sm border border-border px-1.5 py-px font-sans text-[10.5px] text-text-muted">
             esc
@@ -131,43 +142,53 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
         </div>
 
         <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-2 pt-2 pb-2.5" ref={listRef}>
-          {branches.length > 0 ? (
-            <>
-              <GroupLabel>Branches</GroupLabel>
-              {branches.map((node, index) => (
-                <ResultRow
-                  key={node.id}
-                  active={activeIndex === index}
-                  onHover={() => setActiveIndex(index)}
-                  onSelect={() => open({ kind: "branch", node })}
-                  badge="B"
-                  tint={branchTint(node.family)}
-                  title={node.title}
-                  trailing={pluralize(node.paperCount, "paper")}
-                />
-              ))}
-            </>
-          ) : null}
-          {papers.length > 0 ? (
-            <>
-              <GroupLabel>Papers</GroupLabel>
-              {papers.map((node, index) => {
-                const resultIndex = branches.length + index;
-                return (
+          <div
+            role="listbox"
+            id="search-results"
+            aria-label="Matching branches and papers"
+            // A click on a row must not take focus from the box.
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            {branches.length > 0 ? (
+              <div role="group" aria-labelledby="search-group-branches">
+                <GroupLabel id="search-group-branches">Branches</GroupLabel>
+                {branches.map((node, index) => (
                   <ResultRow
                     key={node.id}
-                    active={activeIndex === resultIndex}
-                    onHover={() => setActiveIndex(resultIndex)}
-                    onSelect={() => open({ kind: "paper", node })}
-                    badge="P"
-                    tint="#f1f3f4"
+                    id={optionId(index)}
+                    active={activeIndex === index}
+                    onHover={() => setActiveIndex(index)}
+                    onSelect={() => open({ kind: "branch", node })}
+                    badge="B"
+                    tint={branchTint(node.family)}
                     title={node.title}
-                    subtitle={`${authorLine(node.authors)} · ${publicationDate(node)} · ${node.branchTitle}`}
+                    trailing={pluralize(node.paperCount, "paper")}
                   />
-                );
-              })}
-            </>
-          ) : null}
+                ))}
+              </div>
+            ) : null}
+            {papers.length > 0 ? (
+              <div role="group" aria-labelledby="search-group-papers">
+                <GroupLabel id="search-group-papers">Papers</GroupLabel>
+                {papers.map((node, index) => {
+                  const resultIndex = branches.length + index;
+                  return (
+                    <ResultRow
+                      key={node.id}
+                      id={optionId(resultIndex)}
+                      active={activeIndex === resultIndex}
+                      onHover={() => setActiveIndex(resultIndex)}
+                      onSelect={() => open({ kind: "paper", node })}
+                      badge="P"
+                      tint="#f1f3f4"
+                      title={node.title}
+                      subtitle={`${authorLine(node.authors)} · ${publicationDate(node)} · ${node.branchTitle}`}
+                    />
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
           {results.length === 0 ? (
             <p className="m-0 p-7 text-center text-[13px] text-text-muted">
               No branches or papers match “{query.trim()}”.
@@ -185,13 +206,21 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
           <span className="ml-auto">Searches this workspace only</span>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }
 
-function GroupLabel({ children }: { children: string }) {
+function optionId(index: number): string {
+  return `search-result-${index}`;
+}
+
+function GroupLabel({ id, children }: { id: string; children: string }) {
   return (
-    <div className="px-3 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.06em] text-text-muted uppercase">
+    <div
+      className="px-3 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.06em] text-text-muted uppercase"
+      id={id}
+      role="presentation"
+    >
       {children}
     </div>
   );
@@ -206,6 +235,7 @@ function FooterKey({ children }: { children: string }) {
 }
 
 function ResultRow({
+  id,
   active,
   onHover,
   onSelect,
@@ -215,6 +245,7 @@ function ResultRow({
   subtitle,
   trailing,
 }: {
+  id: string;
   active: boolean;
   onHover: () => void;
   onSelect: () => void;
@@ -225,15 +256,15 @@ function ResultRow({
   trailing?: string;
 }) {
   return (
-    <button
+    <div
       className={cx(
-        "flex w-full items-center gap-[11px] rounded-md border-0 px-3 py-2 text-left transition-[background-color] duration-100",
+        "flex w-full cursor-default items-center gap-[11px] rounded-md px-3 py-2 text-left transition-[background-color] duration-100",
         active ? "bg-surface-subtle" : "bg-transparent",
       )}
-      type="button"
-      data-active={active}
+      id={id}
+      role="option"
+      aria-selected={active}
       onMouseMove={onHover}
-      onFocus={onHover}
       onClick={onSelect}
     >
       <span
@@ -250,7 +281,7 @@ function ResultRow({
         ) : null}
       </span>
       {trailing ? <span className="flex-none text-[11px] text-text-muted">{trailing}</span> : null}
-    </button>
+    </div>
   );
 }
 

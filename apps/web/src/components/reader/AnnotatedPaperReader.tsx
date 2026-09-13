@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Document, Page, pdfjs } from "react-pdf";
 import { messageFrom } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
-import { DIALOG_EXIT_MS, useDismissAnimation } from "../../lib/animation";
+import { DIALOG_EXIT_MS } from "../../lib/animation";
+import { useModalDialog } from "../../lib/modalDialog";
 import { paperPdfUrl, repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { CloseIcon } from "../ui/icons";
 import type {
@@ -47,7 +48,10 @@ type ReaderProps = {
  * whatever width the page is drawn.
  */
 export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssistant }: ReaderProps) {
-  const { closing, dismiss } = useDismissAnimation(onClose, DIALOG_EXIT_MS);
+  // The pages are what the reader came for, so they take focus first and the
+  // keyboard scrolls them; the controls in the header are a Tab away.
+  const pagesRef = useRef<HTMLDivElement>(null);
+  const { ref, closing, dismiss } = useModalDialog(DIALOG_EXIT_MS, pagesRef);
   const [annotations, setAnnotations] = useState<PaperAnnotation[] | null>(null);
   const [mode, setMode] = useState<AnnotationRetrievalMode | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -93,19 +97,17 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
     return () => requestRef.current?.abort();
   }, [fetchAnnotations]);
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      // One Escape closes one layer, innermost first.
-      if (modeMenuOpen) setModeMenuOpen(false);
-      else if (helpOpen) setHelpOpen(false);
-      else if (selected) setSelected(null);
-      else dismiss();
-    }
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [dismiss, helpOpen, modeMenuOpen, selected]);
+  function onKeyDown(event: React.KeyboardEvent) {
+    // The shell's shortcuts stop at a modal.
+    event.stopPropagation();
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    // One Escape closes one layer, innermost first.
+    if (modeMenuOpen) setModeMenuOpen(false);
+    else if (helpOpen) setHelpOpen(false);
+    else if (selected) setSelected(null);
+    else dismiss();
+  }
 
   const byPage = useMemo(() => groupByPage(annotations ?? []), [annotations]);
   const generating = annotations === null && !error;
@@ -116,14 +118,20 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
   ].filter(Boolean);
 
   return (
-    <div
+    <dialog
+      ref={ref}
       className={cx(
-        "fixed inset-0 z-creator flex flex-col bg-background",
+        "fixed inset-0 m-0 flex h-full max-h-none w-full max-w-none flex-col overflow-hidden border-0 bg-background p-0 text-text-primary outline-none [&::backdrop]:bg-transparent",
         closing ? "animate-backdrop-exit" : "animate-backdrop-enter",
       )}
-      role="dialog"
-      aria-modal="true"
+      tabIndex={-1}
       aria-label={`${paper.title}, annotated`}
+      onClose={onClose}
+      onCancel={(event) => {
+        event.preventDefault();
+        dismiss();
+      }}
+      onKeyDown={onKeyDown}
     >
       <header className="relative flex flex-none items-center gap-2.5 border-b border-hairline bg-surface px-4 py-2">
         <div className="min-w-0 flex-1">
@@ -201,7 +209,12 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
       </header>
 
       <div
-        className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-6 py-6"
+        ref={pagesRef}
+        // The ring is drawn inside, where the dialog's edges cannot clip it.
+        className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-6 py-6 focus-visible:-outline-offset-2"
+        tabIndex={0}
+        role="region"
+        aria-label="Pages"
         onMouseDown={(event) => {
           if (event.target === event.currentTarget) setSelected(null);
         }}
@@ -228,7 +241,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
           </div>
         </Document>
       </div>
-    </div>
+    </dialog>
   );
 }
 
@@ -400,11 +413,11 @@ function ModeControl({
             ] as const
           ).map((option) => (
             <button
-              className="grid w-full gap-px rounded-[6px] border-0 bg-transparent px-2.5 py-1.5 text-left transition-[background-color] duration-150 hover:bg-surface-subtle aria-selected:bg-surface-subtle"
+              className="grid w-full gap-px rounded-[6px] border-0 bg-transparent px-2.5 py-1.5 text-left transition-[background-color] duration-150 hover:bg-surface-subtle aria-checked:bg-surface-subtle"
               key={option.value}
               type="button"
-              role="menuitem"
-              aria-selected={mode === option.value}
+              role="menuitemradio"
+              aria-checked={mode === option.value}
               onClick={() => {
                 onOpenChange(false);
                 onSelect(option.value);

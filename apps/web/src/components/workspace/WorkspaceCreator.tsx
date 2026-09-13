@@ -284,20 +284,31 @@ export function WorkspaceCreator({
     <dialog
       ref={dialogRef}
       className={cx(
-        "fixed inset-0 z-creator m-0 flex h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-transparent p-6 [&::backdrop]:bg-[rgb(31_35_40_/_28%)]",
+        "fixed inset-0 m-0 flex h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-transparent p-6 text-text-primary outline-none",
         closing
           ? "[&::backdrop]:animate-backdrop-exit"
           : "[&::backdrop]:animate-backdrop-enter",
       )}
+      tabIndex={-1}
       aria-labelledby="creator-title"
+      // The exit timer closes the element itself, by which time `open` is
+      // already false. A `close` while it is still true is the browser's own,
+      // so the shell is told, or it would keep a dialog open that is not there.
+      onClose={() => {
+        if (open) close();
+      }}
       onCancel={(event) => {
         event.preventDefault();
         close();
       }}
       onKeyDown={(event) => {
-        // The dialog answers Escape through `cancel`; the shell's own Escape
-        // handler must not also close the panel behind it.
-        if (event.key === "Escape") event.stopPropagation();
+        // The shell's shortcuts stop at a modal. Escape is answered here, not
+        // through `cancel`, which a browser only lets the page cancel while it
+        // holds user activation (see `useModalDialog`).
+        event.stopPropagation();
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        close();
       }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) close();

@@ -81,14 +81,14 @@
   --animate-toast-exit: toast-exit 150ms var(--ease-exit) forwards;
 
   /* Tailwind's z-index namespace is `--z-index-*`; naming these `--z-*` made
-     every `z-menu`/`z-creator` in the app compile to nothing, leaving the
-     overlays to stack on DOM order alone. */
+     every `z-menu`/`z-overlay` in the app compile to nothing, leaving the
+     overlays to stack on DOM order alone. Modal dialogs need none of these:
+     `showModal()` puts them in the top layer, above everything here. */
   --z-index-dropdown: 20;
   --z-index-panel: 30;
   --z-index-backdrop: 40;
   --z-index-overlay: 50;
   --z-index-menu: 60;
-  --z-index-creator: 70;
 }
 
 @layer base {

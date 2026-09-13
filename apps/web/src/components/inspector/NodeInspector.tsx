@@ -1,11 +1,11 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "../../lib/cx";
-import { DROPDOWN_EXIT_MS, useExitAnimation } from "../../lib/animation";
 import { longDateLabel } from "../../lib/format";
 import { compactActionClass, compactPrimaryActionClass } from "../../lib/controlClasses";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import { PanelClose } from "../panel/RightPanel";
 import { EllipsisIcon } from "../ui/icons";
+import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
 
 // The reader carries a PDF engine, which is most of what the app would ship.
 // Loading it when a paper is opened keeps it out of the first page load.
@@ -137,28 +137,15 @@ function SourceLinks({
   workspaceId: string;
   onOpenAssistant?: () => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
   const [readerOpen, setReaderOpen] = useState(false);
-  const menu = useExitAnimation(menuOpen, DROPDOWN_EXIT_MS);
   const pdfUrl = paperPdfUrl(paper);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setMenuOpen(false);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [menuOpen]);
 
   if (!paper.arxivLink && !paper.semanticScholarLink && !pdfUrl) {
     return null;
   }
   return (
-    <div className="relative mt-3 flex flex-wrap gap-1.5">
+    <div className="mt-3 flex flex-wrap gap-1.5">
       {paper.arxivLink ? <SourceLink href={paper.arxivLink}>arXiv ↗</SourceLink> : null}
       {paper.semanticScholarLink ? (
         <SourceLink href={paper.semanticScholarLink}>Semantic Scholar ↗</SourceLink>
@@ -167,44 +154,30 @@ function SourceLinks({
         <button
           className={cx(
             "rounded-[6px] border px-2.5 py-[5px] text-[11.5px] font-medium text-text-secondary transition-[background-color,border-color,color] duration-150 hover:border-accent hover:text-accent-deep",
-            menuOpen ? "border-border-strong bg-surface-subtle" : "border-border bg-surface",
+            menuAnchor ? "border-border-strong bg-surface-subtle" : "border-border bg-surface",
           )}
           type="button"
-          onClick={() => setMenuOpen((open) => !open)}
-          aria-expanded={menuOpen}
+          onClick={(event) => setMenuAnchor(anchorFromEvent(event.currentTarget, "right"))}
+          aria-expanded={menuAnchor !== null}
           aria-haspopup="menu"
         >
           PDF
         </button>
       ) : null}
-      {menu.present ? (
-        <>
-          <div
-            className="fixed inset-0 z-dropdown"
-            role="presentation"
-            onMouseDown={() => setMenuOpen(false)}
-          />
-          <div
-            className={cx(
-              "absolute top-[calc(100%+6px)] right-0 z-menu w-[230px] origin-top-right overflow-hidden rounded-[9px] border border-border bg-surface shadow-menu",
-              menu.closing ? "animate-dropdown-exit" : "animate-dropdown-enter",
-            )}
-            role="menu"
-            aria-label="PDF options"
-          >
-            <PdfMenuItem href={pdfUrl} onClick={() => setMenuOpen(false)}>
-              Download PDF
-            </PdfMenuItem>
-            <PdfMenuItem
-              onClick={() => {
-                setMenuOpen(false);
-                setReaderOpen(true);
-              }}
-            >
+      {menuAnchor && pdfUrl ? (
+        <PopoverMenu
+          anchor={menuAnchor}
+          onClose={() => setMenuAnchor(null)}
+          label="PDF options"
+          width={230}
+        >
+          <MenuSection>
+            <MenuItem href={pdfUrl}>Download PDF</MenuItem>
+            <MenuItem onClick={() => setReaderOpen(true)}>
               Open PDF <span className="text-text-muted">· inline annotations</span>
-            </PdfMenuItem>
-          </div>
-        </>
+            </MenuItem>
+          </MenuSection>
+        </PopoverMenu>
       ) : null}
       {readerOpen ? (
         <Suspense fallback={null}>
@@ -217,52 +190,6 @@ function SourceLinks({
         </Suspense>
       ) : null}
     </div>
-  );
-}
-
-function PdfMenuItem({
-  children,
-  href,
-  onClick,
-  disabled,
-  title,
-}: {
-  children: React.ReactNode;
-  href?: string | null;
-  onClick?: () => void;
-  disabled?: boolean;
-  title?: string;
-}) {
-  const className =
-    "block w-full px-3 py-2 text-left text-xs text-text-primary no-underline transition-[background-color] duration-150";
-  if (href && !disabled) {
-    return (
-      <a
-        className={cx(className, "hover:bg-surface-subtle hover:no-underline")}
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        role="menuitem"
-        onClick={onClick}
-      >
-        {children}
-      </a>
-    );
-  }
-  return (
-    <button
-      className={cx(
-        className,
-        "border-0 bg-transparent enabled:hover:bg-surface-subtle disabled:cursor-not-allowed disabled:text-text-muted",
-      )}
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      disabled={disabled || !onClick}
-      title={title}
-    >
-      {children}
-    </button>
   );
 }
 

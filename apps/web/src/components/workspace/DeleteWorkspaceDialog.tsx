@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../../lib/apiError";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
-import { DIALOG_EXIT_MS, useDismissAnimation } from "../../lib/animation";
+import { DIALOG_EXIT_MS } from "../../lib/animation";
+import { useModalDialog } from "../../lib/modalDialog";
 import { cx } from "../../lib/cx";
 import { dangerActionClass, secondaryActionClass } from "../../lib/controlClasses";
 import type { WorkspaceSummary } from "../../lib/types";
@@ -21,20 +22,7 @@ export function DeleteWorkspaceDialog({
 }: DeleteWorkspaceDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { closing, dismiss } = useDismissAnimation(onCancel, DIALOG_EXIT_MS);
-
-  // A confirmation that cannot be escaped is a trap; a delete already underway
-  // is not something Escape should appear to undo.
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && !busy) {
-        event.stopPropagation();
-        dismiss();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [busy, dismiss]);
+  const { ref, closing, dismiss } = useModalDialog(DIALOG_EXIT_MS);
 
   async function remove() {
     setBusy(true);
@@ -58,13 +46,30 @@ export function DeleteWorkspaceDialog({
     }
   }
 
+  // A confirmation that cannot be escaped is a trap; a delete already underway
+  // is not something Escape should appear to undo.
   return (
-    <div
+    <dialog
+      ref={ref}
       className={cx(
-        "fixed inset-0 z-backdrop grid place-items-center bg-[rgb(31_35_40_/_30%)] p-6",
-        closing ? "animate-backdrop-exit" : "animate-backdrop-enter",
+        "fixed inset-0 m-0 grid h-full max-h-none w-full max-w-none place-items-center border-0 bg-transparent p-6 text-text-primary outline-none",
+        closing ? "[&::backdrop]:animate-backdrop-exit" : "[&::backdrop]:animate-backdrop-enter",
       )}
-      role="presentation"
+      tabIndex={-1}
+      role="alertdialog"
+      aria-labelledby="delete-workspace-title"
+      aria-describedby="delete-workspace-detail"
+      onClose={onCancel}
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!busy) dismiss();
+      }}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        if (!busy) dismiss();
+      }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !busy) dismiss();
       }}
@@ -74,9 +79,6 @@ export function DeleteWorkspaceDialog({
           "w-full max-w-[440px] overflow-hidden rounded-[13px] bg-surface shadow-dialog",
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="delete-workspace-title"
       >
         <div className="px-6 pt-[22px] pb-5">
           <h2
@@ -85,7 +87,10 @@ export function DeleteWorkspaceDialog({
           >
             Delete “{workspace.title}”?
           </h2>
-          <p className="mt-2 mb-0 text-[13px] leading-[1.62] text-text-secondary">
+          <p
+            className="mt-2 mb-0 text-[13px] leading-[1.62] text-text-secondary"
+            id="delete-workspace-detail"
+          >
             This removes the workspace and its version history from Research Tree.
           </p>
           {error ? (
@@ -111,6 +116,6 @@ export function DeleteWorkspaceDialog({
           </button>
         </div>
       </section>
-    </div>
+    </dialog>
   );
 }
