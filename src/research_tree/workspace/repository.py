@@ -49,6 +49,9 @@ class WorkspaceRepository(Protocol):
     def claim_workspace_id(self, base_id: str) -> str:
         ...
 
+    def release_workspace_id(self, workspace_id: str) -> None:
+        ...
+
     def get_current_workspace(self, workspace_id: str) -> dict[str, Any]:
         ...
 
@@ -1460,6 +1463,15 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
                 return candidate
         raise ValueError(f"no workspace id is available for {base_id!r}")
 
+    def release_workspace_id(self, workspace_id: str) -> None:
+        """Give back a name claimed for a build that never got its run."""
+
+        with self._lock:
+            directory = self._workspace_dir(workspace_id)
+            if (directory / "current.json").exists() or self._run_statuses(workspace_id):
+                return
+            (directory / _CLAIM_FILE).unlink(missing_ok=True)
+
     def _trashed_workspace_ids(self) -> set[str]:
         trash_dir = self.base_dir / ".trash"
         if not trash_dir.is_dir():
@@ -1469,15 +1481,19 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
     def _build_gave_up(self, workspace_id: str) -> bool:
         """True when this name had a build and none is running now."""
 
+        statuses = self._run_statuses(workspace_id)
+        return bool(statuses) and not statuses & {"queued", "running"}
+
+    def _run_statuses(self, workspace_id: str) -> set[str]:
         runs_dir = self.base_dir / ".pipeline_runs"
         if not runs_dir.is_dir():
-            return False
-        statuses = set()
+            return set()
+        statuses: set[str] = set()
         for path in runs_dir.glob("*.json"):
             run = _read_json(path)
             if isinstance(run, dict) and run.get("workspace_id") == workspace_id:
                 statuses.add(str(run.get("status") or ""))
-        return bool(statuses) and not statuses & {"queued", "running"}
+        return statuses
 
     def _get_current_workspace(self, ctx: Any, workspace_id: str) -> dict[str, Any]:
         path = self._workspace_dir(workspace_id) / "current.json"

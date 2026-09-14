@@ -211,6 +211,30 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
                     return str(claimed[0])
         raise ValueError(f"no workspace id is available for {base_id!r}")
 
+    def release_workspace_id(self, workspace_id: str) -> None:
+        """Give back a name claimed for a build that never got its run.
+
+        Only the placeholder goes: a row with a version is a workspace, a
+        deleted one keeps its name, and one with a run is handed out again by
+        `claim_workspace_id` once that run is over.
+        """
+
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM workspaces
+                    WHERE owner_id = :owner AND id = :id
+                      AND current_version_hash IS NULL AND deleted_at IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM pipeline_runs r
+                          WHERE r.owner_id = workspaces.owner_id AND r.workspace_id = workspaces.id
+                      )
+                    """
+                ),
+                self._params(id=workspace_id),
+            )
+
     def _get_current_workspace(self, ctx: Connection, workspace_id: str) -> dict[str, Any]:
         row = ctx.execute(
             text(

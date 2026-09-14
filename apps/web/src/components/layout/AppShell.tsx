@@ -18,6 +18,7 @@ import { Toast, ToastStack } from "../ui/Toast";
 import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
 import { ClockIcon, TrashIcon } from "../ui/icons";
 import { cx } from "../../lib/cx";
+import { messageFrom } from "../../lib/apiError";
 import { useAgentSession } from "../../data/useAgentSession";
 import { useWorkspaceEditor } from "../../data/useWorkspaceEditor";
 import { signOut, useSessionInfo } from "../../data/session";
@@ -126,6 +127,9 @@ export function AppShell({
   // failure has nowhere else to appear. Dismissal is tracked by message, so a
   // later — different — failure still speaks up.
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  // Sign-out is the one request whose failure leaves the reader signed in;
+  // it is reported here, since the menu that asked for it has already closed.
+  const [signOutError, setSignOutError] = useState<string | null>(null);
   // The actions menu for one card, opened from the canvas or the inspector.
   const [nodeActions, setNodeActions] = useState<{ nodeId: TreeNodeId; anchor: MenuAnchor } | null>(
     null,
@@ -337,7 +341,7 @@ export function AppShell({
               </CanvasErrorBoundary>
             ) : null}
 
-            {refreshError || editor.notice ? (
+            {refreshError || signOutError || editor.notice ? (
               <ToastStack>
                 {refreshError ? (
                   <Toast
@@ -346,6 +350,15 @@ export function AppShell({
                     dismissLabel="Dismiss workspace refresh error"
                   >
                     {refreshError}
+                  </Toast>
+                ) : null}
+                {signOutError ? (
+                  <Toast
+                    tone="error"
+                    onDismiss={() => setSignOutError(null)}
+                    dismissLabel="Dismiss sign-out error"
+                  >
+                    {signOutError}
                   </Toast>
                 ) : null}
                 {editor.notice ? (
@@ -463,7 +476,12 @@ export function AppShell({
           onOpenScreen={setAccountScreen}
           onSignOut={() => {
             setProfileAnchor(null);
-            void signOut();
+            setSignOutError(null);
+            signOut().catch((error: unknown) => {
+              setSignOutError(
+                `Sign-out did not complete, so you are still signed in. ${messageFrom(error)}`,
+              );
+            });
           }}
           apiKeyLabel={apiKeyLabel}
         />

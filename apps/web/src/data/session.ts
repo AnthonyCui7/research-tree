@@ -122,9 +122,13 @@ export async function signInWithGoogle(): Promise<void> {
 export async function signOut(): Promise<void> {
   try {
     await requestRaw("/auth/logout", { method: "POST" });
-  } finally {
-    setState({ status: "signed-out", notice: null });
+  } catch (error) {
+    // A session the server no longer has is already over. Anything else
+    // leaves the cookie valid, and a sign-in screen over a live session would
+    // only look signed out: the caller says so and the app stays.
+    if (!(error instanceof ApiError && error.status === 401)) throw error;
   }
+  setState({ status: "signed-out", notice: null });
 }
 
 /** Where the Google round trip lands when it fails: a reason in the URL. */

@@ -20,7 +20,7 @@ from research_tree.agents.workspace.graph import build_workspace_agent_graph
 from research_tree.agents.workspace.llm import DeterministicWorkspaceAgentLlmClient
 from research_tree.agents.workspace.llm import AgentTurn, ToolCall
 from research_tree.services.agent import WorkspaceAgentService
-from research_tree.services.errors import InvalidPayloadError
+from research_tree.services.errors import InvalidPayloadError, StaleWorkspaceError
 from research_tree.services.pipeline import WorkspacePipelineService
 from research_tree.services.topics import TopicReviewService
 from research_tree.workspace.context import workspace_version_hash
@@ -931,6 +931,30 @@ def test_pipeline_rerun_rejects_another_active_run_for_the_workspace(repository)
 
     with pytest.raises(InvalidPayloadError, match="already active"):
         service.rerun("workspace-1", start_stage="related")
+
+
+def test_pipeline_rerun_refuses_a_stale_hash_as_a_conflict(repository) -> None:
+    _seed_current(repository)
+    service = WorkspacePipelineService(repository, repo_root=_temp_dir())
+
+    with pytest.raises(StaleWorkspaceError):
+        service.rerun("workspace-1", start_stage="candidates", expected_version_hash="0" * 64)
+
+
+def test_a_refused_build_hands_its_name_back(repository) -> None:
+    """A name claimed for a build that is refused is free for the next build of it."""
+
+    _seed_current(repository)
+    service = WorkspacePipelineService(
+        repository, repo_root=_temp_dir(), dispatch=lambda owner_id, run_id, execute: None
+    )
+
+    # The seeded workspace already covers this topic, so the build is refused
+    # after "test-topic" was claimed for it.
+    with pytest.raises(InvalidPayloadError, match="already exists"):
+        _start_approved(service, repository, "test topic")
+
+    assert repository.claim_workspace_id("test-topic") == "test-topic"
 
 
 @pytest.mark.json_only

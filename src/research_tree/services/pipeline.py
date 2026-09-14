@@ -29,6 +29,7 @@ from research_tree.principal import (
 )
 from research_tree.services.errors import (
     InvalidPayloadError,
+    StaleWorkspaceError,
     TopicReviewExpiredError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
@@ -115,15 +116,23 @@ class WorkspacePipelineService:
                 "That topic review has expired. Review the topic again to build it."
             )
         workspace_id = self.repository.claim_workspace_id(topic_slug(normalized_topic))
-        return self._start(
-            workspace_id=workspace_id,
-            topic=normalized_topic,
-            start_stage="candidates",
-            source_run=None,
-            source_version_hash=None,
-            reserve_topic=True,
-            instructions=instructions,
-        )
+        try:
+            return self._start(
+                workspace_id=workspace_id,
+                topic=normalized_topic,
+                start_stage="candidates",
+                source_run=None,
+                source_version_hash=None,
+                reserve_topic=True,
+                instructions=instructions,
+            )
+        except WorkspaceServiceError:
+            # The name was taken for a build that was then refused: the topic
+            # already has a workspace, or one is being built. Kept, it cost
+            # every later build of that topic a suffix; a build that never got
+            # its run hands the name back.
+            self.repository.release_workspace_id(workspace_id)
+            raise
 
     def rerun(
         self,
@@ -143,7 +152,7 @@ class WorkspacePipelineService:
             ) from error
         current_hash = workspace_version_hash(workspace)
         if expected_version_hash and current_hash != expected_version_hash:
-            raise InvalidPayloadError("Workspace changed. Refresh before starting a pipeline rerun.")
+            raise StaleWorkspaceError("Workspace changed. Refresh before starting a pipeline rerun.")
         prior_runs = self.repository.list_pipeline_runs(safe_workspace_id)
         source_run = next(
             (run for run in prior_runs if run.get("status") in {"completed", "completed_with_warnings"}),
