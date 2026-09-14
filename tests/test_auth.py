@@ -467,6 +467,66 @@ def test_runs_and_reviews_are_the_accounts_own(
     assert builder.get_current_workspace("held")["title"] == "Held"
 
 
+def test_a_revoked_session_ends_its_open_streams(
+    accounts_client: TestClient, repository: WorkspaceRepository
+) -> None:
+    """Signing out everywhere ends the streams that session had open.
+
+    Driven through the raw ASGI interface, as the collection stream test in
+    test_api_routes is: the client here never disconnects, so the request
+    can only end by the server noticing the session is gone.
+    """
+
+    from typing import Any
+
+    from research_tree.auth import db as auth_db
+    from research_tree.auth.accounts import revoke_sessions
+
+    _postgres_only(repository)
+    _register_and_sign_in(accounts_client, "streamer@example.com")
+    user_id = accounts_client.get("/account/me").json()["user"]["id"]
+    cookie = f"rt_session={accounts_client.cookies['rt_session']}".encode()
+    frames: list[str] = []
+    revoked: list[int] = []
+
+    async def never_disconnects() -> dict[str, Any]:
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        if message["type"] == "http.response.start":
+            assert message["status"] == 200
+        if message["type"] == "http.response.body" and message.get("body"):
+            frames.append(message["body"].decode())
+            # The first frame is the collection; the session ends now.
+            if not revoked:
+                revoked.append(await asyncio.to_thread(revoke_sessions, user_id))
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/workspaces/events/stream",
+        "raw_path": b"/workspaces/events/stream",
+        "query_string": b"",
+        "root_path": "",
+        "scheme": "http",
+        "headers": [(b"host", b"testserver"), (b"cookie", cookie)],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    # The account engine is bound to the loop it was made on, which was the
+    # test client's; this request runs on a loop of its own.
+    auth_db.get_async_engine.cache_clear()
+    auth_db._session_factory.cache_clear()
+    # Generous relative to the 1 s poll, tight enough to fail rather than hang.
+    asyncio.run(asyncio.wait_for(accounts_client.app(scope, never_disconnects, send), timeout=15))
+
+    assert revoked == [1]
+    assert frames[0].startswith("event: workspaces_updated")
+
+
 def test_an_assistant_thread_stays_inside_its_workspace(
     accounts_client: TestClient, repository: WorkspaceRepository
 ) -> None:

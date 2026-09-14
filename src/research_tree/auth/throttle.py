@@ -1,4 +1,4 @@
-"""Fixed-window limits on the two unauthenticated routes.
+"""Fixed-window limits on the two unauthenticated routes, and on key checks.
 
 In process, because one replica serves the site: a limit that resets on restart
 is still a limit an attacker cannot lean on for long. Sign-in is counted at the
@@ -34,6 +34,10 @@ LOGIN_ATTEMPTS_PER_ADDRESS = (30, 15 * 60)
 # cost of a new one is a row. Five an hour refused people sharing an office
 # address or a mobile carrier's; twenty still stops a script.
 REGISTRATIONS_PER_IP = (20, 60 * 60)
+# Saving a key sends it to OpenAI to be checked before it is stored, which
+# makes the route a way to test keys from this server's address. A person
+# saves a key a few times in a lifetime; a script trying a list is stopped.
+KEY_CHECKS_PER_ACCOUNT = (20, 60 * 60)
 
 # One entry per email or address seen inside its window. Entries expire, so the
 # steady-state size is the request rate times the window: reaching this needs
@@ -125,3 +129,10 @@ def count_registration(request: Request | None) -> None:
         return
     if not _limiter.hit(f"register:ip:{_client_ip(request)}", *REGISTRATIONS_PER_IP):
         raise RateLimitedError("Too many accounts created from here. Try again later.")
+
+
+def count_key_check(user_id: str) -> None:
+    """Count one key sent to the provider to be checked."""
+
+    if not _limiter.hit(f"key-check:user:{user_id}", *KEY_CHECKS_PER_ACCOUNT):
+        raise RateLimitedError("Too many keys checked recently. Wait an hour and try again.")

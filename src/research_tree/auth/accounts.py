@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from research_tree.auth.settings import admin_emails
+from research_tree.auth.settings import SESSION_LIFETIME_SECONDS, admin_emails
 from research_tree.db import get_engine
 from research_tree.principal import Principal
 
@@ -48,6 +48,33 @@ def principal_for_user_id(user_id: str) -> Principal | None:
             .first()
         )
     return principal_from_row(row) if row is not None else None
+
+
+def session_is_live(user_id: str, token: str | None) -> bool:
+    """Whether the session cookie's token still signs this account in.
+
+    An open event stream was authorised once, when it connected, and holds
+    the token it connected with. Signing out everywhere, deactivating the
+    account, and the takeover in `manager._claim_unproven_account` all delete
+    the row; the stream asks here on every pass, so it ends with the session.
+    """
+
+    if not token:
+        return False
+    try:
+        parsed = uuid.UUID(user_id)
+    except ValueError:
+        return False
+    with get_engine().begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT 1 FROM accesstoken WHERE token = :token "
+                "AND user_id = CAST(:user_id AS uuid) "
+                "AND created_at >= now() - make_interval(secs => :lifetime)"
+            ),
+            {"token": token, "user_id": str(parsed), "lifetime": SESSION_LIFETIME_SECONDS},
+        ).first()
+    return row is not None
 
 
 def user_id_for_email(email: str) -> str | None:

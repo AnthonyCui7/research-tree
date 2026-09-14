@@ -88,6 +88,7 @@ def save_api_key(request: SaveApiKeyRequest) -> dict[str, object]:
     if principal is None:
         # Not read, logged, or echoed: there is nowhere to put it.
         return {"stored": False, "detail": STORAGE_UNAVAILABLE}
+    from research_tree.auth.throttle import count_key_check
     from research_tree.billing.keywrap import key_wrapper_from_env
     from research_tree.billing.user_keys import (
         SAVING_DISABLED_MESSAGE,
@@ -102,6 +103,7 @@ def save_api_key(request: SaveApiKeyRequest) -> dict[str, object]:
         raise InvalidPayloadError(KEY_SHAPE_MESSAGE)
     if key_wrapper_from_env() is None:
         raise ByokUnavailableError(SAVING_DISABLED_MESSAGE)
+    count_key_check(principal.user_id)
     validate_openai_key(api_key)
     last4 = store_user_key(principal.user_id, api_key)
     logger.info("account %s saved an OpenAI key ending in %s", principal.user_id, last4)

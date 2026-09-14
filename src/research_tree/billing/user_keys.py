@@ -126,6 +126,14 @@ def store_user_key(user_id: str, api_key: str, *, wrapper: KeyWrapper | None = N
     sealed = seal_secret(wrapper, user_id=user_id, key_id=key_id, provider=PROVIDER, secret=api_key)
     last4 = api_key[-4:]
     with get_engine().begin() as conn:
+        # Two saves at once each retired the old row and each inserted its
+        # own, and the second insert hit the one-active-key index: a 500 for
+        # a double click. Serialised per account, the second save retires the
+        # first's row and lands, as a second save should.
+        conn.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"user_api_key:{user_id}"},
+        )
         conn.execute(
             text(
                 "UPDATE user_api_keys SET revoked_at = now() "

@@ -270,6 +270,35 @@ def test_saving_a_key_needs_a_key_encryption_key(accounts_client, repository) ->
     assert SECRET not in refused.text
 
 
+def test_key_checks_are_bounded_per_account(
+    accounts_client, repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save route sends the key to OpenAI, so a script trying a list is stopped."""
+
+    from research_tree.auth import throttle
+
+    _postgres_only(repository)
+    monkeypatch.setenv("RESEARCH_TREE_KEY_ENCRYPTION_KEY", _kek())
+    forget_key_wrapper()
+    _signed_in_user_id(accounts_client, "prolific@example.com")
+    checked: list[str] = []
+    monkeypatch.setattr(
+        "research_tree.billing.user_keys.validate_openai_key", lambda key: checked.append(key)
+    )
+
+    limit, _window = throttle.KEY_CHECKS_PER_ACCOUNT
+    for _ in range(limit):
+        assert accounts_client.put("/account/api-keys", json={"api_key": SECRET}).status_code == 200
+    refused = accounts_client.put("/account/api-keys", json={"api_key": SECRET})
+
+    assert refused.status_code == 429
+    assert refused.json()["error_code"] == "rate_limited"
+    assert SECRET not in refused.text
+    assert len(checked) == limit
+    # A key that does not look like one is refused before it counts as a check.
+    assert accounts_client.put("/account/api-keys", json={"api_key": "sk-short"}).status_code == 400
+
+
 def test_an_allowance_is_one_number_that_grants_add_to(accounts_client, repository) -> None:
     """Every grant used to make a row and only the oldest was read, so top-ups did nothing."""
 

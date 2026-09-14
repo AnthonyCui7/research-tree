@@ -35,6 +35,7 @@ from research_tree.api.schemas import (
     WorkspaceVersionsResponse,
     WorkspacesResponse,
 )
+from research_tree.auth.settings import SESSION_COOKIE_NAME
 from research_tree.principal import current_principal
 from research_tree.redis_client import get_async_redis
 from research_tree.services.annotations import PaperAnnotationService
@@ -121,7 +122,7 @@ async def stream_pipeline_run_updates(
         since_heartbeat = 0.0
         async with _ChangeSignal(f"{RUN_CHANNEL_PREFIX}{run_id}", RUN_POLL_SECONDS) as changes:
             while True:
-                if await request.is_disconnected() or not await _still_signed_in():
+                if await request.is_disconnected() or not await _still_signed_in(request):
                     return
                 signature = json.dumps(run, sort_keys=True, default=str)
                 if signature != previous_signature:
@@ -154,7 +155,7 @@ async def stream_workspace_updates(
         channel = workspaces_channel(service.repository.owner_id)
         async with _ChangeSignal(channel, COLLECTION_POLL_SECONDS) as changes:
             while True:
-                if await request.is_disconnected() or not await _still_signed_in():
+                if await request.is_disconnected() or not await _still_signed_in(request):
                     return
                 workspaces = await asyncio.to_thread(_workspace_collection_signature, service)
                 if workspaces != previous_signature:
@@ -169,27 +170,29 @@ async def stream_workspace_updates(
     return _sse_response(event_stream())
 
 
-async def _still_signed_in() -> bool:
+async def _still_signed_in(request: Request) -> bool:
     """Whether the account behind an open stream may still read.
 
     Authorization happens once, when the stream connects, and a stream stays
     open for as long as the tab does. Without this an account that was
-    deactivated, or dropped from the allowlist, went on receiving every change
-    to its workspaces; new requests were refused the whole time.
+    deactivated, dropped from the allowlist, or signed out everywhere went on
+    receiving every change to its workspaces; new requests were refused the
+    whole time.
     """
 
     principal = current_principal()
     if principal is None or principal.is_local:
         return True
-    return await asyncio.to_thread(_account_may_read, principal.user_id)
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    return await asyncio.to_thread(_account_may_read, principal.user_id, token)
 
 
-def _account_may_read(user_id: str) -> bool:
-    from research_tree.auth.accounts import principal_for_user_id
+def _account_may_read(user_id: str, token: str | None) -> bool:
+    from research_tree.auth.accounts import principal_for_user_id, session_is_live
     from research_tree.auth.settings import email_is_allowed
 
     live = principal_for_user_id(user_id)
-    return live is not None and email_is_allowed(live.email)
+    return live is not None and email_is_allowed(live.email) and session_is_live(user_id, token)
 
 
 class _ChangeSignal:
