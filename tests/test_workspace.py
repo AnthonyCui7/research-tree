@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import copy
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -39,6 +40,7 @@ from research_tree.workspace.construction import (
     normalize_workspace_payload,
 )
 from research_tree.retrieval.full_text import PaperContentResult
+from research_tree.workspace.similar_papers import _paper_age_years
 from research_tree.workspace.enrichment import hydrate_workspace_papers
 from research_tree.workspace.publishing import publish_workspace_version
 from research_tree.workspace.prompts import (
@@ -1714,3 +1716,97 @@ class HandEditConsistencyTest(unittest.TestCase):
 
         self.assertFalse(validation["valid"])
         self.assertTrue(any("tree.nodes must be a list" in error for error in validation["errors"]))
+
+
+class WrongShapeTests(unittest.TestCase):
+    """A field of the wrong kind is reported, never raised through."""
+
+    def test_a_field_of_the_wrong_shape_is_a_validation_error_not_a_crash(self) -> None:
+        workspace = _workspace()
+        cases = {
+            "paper_cards must be an object.": {"paper_cards": 5},
+            "paper_paths must be a list.": {"paper_paths": 5},
+            "reading_order must be a list.": {"reading_order": 5},
+            "removed_paper_placements must be a list.": {"removed_paper_placements": 5},
+            "source_candidate_artifact non_survey_papers must be a list.": {
+                "source_candidate_artifact": {"non_survey_papers": 5}
+            },
+            "paper path p2 branch_node_id must be text.": {
+                "paper_paths": [
+                    *workspace["paper_paths"],
+                    {"path_id": "p2", "branch_node_id": [1], "paper_ids": []},
+                ]
+            },
+            "reading_order has an entry whose paper_id is not text.": {
+                "reading_order": [*workspace["reading_order"], {"paper_id": []}]
+            },
+            "discarded_candidates has an entry whose paper_id is not text.": {
+                "discarded_candidates": [{"paper_id": [1]}]
+            },
+            "paper_cards has a blank paper_id key.": {
+                "paper_cards": {**workspace["paper_cards"], "": {}}
+            },
+            "paper card p1 authors must be a list.": {
+                "paper_cards": {
+                    **workspace["paper_cards"],
+                    "p1": {**workspace["paper_cards"]["p1"], "authors": 5},
+                }
+            },
+        }
+        for expected, change in cases.items():
+            proposed = {**workspace, **change}
+            operations, summary, _ = derive_operations_and_diff_summary(
+                workspace=workspace, proposed_workspace=proposed
+            )
+            validation = validate_workspace_proposal(
+                current_workspace=workspace,
+                proposed_workspace=proposed,
+                proposed_operations=operations,
+                diff_summary=summary,
+            )
+            self.assertFalse(validation["valid"], expected)
+            self.assertTrue(
+                any(expected in error for error in validation["errors"]),
+                (expected, validation["errors"]),
+            )
+
+    def test_model_output_of_the_wrong_shape_is_refused_with_the_reason(self) -> None:
+        artifact = _candidate_artifact()
+        document = {
+            "schema_version": "research_tree_workspace.v1",
+            "root": {},
+            "tree": {"root_node_id": "root", "nodes": []},
+            "paper_cards": {},
+        }
+        for change, reason in (
+            ({"root": "overview text"}, "root must be a JSON object"),
+            ({"tree": {"root_node_id": "root", "nodes": 5}}, "tree.nodes must be a list"),
+            ({"paper_cards": "abc"}, "paper_cards must be a JSON object"),
+            ({"paper_paths": 5}, "paper_paths must be a list"),
+        ):
+            with self.assertRaisesRegex(ValueError, reason):
+                construct_workspace(candidate_artifact=artifact, raw_llm_output={**document, **change})
+        for delta, reason in (
+            ({"upsert_tree_nodes": 5}, "upsert_tree_nodes must be a list"),
+            ({"upsert_paper_paths": 7}, "upsert_paper_paths must be a list"),
+            ({"upsert_paper_paths": [{"path_id": "p1", "paper_steps": 5}]}, "paper_steps must be a list"),
+            ({"upsert_paper_cards": []}, "upsert_paper_cards must be a JSON object"),
+        ):
+            with self.assertRaisesRegex(ValueError, reason):
+                construct_workspace(
+                    candidate_artifact=artifact,
+                    base_workspace=_workspace(),
+                    construction_mode="agent_modify_workspace",
+                    raw_llm_output=delta,
+                )
+        # A legacy tree naming its children rather than listing them still reads.
+        legacy = {**document, "tree": {"branches": [{"node_id": "a", "children": ["b"]}]}}
+        normalize_workspace_payload(legacy)
+        self.assertEqual(legacy["tree"]["nodes"][0]["node_id"], "a")
+        self.assertEqual(legacy["tree"]["nodes"][0]["child_node_ids"], ["b"])
+
+    def test_a_year_no_calendar_has_makes_the_age_unknown(self) -> None:
+        paper = CandidatePaperMetadata(paper_id="x", title="x", year=0, citation_count=100)
+        self.assertIsNone(_paper_age_years(paper, as_of=date(2026, 9, 13)))
+        dated = CandidatePaperMetadata(paper_id="y", title="y", year=2020)
+        self.assertAlmostEqual(_paper_age_years(dated, as_of=date(2021, 7, 1)) or 0, 1.0, places=2)

@@ -376,7 +376,10 @@ def construct_workspace_from_candidates(
 
     try:
         workspace = parse_workspace_output(raw_llm_output)
+        normalize_workspace_payload(workspace)
     except ValueError:
+        # Output that could not be read is kept beside the run, so what the
+        # model actually said can be looked at.
         write_json_file(
             output_dir / "workspace_raw_llm_output.json",
             raw_llm_output,
@@ -384,7 +387,6 @@ def construct_workspace_from_candidates(
             run_label=run_label,
         )
         raise
-    normalize_workspace_payload(workspace)
     materialize_workspace_candidate_references(workspace, candidate_artifact)
     fill_paper_card_source_metadata(workspace, candidate_artifact)
     ensure_survey_anchor_cards(workspace, candidate_artifact)
@@ -580,6 +582,7 @@ def apply_workspace_edit_delta(
     its parent.
     """
 
+    _refuse_malformed_delta(delta)
     workspace = copy.deepcopy(dict(base_workspace))
     for field_name in ("title", "topic"):
         value = delta.get(field_name)
@@ -670,7 +673,8 @@ def apply_workspace_edit_delta(
                 and str(path.get("branch_node_id")) == node_id
             )
         ]
-        for card in (workspace.get("paper_cards") or {}).values():
+        cards = workspace.get("paper_cards")
+        for card in (cards.values() if isinstance(cards, Mapping) else ()):
             location = card.get("primary_tree_location") if isinstance(card, dict) else None
             if isinstance(location, dict) and str(location.get("node_id")) == node_id:
                 location["node_id"] = parent_id
@@ -832,7 +836,8 @@ def refresh_card_location_labels(
             renames[old_label] = label
     if not renames:
         return
-    for card in (workspace.get("paper_cards") or {}).values():
+    cards = workspace.get("paper_cards")
+    for card in (cards.values() if isinstance(cards, Mapping) else ()):
         location = card.get("primary_tree_location") if isinstance(card, dict) else None
         if not isinstance(location, dict):
             continue
@@ -845,6 +850,37 @@ def refresh_card_location_labels(
                     renames.get(item, item) if isinstance(item, str) else item
                     for item in value
                 ]
+
+
+def _refuse_malformed_delta(delta: Mapping[str, Any]) -> None:
+    """A delta whose fields are the wrong kind of value is refused with the reason.
+
+    The response format is not strict, so the model can hand a number where a
+    list belongs. Merging past that raised from inside the loop that iterates
+    it, as a crashed turn with no reason; refused here, it is a failed turn
+    that says what came back.
+    """
+
+    for name in (
+        "upsert_tree_nodes",
+        "upsert_paper_paths",
+        "remove_tree_node_ids",
+        "remove_paper_path_ids",
+        "remove_paper_ids",
+    ):
+        if delta.get(name) is not None and not isinstance(delta[name], list):
+            raise ValueError(f"workspace edit delta {name} must be a list.")
+    if delta.get("upsert_paper_cards") is not None and not isinstance(
+        delta["upsert_paper_cards"], Mapping
+    ):
+        raise ValueError("workspace edit delta upsert_paper_cards must be a JSON object.")
+    for path_delta in delta.get("upsert_paper_paths") or []:
+        if (
+            isinstance(path_delta, Mapping)
+            and path_delta.get("paper_steps") is not None
+            and not isinstance(path_delta["paper_steps"], list)
+        ):
+            raise ValueError("workspace edit delta paper_steps must be a list.")
 
 
 def _membership_by_node(workspace: Mapping[str, Any]) -> dict[str, set[str]]:
@@ -1059,6 +1095,32 @@ def _extract_llm_text(raw_response: dict[str, Any]) -> str:
 
 
 def normalize_workspace_payload(workspace: dict[str, Any]) -> None:
+    """Bring model output to the document's shape, or refuse it.
+
+    The response format is not strict, so a field can come back as the wrong
+    kind of value. A missing or renamed field is filled in below; one of the
+    wrong kind is refused with the reason, which is what the run records and
+    what the reader is told. The discarded list is the one exception: it is
+    recomputed from the candidates when absent, so a malformed one is dropped.
+    """
+
+    for name in ("root", "tree", "paper_cards"):
+        if name in workspace and not isinstance(workspace[name], dict):
+            raise ValueError(f"workspace LLM output {name} must be a JSON object.")
+    tree = workspace.get("tree")
+    if isinstance(tree, dict) and "nodes" in tree and not isinstance(tree["nodes"], list):
+        raise ValueError("workspace LLM output tree.nodes must be a list.")
+    if "paper_paths" in workspace and not isinstance(workspace["paper_paths"], list):
+        raise ValueError("workspace LLM output paper_paths must be a list.")
+    discarded = workspace.get("discarded_candidates")
+    if isinstance(discarded, list):
+        workspace["discarded_candidates"] = [
+            item
+            for item in discarded
+            if isinstance(item, dict) and isinstance(item.get("paper_id"), str)
+        ]
+    else:
+        workspace.pop("discarded_candidates", None)
     root = workspace.get("root")
     if isinstance(root, dict):
         root.setdefault("why_it_matters", str(root.get("overview") or ""))
@@ -1446,11 +1508,12 @@ def _normalize_tree(workspace: dict[str, Any]) -> None:
         if not node_id:
             continue
         parent_id = str(branch.get("parent_id") or "root").strip()
-        child_ids = [
-            str(child.get("id") or child.get("node_id") or child)
-            for child in branch.get("children") or []
-            if child
-        ]
+        children = branch.get("children")
+        named_children = (
+            str(child.get("id") or child.get("node_id") or "") if isinstance(child, dict) else str(child)
+            for child in (children if isinstance(children, list) else [])
+        )
+        child_ids = [child_id for child_id in named_children if child_id]
         child_ids_by_parent.setdefault(parent_id, []).append(node_id)
         nodes.append(
             {
@@ -1670,9 +1733,10 @@ def _workspace_warnings(workspace: dict[str, Any]) -> list[str]:
 
 
 def _node_labels(workspace: dict[str, Any]) -> dict[str, str]:
+    root = workspace.get("root")
     labels = {
         "root": str(
-            (workspace.get("root") or {}).get("label")
+            (root.get("label") if isinstance(root, Mapping) else None)
             or workspace.get("title")
             or "Root"
         )

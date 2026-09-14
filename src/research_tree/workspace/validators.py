@@ -71,7 +71,7 @@ def schema_validator(payload: ValidatorPayload) -> dict[str, Any]:
         errors=errors,
         warnings=warnings,
         stats={
-            "visible_paper_count": len(proposed.get("paper_cards") or {}),
+            "visible_paper_count": len(_mapping(proposed.get("paper_cards"))),
         },
     )
 
@@ -133,7 +133,7 @@ def paper_path_validator(payload: ValidatorPayload) -> dict[str, Any]:
             errors.append("paper_paths contains a non-object entry.")
             continue
         path_id = str(path.get("path_id") or "<missing>")
-        if path.get("branch_node_id") not in tree_ids:
+        if str(path.get("branch_node_id") or "") not in tree_ids:
             errors.append(f"paper path {path_id} has invalid branch_node_id.")
         paper_ids = _string_list(path.get("paper_ids"))
         for paper_id in paper_ids:
@@ -233,8 +233,10 @@ def operation_target_validator(payload: ValidatorPayload) -> dict[str, Any]:
             errors.append("proposed operation is not an object.")
             continue
         target_ids = _mapping(operation.get("target_ids"))
-        branch_id = target_ids.get("branch_id") or target_ids.get("to_branch_id")
-        paper_id = target_ids.get("paper_id")
+        # Ids are read back from the proposed document, so they are whatever
+        # it held; compared as text, never as the value itself.
+        branch_id = str(target_ids.get("branch_id") or target_ids.get("to_branch_id") or "")
+        paper_id = str(target_ids.get("paper_id") or "")
         # A removed path names the branch it belonged to, and a proposal that
         # removes a branch removes its paths with it: that branch is gone from
         # the proposed tree by design, not by mistake.
@@ -310,17 +312,19 @@ def _candidate_artifact_for_validation(payload: ValidatorPayload) -> dict[str, A
             "is_survey": "survey" in str(card.get("paper_role") or "").casefold(),
         }
         for paper_id, card in _mapping(proposed.get("paper_cards")).items()
-        if isinstance(card, Mapping)
+        # A blank key is the schema validator's to report; as a candidate it
+        # would have no id at all.
+        if isinstance(card, Mapping) and str(paper_id).strip()
     ]
     discarded_fallback = [
         {
-            "paper_id": str(item.get("paper_id")),
+            "paper_id": str(item.get("paper_id")).strip(),
             "title": item.get("title") or item.get("paper_id"),
             "abstract": item.get("abstract") or "",
             "is_survey": bool(item.get("is_survey")),
         }
         for item in _entries(proposed.get("discarded_candidates"))
-        if isinstance(item, Mapping) and item.get("paper_id")
+        if isinstance(item, Mapping) and str(item.get("paper_id") or "").strip()
     ]
     # A survey anchor can be referenced by the root or a branch without a
     # card of its own. It is part of the document already, so it must not

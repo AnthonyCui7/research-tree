@@ -723,6 +723,27 @@ def test_edit_review_validation_failure_returns_failed_validation(client, reposi
     assert payload["persisted_event_ids"] == []
 
 
+def test_edit_review_refuses_a_document_of_the_wrong_shape(client, repository) -> None:
+    """A field of the wrong kind is a failed validation, never a 500."""
+
+    _save_pending_review(repository, review_id="review-edit-shape")
+    current = repository.get_current_workspace("workspace-1")
+    for change in (
+        {"paper_cards": 5},
+        {"paper_paths": [{"path_id": "p2", "branch_node_id": [1]}]},
+        {"reading_order": [{"paper_id": []}]},
+        {"discarded_candidates": [{"paper_id": [1]}]},
+        {"paper_cards": {**current["paper_cards"], "": {}}},
+    ):
+        response = client.post(
+            "/workspaces/workspace-1/reviews/review-edit-shape/edit",
+            json={"proposed_workspace": {**current, **change}},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "failed_validation"
+    assert repository.get_review("workspace-1", "review-edit-shape")["status"] == "pending"
+
+
 @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
 def test_guardrail_rejection_returns_failed_guardrail_and_starts_nothing(repository) -> None:
     _seed_current(repository)

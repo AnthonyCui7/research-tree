@@ -518,7 +518,12 @@ def _paper_age_years(paper: CandidatePaperMetadata, *, as_of: date) -> float | N
         except ValueError:
             publication_date = None
     if publication_date is None and paper.year is not None:
-        publication_date = date(paper.year, 7, 1)
+        try:
+            publication_date = date(paper.year, 7, 1)
+        except ValueError:
+            # A year no calendar has (0, or five digits) is metadata noise:
+            # this paper's age is unknown, not the whole ranking lost.
+            return None
     if publication_date is None:
         return None
     return max((as_of - publication_date).days, 1) / 365.25

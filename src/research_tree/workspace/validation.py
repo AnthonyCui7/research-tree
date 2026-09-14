@@ -58,6 +58,7 @@ def validate_workspace(
     ):
         if field_name not in workspace_payload:
             errors.append(f"workspace is missing top-level field {field_name!r}.")
+    _validate_shape(workspace_payload, errors)
 
     # The pipeline and the assistant build documents that never pass through a
     # request, so the check the request models run does not cover them.
@@ -134,6 +135,84 @@ def validate_workspace(
     _validate_visible_paper_budget(workspace, warnings)
 
     return WorkspaceValidationResult(errors=errors, warnings=warnings)
+
+
+# The document's fields each hold one kind of value. The reader can put any
+# JSON into a review edit and the model's output is not strict, while
+# `WorkspaceDocument.from_mapping` reads a field of the wrong kind as empty:
+# a document with `paper_paths: 5` validated, was approved, and then every
+# later edit of the workspace failed on it.
+_OBJECT_FIELDS = ("scope", "source_candidate_artifact", "root", "tree", "provenance")
+_OBJECT_LIST_FIELDS = (
+    "paper_paths",
+    "reading_order",
+    "comparison_tables",
+    "discarded_candidates",
+    "removed_paper_placements",
+)
+
+
+def _validate_shape(payload: Mapping[str, Any], errors: list[str]) -> None:
+    for name in _OBJECT_FIELDS:
+        if name in payload and not isinstance(payload[name], Mapping):
+            errors.append(f"{name} must be an object.")
+    for name in _OBJECT_LIST_FIELDS:
+        if name not in payload:
+            continue
+        if not isinstance(payload[name], list):
+            errors.append(f"{name} must be a list.")
+        elif any(not isinstance(item, Mapping) for item in payload[name]):
+            errors.append(f"{name} contains a non-object entry.")
+    _validate_list_fields(
+        "root", payload.get("root"), ("survey_anchor_paper_ids", "representative_paper_ids"), errors
+    )
+    tree = payload.get("tree")
+    for node in _entries(tree.get("nodes") if isinstance(tree, Mapping) else None):
+        if isinstance(node, Mapping):
+            _validate_list_fields(
+                f"tree node {node.get('node_id') or '<missing>'}",
+                node,
+                ("child_node_ids", "primary_paper_ids", "secondary_paper_ids"),
+                errors,
+            )
+    for path in _entries(payload.get("paper_paths")):
+        if not isinstance(path, Mapping):
+            continue
+        label = f"paper path {path.get('path_id') or '<missing>'}"
+        for name in ("path_id", "branch_node_id"):
+            if name in path and not isinstance(path[name], str):
+                errors.append(f"{label} {name} must be text.")
+        _validate_list_fields(label, path, ("paper_ids",), errors)
+    for name in ("reading_order", "discarded_candidates"):
+        for entry in _entries(payload.get(name)):
+            if isinstance(entry, Mapping) and not isinstance(entry.get("paper_id"), str):
+                errors.append(f"{name} has an entry whose paper_id is not text.")
+    cards = payload.get("paper_cards")
+    if "paper_cards" in payload and not isinstance(cards, Mapping):
+        errors.append("paper_cards must be an object.")
+    for paper_id, card in (cards.items() if isinstance(cards, Mapping) else ()):
+        if not str(paper_id).strip():
+            errors.append("paper_cards has a blank paper_id key.")
+        if not isinstance(card, Mapping):
+            errors.append(f"paper card {paper_id!r} must be an object.")
+        else:
+            _validate_list_fields(f"paper card {paper_id}", card, ("authors",), errors)
+    _validate_list_fields(
+        "source_candidate_artifact",
+        payload.get("source_candidate_artifact"),
+        ("non_survey_papers", "survey_papers"),
+        errors,
+    )
+
+
+def _validate_list_fields(
+    label: str, holder: Any, names: tuple[str, ...], errors: list[str]
+) -> None:
+    if not isinstance(holder, Mapping):
+        return
+    for name in names:
+        if holder.get(name) is not None and not isinstance(holder[name], list):
+            errors.append(f"{label} {name} must be a list.")
 
 
 def _validate_tree(
@@ -329,7 +408,7 @@ def _validate_reading_order(
     errors: list[str],
 ) -> None:
     for entry in workspace.reading_order:
-        paper_id = entry.get("paper_id")
+        paper_id = str(entry.get("paper_id") or "")
         if paper_id not in visible_paper_ids:
             errors.append(
                 f"reading_order references paper {paper_id!r} without a paper card."
@@ -360,7 +439,7 @@ def _validate_discarded_candidates(
     errors: list[str],
 ) -> None:
     for discarded in workspace.discarded_candidates:
-        paper_id = discarded.get("paper_id")
+        paper_id = str(discarded.get("paper_id") or "")
         if paper_id not in candidate_ids:
             errors.append(
                 f"discarded_candidates references unknown paper_id {paper_id!r}."

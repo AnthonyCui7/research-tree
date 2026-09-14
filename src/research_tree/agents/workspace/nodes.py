@@ -619,18 +619,21 @@ class WorkspaceAgentNodes:
         if edit_kind == "refresh_similar_papers":
             return {**update, **self._adjust_similar_papers(state, next_action)}
 
-        proposed = self.workspace_constructor(
-            candidate_artifact=candidate_artifact,
-            base_workspace=state.get("workspace"),
-            construction_mode="agent_modify_workspace",
-            agent_instruction=next_action.get("modification_instruction")
-            or state.get("user_message", ""),
-            target_branch_id=next_action.get("target_branch_id"),
-            target_paper_ids=next_action.get("target_paper_ids") or [],
-            similar_papers_context=state.get("similar_papers_context") or {},
-            run_metadata={"user_message": state.get("user_message", "")},
-            model=str(state.get("agent_model") or DEFAULT_MODEL),
-        )
+        try:
+            proposed = self.workspace_constructor(
+                candidate_artifact=candidate_artifact,
+                base_workspace=state.get("workspace"),
+                construction_mode="agent_modify_workspace",
+                agent_instruction=next_action.get("modification_instruction")
+                or state.get("user_message", ""),
+                target_branch_id=next_action.get("target_branch_id"),
+                target_paper_ids=next_action.get("target_paper_ids") or [],
+                similar_papers_context=state.get("similar_papers_context") or {},
+                run_metadata={"user_message": state.get("user_message", "")},
+                model=str(state.get("agent_model") or DEFAULT_MODEL),
+            )
+        except ValueError as error:
+            return {**update, **_unreadable_draft(workspace, "construct_workspace_modification", error)}
         return {
             **update,
             "proposed_workspace": proposed,
@@ -956,22 +959,32 @@ class WorkspaceAgentNodes:
         candidate_artifact = state.get("proposal_candidate_artifact")
         if candidate_artifact is None:
             candidate_artifact, _ = self._modification_candidate_artifact(state)
-        proposed = self.workspace_constructor(
-            candidate_artifact=candidate_artifact,
-            base_workspace=state.get("workspace"),
-            construction_mode="workspace_repair",
-            agent_instruction=next_action.get("modification_instruction")
-            or state.get("user_message", ""),
-            target_branch_id=next_action.get("target_branch_id"),
-            target_paper_ids=next_action.get("target_paper_ids") or [],
-            similar_papers_context=state.get("similar_papers_context") or {},
-            run_metadata={
-                "user_message": state.get("user_message", ""),
-                "proposed_workspace": state.get("proposed_workspace") or {},
-                "validation_errors": validation_summary.get("errors") or [],
-            },
-            model=str(state.get("agent_model") or DEFAULT_MODEL),
-        )
+        try:
+            proposed = self.workspace_constructor(
+                candidate_artifact=candidate_artifact,
+                base_workspace=state.get("workspace"),
+                construction_mode="workspace_repair",
+                agent_instruction=next_action.get("modification_instruction")
+                or state.get("user_message", ""),
+                target_branch_id=next_action.get("target_branch_id"),
+                target_paper_ids=next_action.get("target_paper_ids") or [],
+                similar_papers_context=state.get("similar_papers_context") or {},
+                run_metadata={
+                    "user_message": state.get("user_message", ""),
+                    "proposed_workspace": state.get("proposed_workspace") or {},
+                    "validation_errors": validation_summary.get("errors") or [],
+                },
+                model=str(state.get("agent_model") or DEFAULT_MODEL),
+            )
+        except ValueError as error:
+            return {
+                "repair_attempts": int(state.get("repair_attempts", 0)) + 1,
+                **_unreadable_draft(
+                    _required_mapping(state.get("workspace"), "workspace"),
+                    "repair_workspace_proposal",
+                    error,
+                ),
+            }
         return {
             "proposed_workspace": proposed,
             "repair_attempts": int(state.get("repair_attempts", 0)) + 1,
@@ -1531,6 +1544,24 @@ def _propose_paper_removal(
         "proposed_workspace": proposed,
         "status": "constructing",
         "node_trace": [_trace("construct_workspace_modification:remove_papers")],
+    }
+
+
+def _unreadable_draft(
+    workspace: Mapping[str, Any], node_name: str, error: ValueError
+) -> dict[str, Any]:
+    """The model's answer could not be read as an edit: not JSON, or a field of
+    the wrong kind. That ends the turn as a failure with its reason, the way a
+    removal that names an unknown paper does, rather than as a crash."""
+
+    return {
+        "proposed_workspace": dict(workspace),
+        "status": "failed",
+        "final_response": (
+            "I could not turn the model's answer into a workspace change. Try asking again."
+        ),
+        "errors": [f"the draft could not be read: {error}"],
+        "node_trace": [_trace(f"{node_name}:unreadable")],
     }
 
 
