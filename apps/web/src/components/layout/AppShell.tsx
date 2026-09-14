@@ -71,7 +71,7 @@ type AppShellProps = {
   onCloseCreator: () => void;
   onCreated: (workspaceId: string, run: PipelineRun) => Promise<void>;
   onWorkspaceChanged: () => Promise<void>;
-  onWorkspaceDeleted: () => Promise<void>;
+  onWorkspaceDeleted: (workspaceId: string) => Promise<void>;
   onToggleSidebar: () => void;
   onRefresh: () => void;
   onPipelineStarted: (run: PipelineRun) => void;
@@ -179,7 +179,12 @@ export function AppShell({
     if (move && tree?.currentVersionHash) {
       setFollowPaper({ paperId: move.paper_id, from: tree.currentVersionHash });
     }
-    void editor.apply(operations);
+    void editor.apply(operations).then((result) => {
+      // A move that did not land has no new card to follow. Left standing, the
+      // next version change from anywhere would open the inspector on this
+      // paper unasked.
+      if (move && !result?.changed) setFollowPaper(null);
+    });
   }
 
   // A refresh that succeeds re-arms the strip, so the same failure returning
@@ -550,7 +555,7 @@ export function AppShell({
           onChanged={onWorkspaceChanged}
           onDeleted={async () => {
             setDeleteTargetId(null);
-            await onWorkspaceDeleted();
+            await onWorkspaceDeleted(deleteTarget.workspace_id);
           }}
         />
       ) : null}

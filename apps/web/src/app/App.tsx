@@ -65,6 +65,18 @@ export function App() {
     );
   }, [selectedWorkspaceId, workspaces]);
 
+  // The list is re-sorted by recency on every change and the fallback above
+  // reads its head, so what is shown is pinned by id as soon as it is shown:
+  // a build finishing elsewhere, or an edit in another tab, must not switch
+  // the workspace under the reader. Only a workspace that is gone falls through.
+  useEffect(() => {
+    const first = workspaces[0];
+    if (!first || workspaces.some((workspace) => workspace.workspace_id === selectedWorkspaceId)) {
+      return;
+    }
+    setSelectedWorkspaceId(first.workspace_id);
+  }, [selectedWorkspaceId, workspaces]);
+
   const {
     workspace: activeWorkspace,
     loading: workspaceLoading,
@@ -153,15 +165,22 @@ export function App() {
     [refresh],
   );
 
-  const handleDeleted = useCallback(async () => {
-    if (activeWorkspaceId) {
-      viewsRef.current.delete(activeWorkspaceId);
-    }
-    setSelectedWorkspaceId(null);
-    setPanel(null);
-    setSelectedNodeId(null);
-    await refresh();
-  }, [activeWorkspaceId, refresh]);
+  // Any workspace can be deleted from the sidebar, not only the one on screen:
+  // its remembered view goes, and the reader's place is disturbed only when it
+  // was theirs. The list is refreshed first, so the canvas moves straight from
+  // a deleted workspace to the next one rather than through a fetch of one
+  // that is already gone.
+  const handleDeleted = useCallback(
+    async (workspaceId: string) => {
+      viewsRef.current.delete(workspaceId);
+      await refresh();
+      if (workspaceId === activeWorkspaceId) {
+        setPanel(null);
+        setSelectedNodeId(null);
+      }
+    },
+    [activeWorkspaceId, refresh],
+  );
 
   const handlePipelineFinished = useCallback((runId: string) => {
     setBuildingRun((current) => (current?.run_id === runId ? null : current));

@@ -37,6 +37,9 @@ export function useWorkspaceEditor(
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<EditNotice | null>(null);
   const timerRef = useRef<number | null>(null);
+  // The state is what the controls read; the ref is what refuses a second
+  // edit that arrives before the first has rendered them disabled.
+  const busyRef = useRef(false);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -65,7 +68,8 @@ export function useWorkspaceEditor(
 
   const undo = useCallback(
     async (result: WorkspaceEditResult) => {
-      if (!workspaceId) return;
+      if (!workspaceId || busyRef.current) return;
+      busyRef.current = true;
       setBusy(true);
       try {
         await repositoryWorkspaceGateway.restoreWorkspace(
@@ -80,6 +84,7 @@ export function useWorkspaceEditor(
         show({ tone: "error", text: conflict ? VERSION_CONFLICT_MESSAGE : messageFrom(error) });
         if (conflict) await onChanged();
       } finally {
+        busyRef.current = false;
         setBusy(false);
       }
     },
@@ -89,6 +94,8 @@ export function useWorkspaceEditor(
   const apply = useCallback(
     async (operations: WorkspaceEditOperation[]) => {
       if (!workspaceId || !currentVersionHash || operations.length === 0) return null;
+      if (busyRef.current) return null;
+      busyRef.current = true;
       setBusy(true);
       try {
         const result = await repositoryWorkspaceGateway.editWorkspace(
@@ -107,6 +114,7 @@ export function useWorkspaceEditor(
         if (conflict) await onChanged();
         return null;
       } finally {
+        busyRef.current = false;
         setBusy(false);
       }
     },

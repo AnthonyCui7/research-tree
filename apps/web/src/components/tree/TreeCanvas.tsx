@@ -142,12 +142,20 @@ export function TreeCanvas({
 
   // Search opens a node that may be far off screen. Bringing it into view only
   // when it is actually outside keeps clicking a visible card from moving the
-  // canvas under the pointer.
+  // canvas under the pointer. It happens once per selection: a zoom or a
+  // relayout with the same card still selected is the reader's own move, and
+  // pulling the canvas back to the card undid it.
+  const broughtIntoViewRef = useRef<TreeNodeId | null>(null);
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !selectedNodeId || !measured) return;
+    if (!selectedNodeId) {
+      broughtIntoViewRef.current = null;
+      return;
+    }
+    if (!canvas || !measured || broughtIntoViewRef.current === selectedNodeId) return;
     const node = displayTree.nodesById[selectedNodeId];
     if (!node) return;
+    broughtIntoViewRef.current = selectedNodeId;
     const left = node.position.x * zoom;
     const top = node.position.y * zoom;
     const right = left + node.size.width * zoom;

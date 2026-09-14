@@ -82,7 +82,11 @@ export type WorkspaceGateway = {
   /** The account's builds still queued or running, newest first. */
   listActivePipelineRuns: () => Promise<PipelineRun[]>;
   cancelPipelineRun: (runId: string) => Promise<PipelineRun>;
-  restoreWorkspace: (workspaceId: string, versionHash: string, expectedHash: string) => Promise<void>;
+  restoreWorkspace: (
+    workspaceId: string,
+    versionHash: string,
+    expectedHash: string,
+  ) => Promise<{ changed: boolean }>;
   editWorkspace: (
     workspaceId: string,
     operations: WorkspaceEditOperation[],
@@ -175,7 +179,7 @@ export const repositoryWorkspaceGateway: WorkspaceGateway = {
   },
 
   async restoreWorkspace(workspaceId, versionHash, expectedHash) {
-    await postJson(
+    return postJson<{ changed: boolean }>(
       `/workspaces/${encodeURIComponent(workspaceId)}/versions/${encodeURIComponent(versionHash)}/restore`,
       { expected_version_hash: expectedHash },
     );

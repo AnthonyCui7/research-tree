@@ -94,7 +94,9 @@ export function PopoverMenu({ anchor, onClose, label, width = 216, children }: P
           "absolute overflow-hidden rounded-[11px] border border-border bg-surface shadow-popover outline-none",
           // The menu grows out of the edge it is pinned to.
           anchor.align === "right" ? "origin-top-right" : "origin-top-left",
-          closing ? "animate-dropdown-exit" : "animate-dropdown-enter",
+          // Choosing an item starts the exit; a second click landing during it
+          // must not choose again, or a double click sent an edit twice.
+          closing ? "pointer-events-none animate-dropdown-exit" : "animate-dropdown-enter",
         )}
         style={{
           top,

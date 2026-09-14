@@ -86,6 +86,8 @@ export function NodeActionsMenu({
           {destinations.map((destination) => (
             <MenuItem
               key={destination.key}
+              disabled={disabled}
+              title={disabled ? BUILD_RUNNING : undefined}
               onClick={() =>
                 onApply([
                   {

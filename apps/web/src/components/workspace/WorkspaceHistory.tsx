@@ -24,7 +24,16 @@ export function WorkspaceHistory({
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyHash, setBusyHash] = useState<string | null>(null);
+  // The hash a landed restore replaced. `onChanged` resolves when the
+  // summaries land and the document follows a beat later, so until the hash
+  // on screen has moved past this one a second restore would be sent against
+  // the version the server just replaced.
+  const [replacedHash, setReplacedHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (replacedHash !== null && currentVersionHash !== replacedHash) setReplacedHash(null);
+  }, [currentVersionHash, replacedHash]);
 
   // The version list is read by this panel alone, so it loads when the panel
   // opens. The current hash keys it: any change produces a new hash and a
@@ -47,17 +56,23 @@ export function WorkspaceHistory({
     };
   }, [currentVersionHash, workspaceId]);
 
-  // A restore stays pending until the reload after it settles, so the next
-  // restore cannot be sent against a version the server already replaced.
-  // A reload that fails ends the wait too; the list keeps working.
+  // A restore stays pending until the document it produced is on screen, so
+  // the next restore cannot be sent against a version the server already
+  // replaced. A reload that fails ends the wait too; the list keeps working.
   async function restore(versionHash: string) {
     if (versionHash === currentVersionHash) return;
     setBusyHash(versionHash);
     setError(null);
     try {
-      await repositoryWorkspaceGateway.restoreWorkspace(workspaceId, versionHash, currentVersionHash);
+      const result = await repositoryWorkspaceGateway.restoreWorkspace(
+        workspaceId,
+        versionHash,
+        currentVersionHash,
+      );
+      if (result.changed) setReplacedHash(currentVersionHash);
       await onChanged();
     } catch (requestError) {
+      setReplacedHash(null);
       const conflict = isVersionConflict(requestError);
       setError(conflict ? VERSION_CONFLICT_MESSAGE : messageFrom(requestError));
       if (conflict) {
@@ -123,7 +138,7 @@ export function WorkspaceHistory({
                     <button
                       className={compactActionClass}
                       type="button"
-                      disabled={busyHash !== null}
+                      disabled={busyHash !== null || replacedHash !== null}
                       onClick={() => void restore(version.version_hash)}
                     >
                       {busyHash === version.version_hash ? "Restoring…" : "Restore"}
