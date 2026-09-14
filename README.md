@@ -49,7 +49,8 @@ and paper annotations, Postgres, Redis, and a one-shot `migrate` service that
 applies the schema first. Set `RESEARCH_TREE_AUTH_MODE=accounts` and a
 `SESSION_SECRET` to require sign-in (email + password, plus Google when a
 client id and secret are configured). Each account then sees only its own
-workspaces, and the per-account limits cap what one person can spend in a day.
+workspaces, and model calls run on that account's own OpenAI key or on an
+allowance the operator has granted it.
 Large per-paper payloads can live in Azure Blob Storage instead of the data
 directory. `.env.example` documents every variable.
 

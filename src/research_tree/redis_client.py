@@ -2,9 +2,10 @@
 
 `RESEARCH_TREE_REDIS_URL` turns on everything that needs coordination across
 processes: the Celery queue, the shared Semantic Scholar request lane, topic
-review tokens, per-account rate limits, and change notifications for the
-event streams. Unset, every consumer keeps its in-process or on-disk
-behaviour, which is what local development and the test suite use.
+review tokens, annotation job state, the one build slot, and change
+notifications for the event streams. Unset, every consumer keeps its
+in-process or on-disk behaviour, which is what local development and the test
+suite use.
 
 Azure Managed Redis runs with the Enterprise cluster policy: keys are sharded
 by slot, so a multi-key command or transaction only works when every key
