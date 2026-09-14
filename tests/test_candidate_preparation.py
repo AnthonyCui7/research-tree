@@ -252,6 +252,30 @@ class CandidatePreparationTest(unittest.TestCase):
         self.assertIn("after retries", str(raised.exception))
         self.assertIn("429", str(raised.exception))
 
+    def test_an_outage_is_not_split_into_a_retry_storm(self) -> None:
+        # A failure that outlasted the client's retries is the service being
+        # down. Halving the chunk ran the whole ladder again at every level;
+        # now the run dies after the one chunk that failed.
+        from research_tree.retrieval.cache import JsonRequestError
+
+        class FakeJsonClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def post_json(self, url: str, body: dict[str, object]) -> object:
+                self.calls += 1
+                raise JsonRequestError("HTTP 503: Service Unavailable", transient=True)
+
+        client = SemanticScholarClient.__new__(SemanticScholarClient)
+        client.client = FakeJsonClient()
+
+        with self.assertRaises(JsonRequestError) as raised:
+            client.get_references_batch(["a", "b", "c", "d"], [], chunk_size=4)
+
+        self.assertEqual(client.client.calls, 1)
+        self.assertTrue(raised.exception.transient)
+        self.assertIn("4 papers", str(raised.exception))
+
     def test_reference_fetch_failure_on_a_single_paper_kills_the_run(self) -> None:
         # Halving handles oversized chunks, but a single-paper request cannot
         # be oversized — if it still fails after the client's retries, the

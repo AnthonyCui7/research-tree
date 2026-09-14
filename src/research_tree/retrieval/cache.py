@@ -18,7 +18,16 @@ logger = logging.getLogger("uvicorn.error")
 
 
 class JsonRequestError(RuntimeError):
-    pass
+    """A request the client gave up on.
+
+    `transient` says the failure was the service's - throttling, an outage,
+    a timeout - and outlasted the retry ladder, as opposed to a refusal of
+    the request itself, which fails the same way however often it is sent.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 # Statuses worth retrying on the backoff ladder. 429 is Semantic Scholar
@@ -321,8 +330,10 @@ class CachedJsonClient:
                     return response.read().decode("utf-8")
             except urllib.error.HTTPError as error:
                 last_error = error
-                if error.code not in RETRYABLE_HTTP_STATUS or attempt >= len(backoffs):
+                if error.code not in RETRYABLE_HTTP_STATUS:
                     raise JsonRequestError(_format_http_error(error)) from error
+                if attempt >= len(backoffs):
+                    raise JsonRequestError(_format_http_error(error), transient=True) from error
                 # The server's own number wins, but never past the longest wait
                 # this ladder would take by itself. An absurd `Retry-After`
                 # otherwise parks the stage, and the thread running it, for
@@ -335,16 +346,16 @@ class CachedJsonClient:
             except urllib.error.URLError as error:
                 last_error = error
                 if attempt >= len(backoffs):
-                    raise JsonRequestError(str(error)) from error
+                    raise JsonRequestError(str(error), transient=True) from error
                 time.sleep(backoffs[attempt])
             except (TimeoutError, socket.timeout) as error:
                 last_error = error
                 if attempt >= len(backoffs):
                     raise JsonRequestError(
-                        f"Request timed out after {self.timeout_seconds:g}s"
+                        f"Request timed out after {self.timeout_seconds:g}s", transient=True
                     ) from error
                 time.sleep(backoffs[attempt])
-        raise JsonRequestError(str(last_error))
+        raise JsonRequestError(str(last_error), transient=True)
 
     def _wait_for_delay(self) -> None:
         self.rate_limiter.acquire(self.request_delay_seconds)

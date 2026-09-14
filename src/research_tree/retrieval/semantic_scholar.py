@@ -209,8 +209,12 @@ class SemanticScholarClient:
         except JsonRequestError as error:
             # A chunk can exceed the 10 MB response cap when its papers have very
             # long bibliographies. Splitting once recovers those without turning
-            # a size problem into a per-paper request storm.
-            if len(ids) > 1:
+            # a size problem into a per-paper request storm. It is only for a
+            # refusal of the request itself: a failure that outlasted the
+            # client's retries is the service being down, and halving the ids
+            # ran the whole retry ladder again at every level (measured: twenty
+            # minutes of sleeps for one chunk) to reach the same answer.
+            if len(ids) > 1 and not error.transient:
                 midpoint = len(ids) // 2
                 return {
                     **self._references_for_chunk(ids[:midpoint], warnings),
@@ -218,9 +222,10 @@ class SemanticScholarClient:
                 }
             # A single-paper request cannot be oversized, so this is a real
             # failure that survived the client's retries; kill the run.
+            named = ids[0] if len(ids) == 1 else f"{len(ids)} papers"
             raise JsonRequestError(
-                f"Semantic Scholar reference fetch failed after retries "
-                f"for {ids[0]}: {error}"
+                f"Semantic Scholar reference fetch failed after retries for {named}: {error}",
+                transient=error.transient,
             ) from error
 
         references: dict[str, list[str]] = {}
@@ -305,7 +310,7 @@ class SemanticScholarClient:
             for chunk in _chunked(missing, SEMANTIC_SCHOLAR_REFERENCE_RETRY_CHUNK_SIZE):
                 details.update(self._details_for_chunk(chunk))
             still_missing = [paper_id for paper_id in missing if paper_id not in details]
-            if still_missing and len(still_missing) < len(ids):
+            if still_missing:
                 _append_warning(
                     warnings,
                     f"Semantic Scholar returned no metadata for {len(still_missing)} of "
