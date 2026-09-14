@@ -23,6 +23,7 @@ from research_tree.annotation.models import PaperAnnotation
 from research_tree.annotation.prompts import VALIDATION_INSTRUCTIONS, build_validation_input
 from research_tree.annotation.quotes import normalize_quote, quote_key, shorten_quote, word_count, word_limit
 from research_tree.llm import call_responses_api
+from research_tree.services.errors import WorkspaceServiceError
 from research_tree.workspace.serialization import extract_response_output_text
 
 
@@ -55,7 +56,8 @@ def review_annotations_by_page(
 
     Passages are annotated in isolation, so overlap and near-duplicates only
     become visible with the page in view. A page whose review comes back
-    unusable keeps what it had.
+    unusable keeps what it had; a review that keeps nothing on a page is
+    taken at its word, since deleting is one of the things it is asked to do.
     """
 
     if not annotations:
@@ -66,6 +68,10 @@ def review_annotations_by_page(
         page_source = page_sources.get(page_number, "")
         try:
             items = _request_review(page_number, page_source, page_annotations, api_key=api_key)
+        except WorkspaceServiceError:
+            # The allowance ran out, or the key is gone: that ends the paper,
+            # not this page.
+            raise
         except Exception as error:
             logger.warning("Reviewing page %s failed (%s); keeping its annotations", page_number, error)
             reviewed.extend(page_annotations)
@@ -74,10 +80,15 @@ def review_annotations_by_page(
             logger.warning("Review of page %s was not JSON; keeping its annotations", page_number)
             reviewed.extend(page_annotations)
             continue
+        if not items:
+            logger.info("Page %s review kept none of %s", page_number, len(page_annotations))
+            continue
         kept = _rebuild_reviewed(items, page_annotations, page_number)
         logger.info("Page %s review kept %s of %s", page_number, len(kept), len(page_annotations))
+        # Items none of which could be read back are an unusable review, not
+        # a verdict on every annotation.
         reviewed.extend(kept or page_annotations)
-    return reviewed or annotations
+    return reviewed
 
 
 def enforce_quote_rules(

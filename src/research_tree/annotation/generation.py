@@ -32,6 +32,7 @@ from research_tree.annotation.prompts import (
 from research_tree.annotation.quotes import find_occurrences, normalize_quote, quote_key
 from research_tree.annotation.retrieval import RetrievalIndex
 from research_tree.llm import call_responses_api
+from research_tree.services.errors import WorkspaceServiceError
 from research_tree.workspace.serialization import extract_response_output_text
 
 
@@ -55,6 +56,8 @@ def annotate_chunks(
 ) -> list[PaperAnnotation]:
     annotations: list[PaperAnnotation] = []
     guard = threading.Lock()
+    succeeded = 0
+    failures: list[Exception] = []
 
     def annotate(position: int) -> list[PaperAnnotation]:
         chunk = chunks[position]
@@ -86,9 +89,17 @@ def annotate_chunks(
             position = futures[future]
             try:
                 produced = future.result()
+            except WorkspaceServiceError:
+                # A refusal this codebase wrote - the allowance ran out, the
+                # key is gone - holds for every passage after it. Dropping
+                # them one by one stored whatever had been produced as the
+                # paper's finished annotations, and the reader never heard
+                # the reason.
+                raise
             except Exception as error:
                 # One unusable passage out of a hundred is a better outcome
                 # than no annotations at all.
+                failures.append(error)
                 logger.warning(
                     "Annotating passage %s on page %s failed (%s): %s",
                     position,
@@ -97,9 +108,15 @@ def annotate_chunks(
                     error,
                 )
                 continue
+            succeeded += 1
             with guard:
                 annotations.extend(produced)
 
+    if failures and not succeeded:
+        # Every passage failed the same way: a model the key cannot use, a
+        # provider outage. That is a paper that could not be annotated, not
+        # one with nothing worth annotating, and nothing is stored for it.
+        raise RuntimeError(f"no passage could be annotated: {failures[-1]}")
     logger.info("Collected %s candidate annotations from %s passages", len(annotations), len(chunks))
     return annotations
 

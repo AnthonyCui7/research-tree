@@ -323,3 +323,90 @@ class TestOccurrenceGeometry:
         assert len(first.bbox.fragments) == 1
         assert len(second.bbox.fragments) == 2
         assert first.bbox.y < second.bbox.y
+
+
+class _NoIndex:
+    def related_passages(self, chunk_index: int) -> list[str]:
+        return []
+
+
+def _chunks(*texts: str) -> list[dict]:
+    return [
+        {"text": text, "page_number": 1, "section_hint": None, "start": 0, "end": len(text)}
+        for text in texts
+    ]
+
+
+class TestRefusalsEndThePaper:
+    """A refusal this codebase wrote ends the paper; an emptied page stays empty."""
+
+    def test_an_exhausted_allowance_ends_annotation_rather_than_caching_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from research_tree.annotation import generation
+        from research_tree.services.errors import AllowanceExhaustedError
+
+        def refuse(*args: object, **kwargs: object) -> dict:
+            raise AllowanceExhaustedError("used up")
+
+        monkeypatch.setattr(generation, "call_responses_api", refuse)
+        with pytest.raises(AllowanceExhaustedError):
+            generation.annotate_chunks(
+                _chunks("Some prose.", "More prose."),
+                page_sources={1: "Some prose. More prose."},
+                paper_brief="",
+                index=_NoIndex(),
+                api_key="sk-test",
+            )
+
+    def test_a_paper_no_passage_of_which_could_be_annotated_is_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from research_tree.annotation import generation
+
+        def fail(*args: object, **kwargs: object) -> dict:
+            raise RuntimeError("model unavailable")
+
+        monkeypatch.setattr(generation, "call_responses_api", fail)
+        with pytest.raises(RuntimeError, match="no passage could be annotated"):
+            generation.annotate_chunks(
+                _chunks("Some prose.", "More prose."),
+                page_sources={1: "Some prose. More prose."},
+                paper_brief="",
+                index=_NoIndex(),
+                api_key="sk-test",
+            )
+
+    def test_a_review_that_keeps_nothing_on_a_page_is_taken_at_its_word(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from research_tree.annotation import validation
+
+        annotation = _annotation("Some prose")
+        monkeypatch.setattr(validation, "_request_review", lambda *args, **kwargs: [])
+        assert validation.review_annotations_by_page([annotation], {1: "Some prose"}, api_key="k") == []
+        # A review none of whose items can be read back is unusable, not a verdict.
+        monkeypatch.setattr(validation, "_request_review", lambda *args, **kwargs: [{"bogus": 1}])
+        assert validation.review_annotations_by_page([annotation], {1: "Some prose"}, api_key="k") == [
+            annotation
+        ]
+
+    def test_a_refusal_during_review_ends_the_paper(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from research_tree.annotation import validation
+        from research_tree.services.errors import AllowanceExhaustedError
+
+        def refuse(*args: object, **kwargs: object) -> list:
+            raise AllowanceExhaustedError("used up")
+
+        monkeypatch.setattr(validation, "_request_review", refuse)
+        with pytest.raises(AllowanceExhaustedError):
+            validation.review_annotations_by_page([_annotation("Some prose")], {1: "Some prose"}, api_key="k")
+
+    def test_a_paper_with_too_many_passages_is_refused_before_any_call(
+        self, paper_pdf: bytes, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from research_tree.annotation import pipeline
+
+        monkeypatch.setattr(pipeline, "MAX_ANNOTATION_PASSAGES", 1)
+        with pytest.raises(pipeline.PaperTooLongError, match="passages"):
+            pipeline.generate_paper_annotations(paper_pdf, title="Paper", api_key="sk-test")
