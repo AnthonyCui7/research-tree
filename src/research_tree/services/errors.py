@@ -114,6 +114,13 @@ class ProviderUnreachableError(WorkspaceServiceError):
     error_code = "provider_unreachable"
 
 
+class ProviderRefusedError(WorkspaceServiceError):
+    """OpenAI refused the account's own key, credit, limit or model access."""
+
+    status_code = 402
+    error_code = "provider_refused"
+
+
 class ServiceUnavailableError(WorkspaceServiceError):
     """Something this request needs (the job queue) could not be reached."""
 
@@ -136,6 +143,7 @@ PUBLIC_ERROR_CODES = {
     "api_key_invalid",
     "byok_unavailable",
     "provider_unreachable",
+    "provider_refused",
     "service_unavailable",
 }
 

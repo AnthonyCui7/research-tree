@@ -68,6 +68,39 @@ def test_workspace_events_and_reviews_list(client, seed_workspace) -> None:
     assert reviews.json()["reviews"] == []
 
 
+def test_a_build_is_shown_without_where_the_worker_kept_it(client, repository, seed_workspace) -> None:
+    seed_workspace()
+    run = _save_run(repository, "pipeline_kept", status="completed")
+    repository.save_pipeline_run(
+        {
+            **run,
+            "artifacts": {"run_dir": "/data/pipeline_runs/pipeline_kept"},
+            "stages": {
+                "construct": {
+                    "status": "completed",
+                    "updated_at": "2026-08-01T00:00:00Z",
+                    "inputs": {"candidate_json": "/data/pipeline_runs/pipeline_kept/c.json"},
+                    "outputs": {},
+                    "error": None,
+                }
+            },
+        }
+    )
+
+    shown = client.get("/workspaces/pipeline-runs/pipeline_kept").json()["pipeline_run"]
+    listed = client.get("/workspaces/workspace-1/pipeline-runs").json()["pipeline_runs"][0]
+
+    for view in (shown, listed):
+        assert view["status"] == "completed"
+        assert view["stages"]["construct"] == {
+            "status": "completed",
+            "updated_at": "2026-08-01T00:00:00Z",
+            "error": None,
+        }
+        assert "/data/" not in json.dumps(view)
+        assert not {"artifacts", "owner_id", "runner_pid", "runner_host"} & view.keys()
+
+
 def test_pipeline_run_lifecycle_routes(client, repository, seed_workspace) -> None:
     seed_workspace()
     run = _save_run(repository, "pipeline_1", status="running")
@@ -108,7 +141,7 @@ def test_rerun_starts_a_run(client, repository, seed_workspace) -> None:
 
     with patch(
         "research_tree.services.pipeline.WorkspacePipelineService._start",
-        return_value={"run_id": "pipeline_new", "status": "queued"},
+        return_value={"run_id": "pipeline_new", "workspace_id": "workspace-1", "status": "queued"},
     ):
         response = client.post(
             "/workspaces/workspace-1/pipeline-runs",

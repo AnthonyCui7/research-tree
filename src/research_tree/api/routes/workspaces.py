@@ -22,6 +22,7 @@ from research_tree.api.schemas import (
     PaperContentResponse,
     PipelineRerunApiRequest,
     PipelineRunResponse,
+    PipelineRunView,
     PipelineRunsResponse,
     RestoreWorkspaceRequest,
     TopicReviewRequest,
@@ -124,7 +125,7 @@ async def stream_pipeline_run_updates(
             while True:
                 if await request.is_disconnected() or not await _still_signed_in(request):
                     return
-                signature = json.dumps(run, sort_keys=True, default=str)
+                signature = PipelineRunView.model_validate(run).model_dump_json()
                 if signature != previous_signature:
                     previous_signature = signature
                     since_heartbeat = 0.0

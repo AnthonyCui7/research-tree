@@ -14,7 +14,9 @@ from uuid import uuid4
 
 from research_tree.artifact_store import ArtifactStore, default_artifact_store
 from research_tree.artifacts import write_json_file
+from research_tree.retrieval.cache import JsonRequestError
 from research_tree.retrieval.candidate_preparation import (
+    CandidatePoolError,
     PipelineConfig,
     run_workspace_candidate_preparation_pipeline,
 )
@@ -33,10 +35,11 @@ from research_tree.services.errors import (
     TopicReviewExpiredError,
     WorkspaceNotFoundError,
     WorkspaceServiceError,
+    public_service_error_message,
 )
 from research_tree.services.topics import TopicReviewService, topic_slug
 from research_tree.services.validation import validate_resource_id
-from research_tree.llm import DEFAULT_MODEL
+from research_tree.llm import DEFAULT_MODEL, LlmRequestError
 from research_tree.workspace.construction import construct_workspace_from_candidates
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.publishing import publish_workspace_version
@@ -478,7 +481,8 @@ class WorkspacePipelineService:
                     # Similar papers need local embedding models from the optional
                     # `pipeline` extra. The workspace is already usable without
                     # them, so a missing model degrades the run, not the product.
-                    warnings.append(f"Similar-paper recommendations were skipped: {error}")
+                    logger.warning("similar papers skipped run_id=%s: %s", run_id, error)
+                    warnings.append("Similar-paper recommendations could not be computed for this build.")
                     self._stage(run, "related", "completed_with_warnings")
                 else:
                     related_path = run_dir / "workspace_with_related_papers.json"
@@ -550,13 +554,14 @@ class WorkspacePipelineService:
                 run_id,
                 run["workspace_id"],
             )
+            reason = _failure_sentence(error)
             failed_stage = run.get("current_stage")
             if isinstance(failed_stage, str) and failed_stage in PIPELINE_STAGES:
-                self._stage(run, failed_stage, "failed", error=str(error))
+                self._stage(run, failed_stage, "failed", error=reason)
             run.update(
                 {
                     "status": "failed",
-                    "error": str(error),
+                    "error": reason,
                     "current_stage": None,
                     "artifacts": artifacts,
                     "updated_at": _now(),
@@ -849,6 +854,35 @@ def principal_for_owner_id(owner_id: Any) -> Principal:
 
 
 MAX_INSTRUCTIONS_CHARS = 2_000
+
+
+def _failure_sentence(error: Exception) -> str:
+    """What the reader is told about a build that failed.
+
+    The exception's own text is for the log: it can name files, hosts and
+    provider payloads, and a run's record is read by the browser. A refusal
+    this codebase wrote for the account, and a reason the candidates stage
+    wrote for the reader, pass through as they are.
+    """
+
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    if isinstance(error, WorkspaceServiceError):
+        return public_service_error_message(error)
+    if isinstance(error, CandidatePoolError):
+        return str(error)
+    if isinstance(error, JsonRequestError):
+        return (
+            "Semantic Scholar did not answer after several minutes of retries. "
+            "Start the build again later; what it already fetched is kept."
+        )
+    if isinstance(error, LlmRequestError):
+        return "OpenAI did not complete a request this build depends on. Start the build again."
+    if isinstance(error, SoftTimeLimitExceeded):
+        return "The build ran past its time limit and was stopped. Start it again."
+    if isinstance(error, ValueError) and str(error).startswith("workspace validation failed"):
+        return "The model's draft of the workspace did not pass validation, even after corrections. Start the build again."
+    return "The build failed unexpectedly. Start it again."
 
 
 def _clean_instructions(instructions: str | None) -> str | None:

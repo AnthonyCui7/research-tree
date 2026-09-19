@@ -668,7 +668,7 @@ class WorkspaceBackendTest(unittest.TestCase):
         )
         self.assertEqual(card["tldr_source"], "generated_s2_style")
         self.assertEqual(card["tldr_model"], "gpt-5.6-luna")
-        self.assertFalse(any("Generated TLDR failed" in warning for warning in warnings))
+        self.assertFalse(any("summary could not be generated" in warning for warning in warnings))
 
     def test_hydration_keeps_the_build_when_metadata_cannot_be_fetched(self) -> None:
         from research_tree.retrieval.cache import JsonRequestError
@@ -1371,6 +1371,61 @@ def _candidate(paper_id: str, title: str) -> dict[str, object]:
         "is_survey": False,
         "found_by": ["test"],
     }
+
+
+class ConstructionRepairTest(unittest.TestCase):
+    """A build's draft that fails validation is corrected, not thrown away."""
+
+    class _ScriptedClient:
+        def __init__(self, outputs: list[dict[str, object]]) -> None:
+            self.outputs = list(outputs)
+            self.prompts: list[str] = []
+
+        def call_workspace_llm(self, *, prompt: str, model: str, response_schema=None):
+            from research_tree.workspace.construction import WorkspaceLlmResponse
+
+            self.prompts.append(prompt)
+            return WorkspaceLlmResponse(text="", raw_response=self.outputs.pop(0))
+
+    def _build(self, client: "_ScriptedClient"):
+        from research_tree.workspace.construction import construct_workspace_from_candidates
+
+        with tempfile.TemporaryDirectory() as directory:
+            candidate_path = Path(directory) / "llm_candidate_papers.json"
+            candidate_path.write_text(json.dumps(_candidate_artifact()), encoding="utf-8")
+            return construct_workspace_from_candidates(
+                candidate_json_path=candidate_path,
+                model="gpt-5.6-luna",
+                llm_client=client,  # type: ignore[arg-type]
+            )
+
+    def test_a_dangling_reference_is_sent_back_and_the_correction_merged(self) -> None:
+        draft = _workspace()
+        draft["paper_paths"][0]["branch_node_id"] = "branch-that-is-not-there"  # type: ignore[index]
+        correction = {
+            "upsert_paper_paths": [{"path_id": "path-main", "branch_node_id": "branch-main"}]
+        }
+        client = self._ScriptedClient([draft, correction])
+
+        result = self._build(client)
+
+        self.assertTrue(result.validation.is_valid)
+        self.assertEqual(result.workspace["paper_paths"][0]["branch_node_id"], "branch-main")
+        self.assertEqual(len(client.prompts), 2)
+        self.assertIn("branch-that-is-not-there", client.prompts[1])
+
+    def test_a_draft_that_stays_invalid_fails_with_its_errors(self) -> None:
+        from research_tree.workspace.construction import CONSTRUCTION_REPAIR_ATTEMPTS
+
+        draft = _workspace()
+        draft["paper_paths"][0]["branch_node_id"] = "branch-that-is-not-there"  # type: ignore[index]
+        client = self._ScriptedClient([draft] + [{"title": "Same problem"}] * CONSTRUCTION_REPAIR_ATTEMPTS)
+
+        with self.assertRaises(ValueError) as raised:
+            self._build(client)
+
+        self.assertIn("workspace validation failed", str(raised.exception))
+        self.assertEqual(len(client.prompts), 1 + CONSTRUCTION_REPAIR_ATTEMPTS)
 
 
 class MalformedDocumentDiffTest(unittest.TestCase):

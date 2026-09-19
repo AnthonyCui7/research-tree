@@ -105,8 +105,10 @@ def validate_openai_key(api_key: str, *, timeout_seconds: float = KEY_CHECK_TIME
     request = urllib.request.Request(
         OPENAI_MODELS_URL, headers={"Authorization": f"Bearer {api_key}"}, method="GET"
     )
+    from research_tree.llm import open_openai_request
+
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with open_openai_request(request, timeout_seconds=timeout_seconds) as response:
             response.read(64)
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):

@@ -171,14 +171,43 @@ class PipelineRerunApiRequest(ClientRequest):
     expected_version_hash: str | None = None
 
 
+class PipelineStageView(BaseModel):
+    status: str
+    updated_at: str | None = None
+    error: str | None = None
+
+
+class PipelineRunView(BaseModel):
+    """What a browser is told about a build.
+
+    The stored record also says where the worker wrote its files and which
+    process on which host ran it. That is the operator's, so the fields a
+    reader needs are named here and everything else is left behind.
+    """
+
+    run_id: str
+    workspace_id: str
+    topic: str = ""
+    model: str = ""
+    status: str
+    current_stage: str | None = None
+    requested_stages: list[str] = []
+    stages: dict[str, PipelineStageView] = {}
+    warnings: list[str] = []
+    error: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    completed_at: str | None = None
+
+
 class PipelineRunResponse(BaseModel):
-    pipeline_run: dict[str, Any]
+    pipeline_run: PipelineRunView
 
 
 class PipelineRunsResponse(BaseModel):
     # Absent when the list spans the account rather than one workspace.
     workspace_id: str | None = None
-    pipeline_runs: list[dict[str, Any]]
+    pipeline_runs: list[PipelineRunView]
 
 
 class RestoreWorkspaceRequest(ClientRequest):
@@ -321,7 +350,7 @@ class ReviewActionResponse(BaseModel):
     persisted_version_hash: str | None = None
     persisted_event_ids: list[str] = Field(default_factory=list)
     # Set only when approving a pipeline_rerun review.
-    pipeline_run: dict[str, Any] | None = None
+    pipeline_run: PipelineRunView | None = None
 
 
 class ReviewEditResponse(BaseModel):

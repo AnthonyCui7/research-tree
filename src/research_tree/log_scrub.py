@@ -8,6 +8,7 @@ import re
 # OpenAI keys ("sk-…", "sk-proj-…") and anything that looks like one.
 _SECRET_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
 _REDACTED = "sk-…[redacted]"
+_TRACEBACKS = logging.Formatter()
 
 
 class SecretScrubFilter(logging.Filter):
@@ -19,6 +20,11 @@ class SecretScrubFilter(logging.Filter):
                 record.args = {key: _scrub(value) for key, value in record.args.items()}
             else:
                 record.args = tuple(_scrub(value) for value in record.args)
+        if record.exc_info and not record.exc_text:
+            # A formatter renders the traceback after every filter has run,
+            # and an exception's message is as likely a carrier as the log
+            # line's. Formatters print `exc_text` when it is already there.
+            record.exc_text = scrub(_TRACEBACKS.formatException(record.exc_info))
         return True
 
 

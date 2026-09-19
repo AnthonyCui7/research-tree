@@ -88,8 +88,9 @@ def hydrate_workspace_papers(
             # The workspace is built and its model calls are paid for. What is
             # missing here is a provider summary and a PDF link for a few
             # cards, which is a warning on the run, not a reason to lose it.
+            logger.warning("hydration could not fetch paper metadata: %s", error)
             warnings.append(
-                f"Semantic Scholar metadata was unavailable for {len(missing_ids)} papers: {error}"
+                f"Semantic Scholar metadata was unavailable for {len(missing_ids)} papers."
             )
     for paper_id, raw_card in cards.items():
         if not isinstance(raw_card, dict):
@@ -108,7 +109,8 @@ def hydrate_workspace_papers(
             try:
                 apply_generated_tldr(raw_card, generator=tldr_generator)
             except RuntimeError as error:
-                warnings.append(f"Generated TLDR failed for {paper_id}: {error}")
+                logger.warning("generated TLDR failed paper_id=%s: %s", paper_id, error)
+                warnings.append(f"A summary could not be generated for {paper_id}.")
         content_result = (prefetched_content or {}).get(str(paper_id))
         if content_result is None:
             source_url = _open_access_pdf_url(details, raw_card)

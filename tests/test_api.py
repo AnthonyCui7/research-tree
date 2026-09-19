@@ -858,16 +858,20 @@ def test_failed_pipeline_does_not_publish_a_partial_workspace(repository) -> Non
         dispatch=lambda owner_id, run_id, execute: execute(run_id),
     )
 
+    from research_tree.retrieval.cache import JsonRequestError
+
     with patch(
         "research_tree.services.pipeline.run_workspace_candidate_preparation_pipeline",
-        side_effect=RuntimeError("Semantic Scholar is unavailable"),
+        side_effect=JsonRequestError("HTTP 503 from /data/cache/abc", transient=True, status=503),
     ):
         run = _start_approved(service, repository, "Failure-Safe RAG")
 
     saved_run = repository.get_pipeline_run(run["run_id"])
     assert saved_run["status"] == "failed"
     assert saved_run["stages"]["candidates"]["status"] == "failed"
-    assert saved_run["stages"]["candidates"]["error"] == "Semantic Scholar is unavailable"
+    # The reader is told what happened; the exception's own text is the log's.
+    assert saved_run["stages"]["candidates"]["error"].startswith("Semantic Scholar did not answer")
+    assert "/data/cache" not in saved_run["error"]
     with pytest.raises(FileNotFoundError):
         repository.get_current_workspace(run["workspace_id"])
 

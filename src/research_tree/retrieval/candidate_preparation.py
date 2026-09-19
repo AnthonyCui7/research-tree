@@ -84,6 +84,14 @@ LLM_CANDIDATE_SCHEMA_VERSION = "llm_candidate_papers.v2"
 PAPER_DATABASE_SCHEMA_VERSION = "s2_bulk_deduped_paper_database.v2"
 
 
+class CandidatePoolError(RuntimeError):
+    """Semantic Scholar answered, and what it answered cannot become a candidate set.
+
+    The message is written for the person who asked for the build: it says
+    what came back and what to do, and carries nothing of this machine.
+    """
+
+
 @dataclass(frozen=True)
 class PipelineConfig:
     repo_root: Path
@@ -159,7 +167,7 @@ def run_workspace_candidate_preparation_pipeline(
         # The searches succeeded but matched nothing — a candidate set cannot
         # exist, and empty artifacts would let construct build an empty
         # workspace over a good one. Fail with the reason instead.
-        raise RuntimeError(
+        raise CandidatePoolError(
             "Semantic Scholar returned no papers for "
             f"'{query_plan.boolean_query()}'; cannot build a candidate set."
         )
@@ -181,7 +189,7 @@ def run_workspace_candidate_preparation_pipeline(
         # means S2 answered 200 for every root-set paper and hydrated none of
         # the bibliographies. There is no graph to rank; a silently different
         # ranking would be worse than an explainable failure.
-        raise RuntimeError(
+        raise CandidatePoolError(
             "Semantic Scholar returned no reference lists for any of the "
             f"{len(root_set_ids)} root-set papers; cannot rank the citation "
             "graph. Rerun when Semantic Scholar recovers."
@@ -192,7 +200,7 @@ def run_workspace_candidate_preparation_pipeline(
         # missing). Past half, the hub basis is a minority of the root set and
         # the ranking is no longer the thing the artifact says it is, so this
         # crosses from degraded data into a failed run.
-        raise RuntimeError(
+        raise CandidatePoolError(
             "Semantic Scholar hydrated only "
             f"{len(references)} of {len(root_set_ids)} root-set bibliographies; "
             "more than half the citation graph's hub basis is missing. Rerun "

@@ -40,6 +40,171 @@ def _kek() -> str:
     return base64.b64encode(os.urandom(32)).decode("ascii")
 
 
+# ---- what leaves for OpenAI, and what comes back refused ----------------------
+
+
+def _openai_refusal(status: int, code: str, message: str = "no"):
+    import json
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    body = json.dumps({"error": {"code": code, "message": message}}).encode("utf-8")
+    return HTTPError("https://api.openai.com/v1/responses", status, "refused", None, BytesIO(body))
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "message", "said"),
+    [
+        (401, "invalid_api_key", "Incorrect API key provided: sk-proj-****wxyz", "refused your API key"),
+        (429, "insufficient_quota", "You exceeded your current quota", "out of credit"),
+        (429, "rate_limit_exceeded", "Request too large for the model on tokens per min", "rate limit"),
+        (403, "model_not_found", "Project does not have access to model", "cannot use the model"),
+    ],
+)
+def test_a_refusal_only_the_key_owner_can_fix_says_so_and_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, status: int, code: str, message: str, said: str
+) -> None:
+    from research_tree import llm
+    from research_tree.services.errors import ProviderRefusedError
+
+    attempts: list[int] = []
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        attempts.append(1)
+        raise _openai_refusal(status, code, message)
+
+    monkeypatch.setattr(llm, "_post", refuse)
+    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+    with pytest.raises(ProviderRefusedError) as raised:
+        call_responses_api({"model": "gpt-5.6-luna"}, api_key=SECRET, timeout_seconds=5, label="test")
+    assert said in raised.value.message
+    assert "sk-" not in raised.value.message
+    assert attempts == [1]
+
+
+def test_a_refused_platform_key_is_the_operators_problem(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_tree import llm
+    from research_tree.principal import set_credential_source
+    from research_tree.services.errors import ServiceUnavailableError
+
+    monkeypatch.setattr(
+        llm, "_post", lambda *_a, **_k: (_ for _ in ()).throw(_openai_refusal(401, "invalid_api_key"))
+    )
+    with bind_principal(ACCOUNT):
+        set_credential_source("sponsored")
+        with pytest.raises(ServiceUnavailableError) as raised:
+            call_responses_api(
+                {"model": "gpt-5.6-luna"}, api_key=PLATFORM_KEY, timeout_seconds=5, label="test"
+            )
+    assert "key" not in raised.value.message.casefold()
+
+
+def test_a_dropped_connection_is_tried_again_and_a_timeout_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    from research_tree import llm
+
+    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+    outcomes = iter(
+        [ConnectionResetError("reset"), http.client.IncompleteRead(b"{"), {"output": []}]
+    )
+
+    def flaky(*_args: object, **_kwargs: object) -> object:
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(llm, "_post", flaky)
+    assert call_responses_api(
+        {"model": "gpt-5.6-luna"}, api_key=SECRET, timeout_seconds=5, label="test"
+    ) == {"output": []}
+
+    attempts: list[int] = []
+
+    def slow(*_args: object, **_kwargs: object) -> None:
+        attempts.append(1)
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(llm, "_post", slow)
+    with pytest.raises(llm.LlmRequestError):
+        call_responses_api({"model": "gpt-5.6-luna"}, api_key=SECRET, timeout_seconds=5, label="test")
+    assert attempts == [1]
+
+
+def test_a_request_carrying_a_key_does_not_follow_a_redirect() -> None:
+    import threading
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.error import HTTPError
+
+    from research_tree.llm import open_openai_request
+
+    seen_elsewhere: list[str | None] = []
+
+    class Elsewhere(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen_elsewhere.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    elsewhere = HTTPServer(("127.0.0.1", 0), Elsewhere)
+
+    class Redirecting(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{elsewhere.server_port}/")
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    redirecting = HTTPServer(("127.0.0.1", 0), Redirecting)
+    for server in (elsewhere, redirecting):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{redirecting.server_port}/",
+            headers={"Authorization": f"Bearer {SECRET}"},
+        )
+        with pytest.raises(HTTPError) as raised:
+            open_openai_request(request, timeout_seconds=5)
+        assert raised.value.code == 302
+        assert seen_elsewhere == []
+    finally:
+        for server in (elsewhere, redirecting):
+            server.shutdown()
+            server.server_close()
+
+
+def test_a_key_inside_an_exception_does_not_reach_the_log() -> None:
+    import io
+    import logging
+
+    from research_tree.log_scrub import SecretScrubFilter
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.addFilter(SecretScrubFilter())
+    logger = logging.getLogger("test.scrub.traceback")
+    logger.addHandler(handler)
+    logger.propagate = False
+    try:
+        try:
+            raise ValueError(f"Invalid header value b'Bearer {SECRET}'")
+        except ValueError:
+            logger.exception("call failed")
+    finally:
+        logger.removeHandler(handler)
+    assert "Traceback" in stream.getvalue()
+    assert SECRET not in stream.getvalue()
+
+
 # ---- the envelope -----------------------------------------------------------
 
 

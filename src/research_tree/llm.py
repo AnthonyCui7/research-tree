@@ -7,6 +7,7 @@ would otherwise duplicate: the HTTP request and usage logging.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import socket
@@ -17,8 +18,14 @@ from typing import Any
 
 from research_tree.billing.usage import record_llm_usage
 from research_tree.credentials import ALLOWANCE_EXHAUSTED_MESSAGE
+from research_tree.log_scrub import scrub
 from research_tree.principal import current_binding
-from research_tree.services.errors import AllowanceExhaustedError
+from research_tree.services.errors import (
+    AllowanceExhaustedError,
+    ProviderRefusedError,
+    ServiceUnavailableError,
+    WorkspaceServiceError,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -41,8 +48,56 @@ RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 RETRY_BACKOFF_SECONDS = (2.0, 8.0, 20.0)
 
 
+# Seconds of silence before the first keepalive probe, and between probes. A
+# construction call can think for minutes with nothing on the wire, and a
+# cloud load balancer forgets a connection that has been silent for four; the
+# answer then arrives at a connection that no longer exists and the call runs
+# out its whole timeout. A probe a minute keeps the connection known.
+KEEPALIVE_IDLE_SECONDS = 60
+KEEPALIVE_INTERVAL_SECONDS = 30
+
+
 class LlmRequestError(RuntimeError):
     pass
+
+
+class _KeptAliveConnection(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        super().connect()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        # Linux calls the idle time TCP_KEEPIDLE; macOS calls it TCP_KEEPALIVE.
+        idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+        if idle is not None:
+            self.sock.setsockopt(socket.IPPROTO_TCP, idle, KEEPALIVE_IDLE_SECONDS)
+        if hasattr(socket, "TCP_KEEPINTVL"):
+            self.sock.setsockopt(
+                socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, KEEPALIVE_INTERVAL_SECONDS
+            )
+
+
+class _KeptAliveHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req: urllib.request.Request) -> Any:
+        return self.do_open(_KeptAliveConnection, req, context=self._context)
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """A request that carries a key goes where it was sent or nowhere.
+
+    urllib follows a redirect with the original headers, `Authorization`
+    included, whichever host it points at.
+    """
+
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_KeptAliveHandler(), _RefuseRedirects())
+
+
+def open_openai_request(request: urllib.request.Request, *, timeout_seconds: float) -> Any:
+    """Every request that carries an OpenAI key leaves through here."""
+
+    return _OPENER.open(request, timeout=timeout_seconds)
 
 
 def call_responses_api(
@@ -157,11 +212,15 @@ def _request_with_retries(
     timeout_hint: str,
 ) -> dict[str, Any]:
     for attempt in range(len(RETRY_BACKOFF_SECONDS) + 1):
+        retries_left = attempt < len(RETRY_BACKOFF_SECONDS)
         try:
             return _post(body, url=url, api_key=api_key, timeout_seconds=timeout_seconds)
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
-            if error.code in RETRYABLE_HTTP_STATUS and attempt < len(RETRY_BACKOFF_SECONDS):
+            refusal = _refusal_of_the_key(error.code, detail, model=str(body.get("model") or ""))
+            if refusal is not None:
+                raise refusal from error
+            if error.code in RETRYABLE_HTTP_STATUS and retries_left:
                 # Never wait longer than this ladder's own worst case, however
                 # long the server asks for.
                 asked_for = _retry_after_seconds(error)
@@ -179,12 +238,67 @@ def _request_with_retries(
                 time.sleep(delay)
                 continue
             raise LlmRequestError(f"OpenAI {label} call failed: {detail}") from error
-        except urllib.error.URLError as error:
-            raise LlmRequestError(f"OpenAI {label} call failed: {error}") from error
-        except (TimeoutError, socket.timeout) as error:
+        except TimeoutError as error:
+            # The model may still be writing the answer this gave up on, and a
+            # second request would be paid for as well; the caller chose how
+            # long an answer is worth waiting for.
             message = f"OpenAI {label} call timed out after {timeout_seconds:g}s."
             raise LlmRequestError(f"{message}{timeout_hint}") from error
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            # The connection could not be made, or was lost before a whole
+            # answer arrived. Nothing came back to keep, so asking again is
+            # the only way to have one.
+            if retries_left:
+                logger.warning(
+                    "OpenAI %s call lost its connection (%s); retrying in %.0fs",
+                    label,
+                    type(error).__name__,
+                    RETRY_BACKOFF_SECONDS[attempt],
+                )
+                time.sleep(RETRY_BACKOFF_SECONDS[attempt])
+                continue
+            # The client library quotes a header it cannot send, and the
+            # header is the key.
+            raise LlmRequestError(f"OpenAI {label} call failed: {scrub(str(error))}") from None
     raise LlmRequestError(f"OpenAI {label} call exhausted its retries.")
+
+
+def _refusal_of_the_key(status: int, detail: str, *, model: str) -> WorkspaceServiceError | None:
+    """The sentence for a refusal only the key's owner can do something about.
+
+    These fail the same way however often they are sent, so they are neither
+    retried nor reported as the generic failure that tells someone to try
+    again. On an account's own key the sentence says what to change. On the
+    platform key the account can change nothing, so it hears that the service
+    is unavailable and the operator's log hears why.
+    """
+
+    try:
+        error = json.loads(detail).get("error") or {}
+    except (ValueError, AttributeError):
+        error = {}
+    code = str(error.get("code") or "") if isinstance(error, dict) else ""
+    message = str(error.get("message") or "") if isinstance(error, dict) else ""
+    if status == 401:
+        sentence = "OpenAI refused your API key. Replace it under API keys, then try again."
+    elif code == "insufficient_quota":
+        sentence = "Your OpenAI account is out of credit. Add credit with OpenAI, then try again."
+    elif status == 429 and "Request too large" in message:
+        sentence = (
+            "This request is larger than the rate limit on your OpenAI key allows. "
+            "OpenAI raises that limit as the account moves up its usage tiers."
+        )
+    elif code == "model_not_found":
+        sentence = f"Your OpenAI key cannot use the model {model}. Allow it for the key's project, or use another key."
+    else:
+        return None
+    binding = current_binding()
+    if binding is not None and binding.credential_source == "sponsored":
+        logger.error("OpenAI refused the platform key (HTTP %s %s): %s", status, code, message)
+        return ServiceUnavailableError(
+            "The model provider is not available right now. Try again later."
+        )
+    return ProviderRefusedError(sentence)
 
 
 def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
@@ -243,5 +357,5 @@ def _post(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    with open_openai_request(request, timeout_seconds=timeout_seconds) as response:
         return json.loads(response.read().decode("utf-8"))

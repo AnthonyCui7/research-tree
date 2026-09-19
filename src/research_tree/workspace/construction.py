@@ -46,6 +46,11 @@ logger = logging.getLogger("uvicorn.error")
 
 
 DEFAULT_WORKSPACE_LLM_TIMEOUT_SECONDS = 900.0
+# A draft that fails validation goes back to the model with its errors, the
+# way the assistant's proposals do and as many times. The draft is the most
+# expensive call of a build, and what fails it is usually one dangling id; a
+# correction is a small delta, where starting over is the whole call again.
+CONSTRUCTION_REPAIR_ATTEMPTS = 2
 DEFAULT_WORKSPACE_LLM_REASONING_EFFORT = "xhigh"
 # Agent edits are bounded transformations of an existing document, not
 # open-ended synthesis; xhigh reasoning added latency without changing the
@@ -404,6 +409,39 @@ def construct_workspace_from_candidates(
         workspace_id_override=workspace_id_override,
     )
     validation = validate_workspace(workspace, candidate_artifact)
+    for _ in range(CONSTRUCTION_REPAIR_ATTEMPTS):
+        if validation.is_valid:
+            break
+        logger.warning(
+            "workspace draft failed validation, asking for a repair: %s",
+            "; ".join(validation.errors[:5]),
+        )
+        try:
+            # There is no earlier document here, so the base is empty and the
+            # corrections are merged onto the draft itself.
+            workspace = construct_workspace(
+                candidate_artifact=candidate_artifact,
+                base_workspace={},
+                construction_mode="workspace_repair",
+                run_metadata={
+                    "proposed_workspace": workspace,
+                    "validation_errors": validation.errors,
+                },
+                model=model,
+                llm_client=llm_client,
+            )
+        except ValueError as error:
+            logger.warning("workspace repair could not be read: %s", error)
+            break
+        _fill_workspace_metadata(
+            workspace=workspace,
+            candidate_artifact=candidate_artifact,
+            candidate_json_path=candidate_json_path,
+            model=model,
+            prompt_version=prompt_version,
+            workspace_id_override=workspace_id_override,
+        )
+        validation = validate_workspace(workspace, candidate_artifact)
     if not validation.is_valid:
         write_json_file(
             output_dir / "workspace_raw_llm_output.json",
@@ -1694,7 +1732,8 @@ def enrich_workspace_papers_from_semantic_scholar(
             try:
                 apply_generated_tldr(card, generator=tldr_generator)
             except RuntimeError as error:
-                warnings.append(f"Generated TLDR failed for {paper_id}: {error}")
+                logger.warning("generated TLDR failed paper_id=%s: %s", paper_id, error)
+                warnings.append(f"A summary could not be generated for {paper_id}.")
 
 
 def _fill_card_with_semantic_scholar_details(
