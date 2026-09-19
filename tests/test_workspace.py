@@ -670,6 +670,30 @@ class WorkspaceBackendTest(unittest.TestCase):
         self.assertEqual(card["tldr_model"], "gpt-5.6-luna")
         self.assertFalse(any("Generated TLDR failed" in warning for warning in warnings))
 
+    def test_hydration_keeps_the_build_when_metadata_cannot_be_fetched(self) -> None:
+        from research_tree.retrieval.cache import JsonRequestError
+
+        class DownSemanticScholar:
+            def get_paper_details(self, paper_ids: list[str], warnings: list[str]):
+                raise JsonRequestError("HTTP 503", transient=True, status=503)
+
+        class FakeRepository:
+            def save_paper_content(self, workspace_id: str, paper_id: str, content) -> str:
+                return f"{workspace_id}:{paper_id}:content"
+
+        with patch(
+            "research_tree.workspace.enrichment.retrieve_open_access_paper_content",
+            lambda **kwargs: PaperContentResult(content={"status": "unavailable"}),
+        ):
+            workspace, warnings = hydrate_workspace_papers(
+                workspace=_workspace(),
+                repository=FakeRepository(),  # type: ignore[arg-type]
+                semantic_scholar=DownSemanticScholar(),  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(workspace["paper_cards"]["p1"]["title"], "Core Method")
+        self.assertTrue(any("metadata was unavailable" in warning for warning in warnings))
+
     def test_hydration_uses_prefetched_content_without_downloading(self) -> None:
         class FakeSemanticScholar:
             def get_paper_details(

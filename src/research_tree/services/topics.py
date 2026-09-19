@@ -7,16 +7,17 @@ import re
 import secrets
 import threading
 import time
-import urllib.request
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 from typing import Any
 
 from research_tree.credentials import openai_api_key
 from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
 from research_tree.redis_client import get_redis
+from research_tree.paths import semantic_scholar_cache_dir
+from research_tree.retrieval.cache import JsonRequestError
 from research_tree.retrieval.semantic_scholar import (
-    SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
-    SEMANTIC_SCHOLAR_RATE_LIMITER,
+    SEMANTIC_SCHOLAR_INTERACTIVE_MAX_RETRIES,
+    SemanticScholarClient,
     s2_api_key,
 )
 from research_tree.workspace.repository import WorkspaceRepository
@@ -50,7 +51,16 @@ class TopicReviewService:
         api_key = openai_api_key()
 
         workspaces = self.repository.list_workspaces()
-        source_paper = _linked_paper_metadata(raw_topic)
+        try:
+            source_paper = _linked_paper_metadata(raw_topic)
+        except JsonRequestError as error:
+            logger.warning("linked paper lookup failed: %s", error)
+            return _result(
+                raw_topic,
+                raw_topic,
+                False,
+                "Semantic Scholar is not answering right now, so we could not read that link. Try again in a moment, or enter the topic in words.",
+            )
         if _is_web_link(raw_topic) and source_paper is None:
             result = _result(
                 raw_topic,
@@ -268,37 +278,31 @@ def _topic_review_key(owner_id: str, token: str) -> str:
 
 
 def _linked_paper_metadata(topic: str) -> dict[str, str] | None:
-    """Resolve recognized academic-paper links without fetching arbitrary URLs."""
+    """Resolve recognized academic-paper links without fetching arbitrary URLs.
+
+    The lookup goes through the shared client, so it waits its turn in the
+    request lane, is answered from the cache when the paper was seen before,
+    and is retried when Semantic Scholar turns it away. A lookup that still
+    fails raises; None means the link names no paper Semantic Scholar knows.
+    """
 
     identifier = _semantic_scholar_identifier_for_link(topic)
     if not identifier:
         return None
-    fields = "title,abstract"
-    headers = {"User-Agent": "research-tree/0.1"}
-    api_key = s2_api_key()
-    if api_key:
-        headers["x-api-key"] = api_key
-    request = urllib.request.Request(
-        "https://api.semanticscholar.org/graph/v1/paper/"
-        f"{quote(identifier, safe=':')}?fields={fields}",
-        headers=headers,
+    client = SemanticScholarClient(
+        cache_dir=semantic_scholar_cache_dir(),
+        api_key=s2_api_key(),
+        max_retries=SEMANTIC_SCHOLAR_INTERACTIVE_MAX_RETRIES,
+        timeout_seconds=12.0,
     )
-    # Semantic Scholar's request budget belongs to the key, not the caller, so
-    # even this one-off lookup waits its turn in the shared lane.
-    SEMANTIC_SCHOLAR_RATE_LIMITER.acquire(SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS)
-    try:
-        with urllib.request.urlopen(request, timeout=12.0) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, ValueError):
-        return None
-    title = str(payload.get("title") or "").strip() if isinstance(payload, dict) else ""
-    abstract = str(payload.get("abstract") or "").strip() if isinstance(payload, dict) else ""
+    paper = client.find_paper(identifier) or {}
+    title = str(paper.get("title") or "").strip()
     if not title:
         return None
     return {
         "provider": "semantic_scholar",
         "title": title,
-        "abstract": abstract[:6_000],
+        "abstract": str(paper.get("abstract") or "").strip()[:6_000],
     }
 
 

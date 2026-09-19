@@ -26,7 +26,7 @@ Backend (FastAPI, Python ≥ 3.11, [uv](https://docs.astral.sh/uv/)):
 
 ```sh
 uv sync --extra dev            # add --extra pipeline for similar-paper reranking
-cp .env.example .env           # fill in OPENAI_API_KEY (S2_API_KEY recommended)
+cp .env.example .env           # fill in OPENAI_API_KEY (S2_API_KEY is optional)
 ./scripts/run_backend.sh       # serves on 127.0.0.1:8000
 ```
 

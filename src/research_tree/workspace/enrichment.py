@@ -5,6 +5,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Mapping
 
+from research_tree.retrieval.cache import JsonRequestError
 from research_tree.retrieval.full_text import (
     PaperContentResult,
     retrieve_open_access_paper_content,
@@ -81,7 +82,15 @@ def hydrate_workspace_papers(
     details_by_id = _details_from_cards(cards)
     missing_ids = [str(paper_id) for paper_id in cards if str(paper_id) not in details_by_id]
     if missing_ids:
-        details_by_id.update(semantic_scholar.get_paper_details(missing_ids, warnings))
+        try:
+            details_by_id.update(semantic_scholar.get_paper_details(missing_ids, warnings))
+        except JsonRequestError as error:
+            # The workspace is built and its model calls are paid for. What is
+            # missing here is a provider summary and a PDF link for a few
+            # cards, which is a warning on the run, not a reason to lose it.
+            warnings.append(
+                f"Semantic Scholar metadata was unavailable for {len(missing_ids)} papers: {error}"
+            )
     for paper_id, raw_card in cards.items():
         if not isinstance(raw_card, dict):
             continue

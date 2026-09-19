@@ -26,7 +26,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from research_tree.paths import semantic_scholar_cache_dir
-from research_tree.retrieval.semantic_scholar import SemanticScholarClient, s2_api_key
+from research_tree.retrieval.semantic_scholar import (
+    SEMANTIC_SCHOLAR_INTERACTIVE_MAX_RETRIES,
+    SemanticScholarClient,
+    s2_api_key,
+)
 from research_tree.workspace.repository import WorkspaceRepository
 
 
@@ -64,6 +68,7 @@ class ToolContext:
             self._semantic_scholar = SemanticScholarClient(
                 cache_dir=semantic_scholar_cache_dir(),
                 api_key=s2_api_key(),
+                max_retries=SEMANTIC_SCHOLAR_INTERACTIVE_MAX_RETRIES,
             )
         return self._semantic_scholar
 

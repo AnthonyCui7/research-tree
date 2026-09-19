@@ -7,7 +7,7 @@ from pathlib import Path
 from research_tree.retrieval.env import load_dotenv_file
 from research_tree.paths import semantic_scholar_cache_dir
 from research_tree.retrieval.semantic_scholar import (
-    SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SEMANTIC_SCHOLAR_REQUEST_DELAY_SECONDS,
     SemanticScholarClient,
 )
 
@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--request-delay-seconds",
         type=float,
-        default=SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+        default=SEMANTIC_SCHOLAR_REQUEST_DELAY_SECONDS,
     )
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args(argv)

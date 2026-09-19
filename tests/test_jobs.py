@@ -169,6 +169,17 @@ def test_the_request_lane_is_spaced_on_the_redis_clock(redis_client) -> None:
     assert redis_client.exists("test:s2:lane")
 
 
+def test_a_deep_queue_keeps_its_place_in_the_lane(redis_client) -> None:
+    """The lane's key has to outlive the furthest slot it has handed out."""
+
+    limiter = RateLimiter(redis_client=redis_client, redis_key="test:s2:deep_lane")
+    furthest = 0.0
+    for _ in range(40):
+        furthest = limiter._reserve_across_containers(0.1)
+    assert furthest >= 3.5
+    assert redis_client.pttl("test:s2:deep_lane") >= furthest * 1000
+
+
 def test_a_broken_redis_falls_back_to_the_local_limiter() -> None:
     class Broken:
         def register_script(self, script: str) -> Any:

@@ -23,11 +23,15 @@ class JsonRequestError(RuntimeError):
     `transient` says the failure was the service's - throttling, an outage,
     a timeout - and outlasted the retry ladder, as opposed to a refusal of
     the request itself, which fails the same way however often it is sent.
+    `status` is the HTTP status of the last answer, when there was one.
     """
 
-    def __init__(self, message: str, *, transient: bool = False) -> None:
+    def __init__(
+        self, message: str, *, transient: bool = False, status: int | None = None
+    ) -> None:
         super().__init__(message)
         self.transient = transient
+        self.status = status
 
 
 # Statuses worth retrying on the backoff ladder. 429 is Semantic Scholar
@@ -39,16 +43,29 @@ class JsonRequestError(RuntimeError):
 # still raise immediately.
 RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
 
+# Seconds to wait before each retry. Semantic Scholar turns away a share of
+# requests whatever their pace, with or without a key, and says so with a 429
+# and no `Retry-After`. Measured Sep 2026 on bulk search and the batch
+# endpoint, one request every three seconds in each lane: 40 to 57 percent
+# answered, the rest 429, keyed and keyless alike. A request sent three
+# seconds after a refusal was answered about half the time, and the longest
+# run of refusals lasted thirty seconds. So the early waits are short, because
+# the next attempt is usually the one that lands, and the late ones are long
+# enough to outlast a run. The whole ladder is five minutes of patience, which
+# at those rates loses about one request in a thousand.
+RETRY_WAITS = (2, 4, 8, 15, 30, 30, 45, 45, 60, 60)
 
-# Reserves the next request slot atomically on the Redis server's own clock,
-# so every process sharing the key queues into one lane without a busy loop
-# and without trusting container clocks. Returns how long the caller waits.
+
 # How long the shared lane stays out of play after Redis refuses one call. At
 # roughly one Semantic Scholar request a second, this costs one failed call per
 # thirty while Redis is down, and a blip splits the lane for half a minute
 # rather than until the container restarts.
 REDIS_RETRY_SECONDS = 30.0
 
+# Reserves the next request slot atomically on the Redis server's own clock,
+# so every process sharing the key queues into one lane without a busy loop
+# and without trusting container clocks. Returns how long the caller waits.
+# The key outlives the slot it holds, so a queue of any depth keeps its place.
 _RESERVE_SLOT_LUA = """
 local key = KEYS[1]
 local delay = tonumber(ARGV[1])
@@ -56,7 +73,7 @@ local t = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local last = tonumber(redis.call('GET', key) or '0')
 local slot = math.max(now, last + delay)
-redis.call('SET', key, slot, 'PX', delay * 20)
+redis.call('SET', key, slot, 'PX', slot - now + delay * 20)
 return slot - now
 """
 
@@ -65,7 +82,8 @@ class RateLimiter:
     """Spaces request starts across everything that shares this limiter.
 
     Semantic Scholar counts one request per second cumulatively across all of
-    its endpoints, so the budget belongs to the API key rather than to any one
+    its endpoints, so the budget belongs to the API key (or, without one, to
+    this deployment's share of the public pool) rather than to any one
     client. With Redis configured, the last-request timestamp lives there and
     the spacing holds across containers (the API, the worker, a CLI). With a
     `lock_file` it lives in that file under an exclusive flock, which spans
@@ -303,11 +321,10 @@ class CachedJsonClient:
         body: dict[str, Any] | None,
     ) -> str:
         # A shared limiter already paces normal traffic, so a 429 here is
-        # Semantic Scholar shedding load, not overuse on our side. Measured
-        # Aug 2026: recovery after a bulk 429 streak takes 30+ seconds, which
-        # is why the ladder climbs to 45/90 s. S2 never sends `Retry-After`,
-        # but it still wins here if that ever changes.
-        backoffs = [5, 10, 45, 90, 90][: self.max_retries]
+        # Semantic Scholar shedding load, not overuse on our side. Every
+        # attempt, retries included, takes its turn in that lane. S2 never
+        # sends `Retry-After`, but it still wins here if that ever changes.
+        backoffs = RETRY_WAITS[: self.max_retries]
         last_error: Exception | None = None
         for attempt in range(len(backoffs) + 1):
             self._wait_for_delay()
@@ -331,9 +348,13 @@ class CachedJsonClient:
             except urllib.error.HTTPError as error:
                 last_error = error
                 if error.code not in RETRYABLE_HTTP_STATUS:
-                    raise JsonRequestError(_format_http_error(error)) from error
+                    raise JsonRequestError(
+                        _format_http_error(error), status=error.code
+                    ) from error
                 if attempt >= len(backoffs):
-                    raise JsonRequestError(_format_http_error(error), transient=True) from error
+                    raise JsonRequestError(
+                        _format_http_error(error), transient=True, status=error.code
+                    ) from error
                 # The server's own number wins, but never past the longest wait
                 # this ladder would take by itself. An absurd `Retry-After`
                 # otherwise parks the stage, and the thread running it, for

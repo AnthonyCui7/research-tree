@@ -217,6 +217,27 @@ def test_topic_review_rejects_an_unreadable_paper_link(client) -> None:
     review_model.assert_not_called()
 
 
+@patch.dict(os.environ, {"OPENAI_API_KEY": "configured-for-test"})
+def test_topic_review_says_when_the_link_could_not_be_looked_up(client) -> None:
+    """A lookup Semantic Scholar turned away is not a link that names no paper."""
+
+    from research_tree.retrieval.cache import JsonRequestError
+
+    with patch(
+        "research_tree.services.topics._linked_paper_metadata",
+        side_effect=JsonRequestError("HTTP 429", transient=True, status=429),
+    ), patch("research_tree.services.topics._review_with_model") as review_model:
+        response = client.post(
+            "/workspaces/topic-review",
+            json={"topic": "https://arxiv.org/abs/1706.03762"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["can_create"] is False
+    assert "not answering right now" in response.json()["guidance"]
+    review_model.assert_not_called()
+
+
 def test_restore_and_delete_workspace_lifecycle(client, repository) -> None:
     first_hash = _seed_current(repository)
     second = {**repository.get_current_workspace("workspace-1"), "title": "Second"}

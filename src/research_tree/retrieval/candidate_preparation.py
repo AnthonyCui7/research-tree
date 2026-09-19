@@ -69,7 +69,7 @@ from research_tree.retrieval.query_plan import (
 )
 from research_tree.retrieval.semantic_scholar import (
     SEMANTIC_SCHOLAR_BULK_PAGE_SIZE,
-    SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+    SEMANTIC_SCHOLAR_REQUEST_DELAY_SECONDS,
     SEMANTIC_SCHOLAR_MAX_RETRIES,
     SemanticScholarClient,
     paper_from_semantic_scholar,
@@ -103,7 +103,7 @@ class PipelineConfig:
     hits_tolerance: float = DEFAULT_HITS_TOLERANCE
     citation_age_exponent: float = 1.25
     authority_age_exponent: float = 0.75
-    request_delay_seconds: float = SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS
+    request_delay_seconds: float = SEMANTIC_SCHOLAR_REQUEST_DELAY_SECONDS
     request_timeout_seconds: float = 20.0
     max_academic_retries: int = SEMANTIC_SCHOLAR_MAX_RETRIES
     refresh_cache: bool = False

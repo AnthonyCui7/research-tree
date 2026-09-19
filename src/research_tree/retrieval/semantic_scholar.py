@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from research_tree.retrieval.cache import CachedJsonClient, JsonRequestError, RateLimiter
+from research_tree.retrieval.cache import (
+    RETRY_WAITS,
+    CachedJsonClient,
+    JsonRequestError,
+    RateLimiter,
+)
 from research_tree.retrieval.dates import parse_iso_date
 from research_tree.retrieval.models import Paper
 from research_tree.retrieval.text import (
@@ -14,18 +21,22 @@ from research_tree.retrieval.text import (
 )
 
 
-# Semantic Scholar allows one request per second, counted cumulatively across
-# every endpoint; an API key buys reliability, not throughput. The margin above
-# one second absorbs clock jitter and keeps us clear of server-side load
-# shedding, which 429s compliant clients when S2 is stressed.
-SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS = 1.5
+# Semantic Scholar gives a key one request per second, counted cumulatively
+# across every endpoint. Requests without a key draw on one pool shared by
+# everyone who has none, which it throttles further under load. Measured Sep
+# 2026, the two were answered at the same rate, so a key is not required and
+# both keep this pace: the margin above one second absorbs clock jitter, and
+# on the shared pool the same spacing is what keeps a client from being the
+# load that gets shed.
+SEMANTIC_SCHOLAR_REQUEST_DELAY_SECONDS = 1.5
 
-# Four retries engage the client's full backoff ladder (5/10/45/90 s). The
-# probed recovery window after a bulk 429 streak was 30+ seconds, so the 45 s
-# tier is the first one that can actually outlast a shedding period; with only
-# two retries (5/10 s) every real shedding window killed the run. A request
-# that still fails after ~2.5 minutes of patience is a genuine outage.
-SEMANTIC_SCHOLAR_MAX_RETRIES = 4
+# A build waits out the whole ladder; a request that still fails after five
+# minutes of patience is a genuine outage. Someone is watching an assistant
+# turn or a topic review, so those give up after half a minute and say so.
+SEMANTIC_SCHOLAR_MAX_RETRIES = len(RETRY_WAITS)
+SEMANTIC_SCHOLAR_INTERACTIVE_MAX_RETRIES = 4
+
+logger = logging.getLogger("uvicorn.error")
 
 # Every Semantic Scholar client shares one request budget — across threads,
 # clients, and processes (backend, CLIs, anything else using this key from
@@ -77,6 +88,12 @@ SEMANTIC_SCHOLAR_DETAIL_FIELDS = ",".join([
 ])
 
 
+# Keys Semantic Scholar has refused since this process started. It prunes keys
+# that go unused for about sixty days, and a pruned key fails every request
+# with a 403 while the same request without one is served.
+_REFUSED_API_KEYS: set[str] = set()
+
+
 class SemanticScholarClient:
     base_url = "https://api.semanticscholar.org/graph/v1"
 
@@ -84,13 +101,13 @@ class SemanticScholarClient:
         self,
         cache_dir: Path,
         api_key: str | None = None,
-        request_delay_seconds: float = SEMANTIC_SCHOLAR_KEYED_REQUEST_DELAY_SECONDS,
+        request_delay_seconds: float = SEMANTIC_SCHOLAR_REQUEST_DELAY_SECONDS,
         refresh_cache: bool = False,
         max_retries: int = SEMANTIC_SCHOLAR_MAX_RETRIES,
         timeout_seconds: float = 20.0,
     ) -> None:
         headers = {"User-Agent": "research-tree/0.1"}
-        if api_key:
+        if api_key and api_key not in _REFUSED_API_KEYS:
             headers["x-api-key"] = api_key
         self.client = CachedJsonClient(
             cache_dir=cache_dir,
@@ -101,6 +118,51 @@ class SemanticScholarClient:
             headers=headers,
             rate_limiter=SEMANTIC_SCHOLAR_RATE_LIMITER,
         )
+
+    def _request(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> Any:
+        """One API call, sent again without the key when the key is what was refused."""
+
+        url = f"{self.base_url}{path}"
+
+        def send() -> Any:
+            if body is not None:
+                return self.client.post_json(url, body)
+            return self.client.get_json(url, params)
+
+        try:
+            return send()
+        except JsonRequestError as error:
+            refused = self.client.headers.pop("x-api-key", None) if error.status == 403 else None
+            if refused is None:
+                raise
+            _REFUSED_API_KEYS.add(refused)
+            logger.error(
+                "Semantic Scholar refused the configured API key (HTTP 403). "
+                "Requests continue without it until the process restarts with a working key."
+            )
+            return send()
+
+    def find_paper(self, identifier: str) -> dict[str, Any] | None:
+        """Title and abstract for any id Semantic Scholar resolves, or None when it knows no such paper.
+
+        The id may be its own, or a prefixed external one (`ARXIV:`, `DOI:`).
+        """
+
+        try:
+            payload = self._request(
+                f"/paper/{quote(identifier, safe=':')}", params={"fields": "title,abstract"}
+            )
+        except JsonRequestError as error:
+            if error.status in {400, 404}:
+                return None
+            raise
+        return payload if isinstance(payload, dict) else None
 
     def bulk_search(
         self,
@@ -132,17 +194,16 @@ class SemanticScholarClient:
             if token:
                 params["token"] = token
             try:
-                payload = self.client.get_json(
-                    f"{self.base_url}/paper/search/bulk",
-                    params,
-                )
+                payload = self._request("/paper/search/bulk", params=params)
             except JsonRequestError as error:
                 # The client already retried with backoff, so this is a real
                 # outage or sustained throttling. A truncated pool silently
                 # reshapes everything downstream; fail the run instead.
                 raise JsonRequestError(
                     f"Semantic Scholar bulk search failed after retries for "
-                    f"query '{query}': {error}"
+                    f"query '{query}': {error}",
+                    transient=error.transient,
+                    status=error.status,
                 ) from error
 
             items = (payload.get("data") or [])[: max_papers - len(papers)]
@@ -202,9 +263,8 @@ class SemanticScholarClient:
         warnings: list[str] | None,
     ) -> dict[str, list[str]]:
         try:
-            payload = self.client.post_json(
-                f"{self.base_url}/paper/batch?fields=references.paperId,referenceCount",
-                {"ids": ids},
+            payload = self._request(
+                "/paper/batch?fields=references.paperId,referenceCount", body={"ids": ids}
             )
         except JsonRequestError as error:
             # A chunk can exceed the 10 MB response cap when its papers have very
@@ -226,6 +286,7 @@ class SemanticScholarClient:
             raise JsonRequestError(
                 f"Semantic Scholar reference fetch failed after retries for {named}: {error}",
                 transient=error.transient,
+                status=error.status,
             ) from error
 
         references: dict[str, list[str]] = {}
@@ -266,10 +327,7 @@ class SemanticScholarClient:
             if token:
                 params["token"] = token
             try:
-                payload = self.client.get_json(
-                    f"{self.base_url}/paper/search/bulk",
-                    params,
-                )
+                payload = self._request("/paper/search/bulk", params=params)
             except JsonRequestError as error:
                 _append_warning(
                     warnings,
@@ -320,13 +378,14 @@ class SemanticScholarClient:
 
     def _details_for_chunk(self, chunk: list[str]) -> dict[str, dict[str, Any]]:
         try:
-            payload = self.client.post_json(
-                f"{self.base_url}/paper/batch?fields={SEMANTIC_SCHOLAR_DETAIL_FIELDS}",
-                {"ids": chunk},
+            payload = self._request(
+                f"/paper/batch?fields={SEMANTIC_SCHOLAR_DETAIL_FIELDS}", body={"ids": chunk}
             )
         except JsonRequestError as error:
             raise JsonRequestError(
-                f"Semantic Scholar paper metadata fetch failed after retries: {error}"
+                f"Semantic Scholar paper metadata fetch failed after retries: {error}",
+                transient=error.transient,
+                status=error.status,
             ) from error
         return {
             str(item["paperId"]): item

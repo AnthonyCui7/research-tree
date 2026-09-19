@@ -864,7 +864,62 @@ class CandidatePreparationTest(unittest.TestCase):
                     client.get_json("https://s2/x")
 
             waited = [call.args[0] for call in slept.call_args_list]
-            self.assertEqual(waited, [45, 45, 45])
+            self.assertEqual(waited, [8, 8, 8])
+
+    def test_a_refused_key_gives_way_to_the_public_pool(self) -> None:
+        """Semantic Scholar prunes unused keys; the same request without one is served."""
+
+        from email.message import Message
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        from research_tree.retrieval import semantic_scholar
+        from research_tree.retrieval.semantic_scholar import SemanticScholarClient
+
+        sent_with_key: list[bool] = []
+
+        def answer(request: object, **_kwargs: object) -> object:
+            keyed = request.get_header("X-api-key") is not None
+            sent_with_key.append(keyed)
+            if keyed:
+                raise HTTPError(request.full_url, 403, "Forbidden", Message(), BytesIO(b"{}"))
+            return _FakeHttpResponse(b'{"paperId": "p1", "title": "A Paper", "abstract": ""}')
+
+        self.addCleanup(semantic_scholar._REFUSED_API_KEYS.clear)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("urllib.request.urlopen", side_effect=answer), patch("time.sleep"):
+                first = SemanticScholarClient(
+                    cache_dir=Path(directory), api_key="pruned", request_delay_seconds=0.0
+                )
+                self.assertEqual(first.find_paper("ARXIV:1706.03762")["title"], "A Paper")
+                # A client made later in the same process does not ask again.
+                second = SemanticScholarClient(
+                    cache_dir=Path(directory), api_key="pruned", request_delay_seconds=0.0
+                )
+                second.find_paper("ARXIV:2005.14165")
+        self.assertEqual(sent_with_key, [True, False, False])
+
+    def test_an_unknown_paper_is_none_and_a_busy_service_is_an_error(self) -> None:
+        from email.message import Message
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        from research_tree.retrieval.cache import JsonRequestError
+        from research_tree.retrieval.semantic_scholar import SemanticScholarClient
+
+        def refuse(code: int) -> HTTPError:
+            return HTTPError("https://api.semanticscholar.org/x", code, "no", Message(), BytesIO(b"{}"))
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = SemanticScholarClient(
+                cache_dir=Path(directory), request_delay_seconds=0.0, max_retries=2
+            )
+            with patch("urllib.request.urlopen", side_effect=refuse(404)), patch("time.sleep"):
+                self.assertIsNone(client.find_paper("ARXIV:9999.99999"))
+            with patch("urllib.request.urlopen", side_effect=refuse(429)), patch("time.sleep"):
+                with self.assertRaises(JsonRequestError) as raised:
+                    client.find_paper("ARXIV:1706.03762")
+            self.assertTrue(raised.exception.transient)
 
     def test_graph_blind_cutoff_is_measured_not_assumed(self) -> None:
         """The frontier band is the years the graph cannot rank, per run.
