@@ -217,6 +217,34 @@ def test_topic_review_rejects_an_unreadable_paper_link(client) -> None:
     review_model.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("link", "identifier"),
+    [
+        ("https://arxiv.org/abs/1706.03762", "ARXIV:1706.03762"),
+        ("https://arxiv.org/abs/1706.03762v5", "ARXIV:1706.03762"),
+        ("https://arxiv.org/pdf/2211.17192v2.pdf", "ARXIV:2211.17192"),
+        ("https://www.arxiv.org/abs/hep-th/9901001v3", "ARXIV:hep-th/9901001"),
+        ("https://doi.org/10.18653/v1/N18-3011", "DOI:10.18653/v1/N18-3011"),
+        (
+            "https://www.semanticscholar.org/paper/Attention-is-All-you-Need-Vaswani-Shazeer/"
+            "204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+            "204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+        ),
+        (
+            "https://www.semanticscholar.org/paper/204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+            "204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+        ),
+        ("https://arxiv.org/list/cs.CL/recent", None),
+        ("https://example.com/abs/1706.03762", None),
+        ("http://169.254.169.254/latest/meta-data", None),
+    ],
+)
+def test_paper_links_are_read_the_way_people_copy_them(link: str, identifier: str | None) -> None:
+    from research_tree.services.topics import _semantic_scholar_identifier_for_link
+
+    assert _semantic_scholar_identifier_for_link(link) == identifier
+
+
 @patch.dict(os.environ, {"OPENAI_API_KEY": "configured-for-test"})
 def test_topic_review_says_when_the_link_could_not_be_looked_up(client) -> None:
     """A lookup Semantic Scholar turned away is not a link that names no paper."""

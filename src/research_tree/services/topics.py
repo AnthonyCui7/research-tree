@@ -315,12 +315,21 @@ def _semantic_scholar_identifier_for_link(value: str) -> str | None:
     host = parsed.netloc.casefold().removeprefix("www.")
     path = parsed.path.strip("/")
     if host == "arxiv.org":
-        match = re.match(r"(?:abs|pdf)/([^/]+?)(?:\.pdf)?$", path)
+        # New ids (`2211.17192`) and old ones (`hep-th/9901001`). A copied link
+        # usually names a version (`v5`), which Semantic Scholar does not know
+        # the paper by.
+        match = re.match(
+            r"(?:abs|pdf)/((?:[a-z-]+(?:\.[A-Z]{2})?/\d{7})|(?:\d{4}\.\d{4,5}))(?:v\d+)?(?:\.pdf)?$",
+            path,
+        )
         return f"ARXIV:{match.group(1)}" if match else None
     if host == "doi.org" and path:
         return f"DOI:{path}"
     if host == "semanticscholar.org":
-        match = re.search(r"/paper/([0-9a-f]{40})(?:/|$)", f"/{path}", re.IGNORECASE)
+        # The site's own links carry the title before the id.
+        match = re.search(
+            r"/paper/(?:[^/]+/)?([0-9a-f]{40})(?:/|$)", f"/{path}", re.IGNORECASE
+        )
         return match.group(1) if match else None
     return None
 
