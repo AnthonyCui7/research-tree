@@ -70,6 +70,40 @@ class WorkspaceAgentService:
             cache=self._cache,
         )
 
+    def _keep_only_the_newest_checkpoint(self, thread_id: str) -> None:
+        """Drop the thread's older checkpoints once a turn has written a new one.
+
+        The next turn resumes from the newest and reads nothing older. A saver
+        that cannot prune (the in-memory one a local profile uses) is left as
+        it is, and a prune that fails costs storage, never the turn.
+        """
+
+        prune = getattr(self._checkpointer, "prune", None)
+        if prune is None:
+            return
+        try:
+            prune([thread_id], strategy="keep_latest")
+        except NotImplementedError:
+            return
+        except Exception:  # noqa: BLE001 - the answer is already the reader's
+            logger.exception("could not prune checkpoints thread_id=%s", thread_id)
+
+    def forget_conversations(self, workspace_id: str) -> None:
+        """Drop the conversations of a workspace that has been deleted.
+
+        Each one holds a copy of the document it was about. The in-memory
+        saver has nothing to delete from, and a failure here leaves storage
+        behind, not a workspace.
+        """
+
+        delete = getattr(self._checkpointer, "delete_threads_of", None)
+        if delete is None:
+            return
+        try:
+            delete(f"{self.repository.owner_id}:{workspace_id}")
+        except Exception:  # noqa: BLE001 - the workspace is already gone
+            logger.exception("could not delete conversations workspace_id=%s", workspace_id)
+
     def thread_id(self, workspace_id: str, requested: str | None) -> str:
         """The conversation thread a turn continues, or a new one.
 
@@ -182,6 +216,7 @@ class WorkspaceAgentService:
             with _active_threads_lock:
                 _active_threads.discard(active_thread_id)
 
+        self._keep_only_the_newest_checkpoint(active_thread_id)
         output = result.final_output or {}
         normalized_status = _normalized_status(output)
         approval_payload = output.get("approval_payload")

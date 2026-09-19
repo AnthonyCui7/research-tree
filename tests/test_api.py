@@ -1167,6 +1167,91 @@ def _start_approved(
     )
 
 
+def test_a_conversation_keeps_one_checkpoint_however_long_it_runs(repository) -> None:
+    """Each turn used to leave its whole state behind; the thread only ever resumes from the newest."""
+
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    from research_tree.agents.workspace.checkpoints import PrunedPostgresSaver
+    from research_tree.db import plain_postgres_dsn
+    from research_tree.workspace.repository import LocalJsonWorkspaceRepository
+
+    if isinstance(repository, LocalJsonWorkspaceRepository):
+        pytest.skip("the pruned saver is the Postgres one")
+    _seed_current(repository)
+    pool = ConnectionPool(
+        plain_postgres_dsn(os.environ["RESEARCH_TREE_TEST_DATABASE_URL"]),
+        min_size=1,
+        max_size=2,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        open=True,
+    )
+    try:
+        saver = PrunedPostgresSaver(pool)
+        service = WorkspaceAgentService(
+            repository,
+            checkpointer=saver,
+            graph_factory=lambda active: build_workspace_agent_graph(
+                llm_client=DeterministicWorkspaceAgentLlmClient(text_outputs=["One.", "Two.", "Three."]),
+                workspace_repository=active,
+                checkpointer=saver,
+            ),
+        )
+        first = service.run_agent("workspace-1", message="What is here?")
+        thread_id = first["thread_id"]
+        for message in ("And then?", "And after that?"):
+            answered = service.run_agent("workspace-1", message=message, thread_id=thread_id)
+            assert answered["status"] == "completed"
+
+        with pool.connection() as conn:
+            checkpoints = conn.execute(
+                "SELECT count(*) AS n FROM checkpoints WHERE thread_id = %s", (thread_id,)
+            ).fetchone()["n"]
+            stray_blobs = conn.execute(
+                """
+                SELECT count(*) AS n FROM checkpoint_blobs blobs
+                WHERE blobs.thread_id = %s AND NOT EXISTS (
+                    SELECT 1 FROM checkpoints kept,
+                         jsonb_each_text(kept.checkpoint -> 'channel_versions') AS named
+                    WHERE kept.thread_id = blobs.thread_id
+                      AND named.key = blobs.channel AND named.value = blobs.version)
+                """,
+                (thread_id,),
+            ).fetchone()["n"]
+            kept_blobs = conn.execute(
+                "SELECT count(*) AS n FROM checkpoint_blobs WHERE thread_id = %s", (thread_id,)
+            ).fetchone()["n"]
+        assert checkpoints == 1
+        assert stray_blobs == 0
+        assert kept_blobs > 0
+        # What is left is a whole state: the thread still resumes.
+        state = saver.get_tuple({"configurable": {"thread_id": thread_id}})
+        assert state is not None and state.checkpoint["channel_values"]["workspace_id"] == "workspace-1"
+
+        # Deleting the workspace takes its conversations, and only its own.
+        neighbour = f"{repository.owner_id}:workspace-1:b:{'0' * 12}"
+        with pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO checkpoints (thread_id, checkpoint_id, checkpoint) VALUES (%s, 'c1', '{}')",
+                (neighbour,),
+            )
+        service.forget_conversations("workspace-1")
+        with pool.connection() as conn:
+            left = [
+                row["thread_id"]
+                for row in conn.execute("SELECT thread_id FROM checkpoints").fetchall()
+            ]
+            blobs_left = conn.execute("SELECT count(*) AS n FROM checkpoint_blobs").fetchone()["n"]
+        assert left == [neighbour]
+        assert blobs_left == 0
+    finally:
+        with pool.connection() as conn:
+            for table in ("checkpoints", "checkpoint_blobs", "checkpoint_writes"):
+                conn.execute(f"DELETE FROM {table}")
+        pool.close()
+
+
 def _seed_current(repository: WorkspaceRepository) -> str:
     return repository.save_workspace_version(
         "workspace-1",

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from research_tree.api.dependencies import (
     get_paper_annotation_service,
     get_topic_review_service,
+    get_workspace_agent_service,
     get_workspace_edit_service,
     get_workspace_pipeline_service,
     get_workspace_query_service,
@@ -39,6 +40,7 @@ from research_tree.api.schemas import (
 from research_tree.auth.settings import SESSION_COOKIE_NAME
 from research_tree.principal import current_principal
 from research_tree.redis_client import get_async_redis
+from research_tree.services.agent import WorkspaceAgentService
 from research_tree.services.annotations import PaperAnnotationService
 from research_tree.services.edits import WorkspaceEditService
 from research_tree.services.pipeline import WorkspacePipelineService
@@ -299,16 +301,19 @@ def delete_workspace(
     expected_version_hash: str | None = None,
     request: DeleteWorkspaceRequest | None = None,
     service: WorkspaceQueryService = Depends(get_workspace_query_service),
+    assistant: WorkspaceAgentService = Depends(get_workspace_agent_service),
 ) -> dict[str, object]:
     # The hash travels as a query parameter because intermediaries are entitled
     # to drop a DELETE body. The body form stays accepted for older callers.
-    return service.delete_workspace(
+    deleted = service.delete_workspace(
         workspace_id,
         expected_version_hash=(
             expected_version_hash
             or (request or DeleteWorkspaceRequest()).expected_version_hash
         ),
     )
+    assistant.forget_conversations(str(deleted["workspace_id"]))
+    return deleted
 
 
 @router.post("/{workspace_id}/edits", response_model=WorkspaceEditResponse)

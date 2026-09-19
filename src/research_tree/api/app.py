@@ -74,9 +74,10 @@ def _checkpointer():
     url = database_url()
     if url is None:
         return None, None
-    from langgraph.checkpoint.postgres import PostgresSaver
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
+
+    from research_tree.agents.workspace.checkpoints import PrunedPostgresSaver
 
     pool = ConnectionPool(
         plain_postgres_dsn(url),
@@ -88,7 +89,7 @@ def _checkpointer():
     # The checkpoint tables are created by `research-tree-migrate` (the
     # migrate job), which runs as the database owner; the API's role cannot
     # create tables and does not try to.
-    return PostgresSaver(pool), pool
+    return PrunedPostgresSaver(pool), pool
 
 
 def create_app() -> FastAPI:
