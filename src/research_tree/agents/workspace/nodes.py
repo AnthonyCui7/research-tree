@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 from uuid import uuid4
@@ -297,8 +298,24 @@ class WorkspaceAgentNodes:
             "node_trace": [_trace("agent_loop")],
         }
         if terminal is not None and not out_of_budget:
-            update["next_action"] = _next_action_from_tool_call(terminal, state)
-            return Command(update=update, goto=_TERMINAL_TOOL_NODES[terminal.name])
+            next_action = _next_action_from_tool_call(terminal, state)
+            mistake = _unknown_removal_ids(next_action, state)
+            if mistake is None:
+                update["next_action"] = next_action
+                return Command(update=update, goto=_TERMINAL_TOOL_NODES[terminal.name])
+            # A removal is all or nothing, and a model copying forty-character
+            # ids gets one wrong now and then. The call is answered like any
+            # other tool's, so the model corrects it inside the turn, within
+            # the same budget of rounds, instead of the turn ending on a typo.
+            update["transcript_items"] = [
+                *transcript,
+                {
+                    "type": "function_call_output",
+                    "call_id": terminal.call_id,
+                    "output": json.dumps(mistake),
+                },
+            ]
+            return Command(update=update, goto="execute_tools")
         if turn.tool_calls and not out_of_budget:
             return Command(update=update, goto="execute_tools")
 
@@ -1171,6 +1188,31 @@ def _next_action_from_tool_call(
     }
 
 
+def _unknown_removal_ids(
+    next_action: Mapping[str, Any], state: WorkspaceAgentState
+) -> dict[str, Any] | None:
+    """What to tell the model when a removal names papers the workspace does not show."""
+
+    if next_action.get("edit_kind") != "remove_papers":
+        return None
+    workspace = state.get("workspace")
+    cards = workspace.get("paper_cards") if isinstance(workspace, Mapping) else None
+    visible = [str(paper_id) for paper_id in cards] if isinstance(cards, Mapping) else []
+    unknown = [
+        paper_id for paper_id in next_action.get("target_paper_ids") or [] if paper_id not in visible
+    ]
+    if not unknown:
+        return None
+    return {
+        "error": "These target_paper_ids are not visible workspace papers. Nothing was proposed.",
+        "unknown_ids": unknown,
+        "closest_visible_ids": {
+            paper_id: get_close_matches(paper_id, visible, n=1, cutoff=0.8) for paper_id in unknown
+        },
+        "note": "Call propose_workspace_edit again with exact ids.",
+    }
+
+
 def _id_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value] if value.strip() else []
@@ -1496,7 +1538,8 @@ def _propose_paper_removal(
 
     All-or-nothing: removals are destructive, so an unresolvable id fails the
     whole request with a clear message instead of guessing at a partial edit.
-    The model can retry with correct ids next turn.
+    The loop hands a wrong id back to the model before it gets here, so this
+    is what is left when there were no ids at all.
     """
 
     cards = workspace.get("paper_cards")

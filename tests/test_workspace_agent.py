@@ -399,7 +399,7 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         self.assertIn("demote_visible_paper", state["diff_summary"]["operation_types"])
         self.assertTrue(state["approval_required"])
 
-    def test_remove_papers_with_unknown_id_fails_without_a_proposal(self) -> None:
+    def test_remove_papers_with_unknown_id_is_handed_back_without_a_proposal(self) -> None:
         calls: list[dict[str, object]] = []
         graph = build_workspace_agent_graph(
             llm_client=_modify_llm(
@@ -423,10 +423,17 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         )
         state = graph.get_state(config).values
 
+        # Nothing is proposed, and the model hears which id was wrong so it
+        # can answer or correct itself within the turn.
         self.assertEqual(calls, [])
-        self.assertIn("p999", "; ".join(state["errors"]))
         self.assertFalse(state["approval_required"])
-        self.assertIn("p999", str(state["final_response"]))
+        told = [
+            item["output"]
+            for item in state["transcript_items"]
+            if item.get("type") == "function_call_output"
+        ]
+        self.assertEqual(len(told), 1)
+        self.assertIn("p999", told[0])
 
     def test_removal_wording_with_refresh_edit_kind_never_deletes_a_paper(self) -> None:
         """'Remove the stale similar papers for X' must refresh, not delete."""

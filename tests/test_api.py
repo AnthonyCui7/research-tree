@@ -1111,6 +1111,47 @@ def test_pipeline_run_from_another_host_is_never_reclaimed(repository) -> None:
     assert run["status"] == "running"
 
 
+def test_a_mistyped_paper_id_is_handed_back_to_the_model_not_to_the_reader(repository) -> None:
+    """A removal is all or nothing, and one garbled id used to end the whole turn."""
+
+    _seed_current(repository)
+    seen_inputs: list[list[dict[str, Any]]] = []
+
+    class CorrectingClient(DeterministicWorkspaceAgentLlmClient):
+        def complete_with_tools(self, *, input_items, **kwargs):  # type: ignore[override]
+            seen_inputs.append(list(input_items))
+            return super().complete_with_tools(input_items=input_items, **kwargs)
+
+    def removal(call_id: str, paper_ids: list[str]) -> AgentTurn:
+        turn = _edit_tool_turn("Remove it.", edit_kind="remove_papers", target_paper_ids=paper_ids)
+        turn.output_items[0]["call_id"] = call_id
+        return AgentTurn(
+            output_items=turn.output_items,
+            tool_calls=[ToolCall(call_id=call_id, name="propose_workspace_edit", arguments=turn.tool_calls[0].arguments)],
+            output_text=None,
+        )
+
+    service = WorkspaceAgentService(
+        repository,
+        graph_factory=lambda active: build_workspace_agent_graph(
+            llm_client=CorrectingClient(tool_turns=[removal("call_1", ["p11"]), removal("call_2", ["p1"])]),
+            workspace_constructor=_unexpected_constructor,
+            workspace_repository=active,
+        ),
+    )
+
+    result = service.run_agent("workspace-1", message="Remove the core method paper.")
+
+    assert result["status"] == "pending_review", result
+    # The second request carried the first call's answer, naming the wrong id
+    # and the visible one it resembles.
+    answers = [item for item in seen_inputs[1] if item.get("type") == "function_call_output"]
+    assert len(answers) == 1 and answers[0]["call_id"] == "call_1"
+    told = json.loads(answers[0]["output"])
+    assert told["unknown_ids"] == ["p11"]
+    assert told["closest_visible_ids"] == {"p11": ["p1"]}
+
+
 def _edit_tool_turn(instruction: str, **extra: Any) -> AgentTurn:
     """One model turn that asks for a workspace edit."""
 
