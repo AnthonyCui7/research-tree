@@ -40,6 +40,16 @@ ALLOWED_SET_FIELDS: dict[str, dict[str, str]] = {
 }
 
 
+NAME_FIELDS = {
+    ("workspace", "title"),
+    ("workspace", "topic"),
+    ("branch", "label"),
+    ("paper_card", "title"),
+}
+MAX_NAME_CHARACTERS = 200
+MAX_TEXT_CHARACTERS = 20_000
+
+
 class WorkspacePatchError(ValueError):
     """Raised when a structured workspace patch cannot be applied atomically."""
 
@@ -242,8 +252,20 @@ def _apply_set(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
             f"set is not allowed for {entity_type}.{field_name}."
         )
     value = operation.get("value")
-    if shape == "text" and not isinstance(value, str):
-        raise WorkspacePatchError(f"{entity_type}.{field_name} must be text.")
+    if shape == "text":
+        if not isinstance(value, str):
+            raise WorkspacePatchError(f"{entity_type}.{field_name} must be text.")
+        # A name is drawn on the canvas, listed in the sidebar and, for a
+        # topic, searched for by a rebuild: blank, it is a card with nothing
+        # on it and a build of nothing.
+        is_name = (entity_type, field_name) in NAME_FIELDS
+        if is_name and not value.strip():
+            raise WorkspacePatchError(f"{entity_type}.{field_name} cannot be blank.")
+        limit = MAX_NAME_CHARACTERS if is_name else MAX_TEXT_CHARACTERS
+        if len(value) > limit:
+            raise WorkspacePatchError(
+                f"{entity_type}.{field_name} is limited to {limit:,} characters."
+            )
     if shape == "list":
         if not isinstance(value, list):
             raise WorkspacePatchError(f"{entity_type}.{field_name} must be a list.")
@@ -381,6 +403,7 @@ def _insert_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> N
         raise WorkspacePatchError(f"branch already exists: {node_id}.")
     if parent_id != _root_id(workspace) and parent_id not in nodes_by_id:
         raise WorkspacePatchError(f"parent branch does not exist: {parent_id}.")
+    _refuse_a_parent_that_holds_papers(nodes_by_id.get(parent_id), parent_id)
     # A new branch is empty and a leaf. Its papers arrive by `move`, and its
     # children by `insert`, each of which keeps the tree consistent; a value
     # that named papers or children directly claimed them without doing so.
@@ -434,6 +457,12 @@ def _move_paper_placement(workspace: dict[str, Any], operation: Mapping[str, Any
     if paper_id not in cards:
         raise WorkspacePatchError(f"visible paper does not exist: {paper_id}.")
     path_id = _optional_str(operation.get("path_id"))
+    location = cards[paper_id].get("primary_tree_location") if isinstance(cards[paper_id], Mapping) else None
+    already_there = isinstance(location, Mapping) and str(location.get("node_id") or "") == to_branch_id
+    if already_there and not path_id and _optional_int(operation.get("index")) is None:
+        # Nowhere to go and no position asked for: re-placing it by date moved
+        # it past every paper of the same date and recorded a version for it.
+        return
     if path_id:
         path = _required_path(workspace, path_id)
         if str(path.get("branch_node_id") or "") != to_branch_id:
@@ -578,6 +607,20 @@ def _remove_branch(workspace: dict[str, Any], branch_id: str) -> None:
     _refresh_leaf_flags(workspace)
 
 
+def _refuse_a_parent_that_holds_papers(parent: Any, parent_id: str) -> None:
+    """A branch groups other branches or holds papers, never both.
+
+    Moving a paper already refuses a branch that groups others. Without the
+    same rule here a branch could be given a child while it held papers, and
+    from then on nothing could be moved onto it.
+    """
+
+    if isinstance(parent, Mapping) and _string_list(parent.get("primary_paper_ids")):
+        raise WorkspacePatchError(
+            f"branch {parent_id} holds papers; move them to another branch before nesting one under it."
+        )
+
+
 def _move_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> None:
     branch_id = str(operation.get("branch_id") or "")
     parent_id = str(operation.get("to_parent_id") or "")
@@ -587,6 +630,7 @@ def _move_branch(workspace: dict[str, Any], operation: Mapping[str, Any]) -> Non
         raise WorkspacePatchError(f"destination parent does not exist: {parent_id}.")
     if branch_id == parent_id:
         raise WorkspacePatchError("branch cannot be moved under itself.")
+    _refuse_a_parent_that_holds_papers(nodes_by_id.get(parent_id), parent_id)
     node["parent_id"] = parent_id
     for item in nodes_by_id.values():
         if isinstance(item, dict):

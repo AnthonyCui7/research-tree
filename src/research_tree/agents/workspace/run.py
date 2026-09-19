@@ -40,7 +40,10 @@ def run_workspace_agent(
     active_thread_id = _thread_id_for_input(input, explicit_thread_id=thread_id)
     run_input = dict(input)
     run_input["thread_id"] = active_thread_id
-    config = {"configurable": {"thread_id": active_thread_id}}
+    # The longest honest turn is twelve rounds of tools and two repairs, under
+    # forty steps. The library's own ceiling has been 25 and is now 10,007;
+    # the turn's does not depend on which.
+    config = {"configurable": {"thread_id": active_thread_id}, "recursion_limit": 100}
     return _run_graph(
         active_graph,
         run_input,

@@ -60,7 +60,10 @@ async def require_account(
         email=user.email,
         name=user.name,
         avatar_url=user.avatar_url,
-        is_admin=bool(user.is_superuser) or user.email.lower() in admin_emails(),
+        # An address on the operator's list counts once it has been proven:
+        # anyone can register an address they do not hold.
+        is_admin=bool(user.is_superuser)
+        or (bool(user.is_verified) and user.email.lower() in admin_emails()),
         is_verified=bool(user.is_verified),
         is_local=False,
     )

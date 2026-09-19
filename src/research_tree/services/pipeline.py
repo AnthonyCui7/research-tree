@@ -16,6 +16,7 @@ from research_tree.artifact_store import ArtifactStore, default_artifact_store
 from research_tree.auth.throttle import count_account_action
 from research_tree.artifacts import write_json_file
 from research_tree.retrieval.cache import JsonRequestError
+from research_tree.retrieval.pipeline_args import PIPELINE_STAGES
 from research_tree.retrieval.candidate_preparation import (
     CandidatePoolError,
     PipelineConfig,
@@ -70,7 +71,6 @@ from research_tree.workspace.tldr import OpenAIResponsesTldrGenerator, TldrGener
 logger = logging.getLogger("uvicorn.error")
 
 
-PIPELINE_STAGES = ("candidates", "construct", "hydrate", "related")
 # The stages that call OpenAI; `related` ranks with the baked local models.
 MODEL_STAGES = ("candidates", "construct", "hydrate")
 # The candidate artifacts a rerun may reuse; both are uploaded to the artifact

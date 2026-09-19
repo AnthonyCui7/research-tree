@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import functools
 import json
+import logging
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -24,6 +25,7 @@ from research_tree.services.errors import (
 
 
 router = APIRouter(prefix="/workspaces", tags=["agent"])
+logger = logging.getLogger("uvicorn.error")
 
 # The ingress closes a connection that has been silent for four minutes; a
 # comment frame this often keeps a long assistant turn alive without
@@ -151,6 +153,18 @@ async def run_workspace_agent(
                     "status": error.status_code,
                     "detail": public_service_error_message(error),
                     "error_code": error.error_code,
+                }
+                yield f"event: error\ndata: {json.dumps(payload)}\n\n"
+                return
+            except Exception:  # noqa: BLE001 - the stream has started; it must still end in an event
+                # Anything raised before the turn's own handling (a database
+                # that did not answer, say). Left to propagate, the stream
+                # just stopped and the reader was told the connection closed.
+                logger.exception("assistant turn failed before it began workspace_id=%s", workspace_id)
+                payload = {
+                    "status": 500,
+                    "detail": "We could not complete that request. Please try again.",
+                    "error_code": "workspace_service_error",
                 }
                 yield f"event: error\ndata: {json.dumps(payload)}\n\n"
                 return

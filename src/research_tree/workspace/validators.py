@@ -60,10 +60,18 @@ def schema_validator(payload: ValidatorPayload) -> dict[str, Any]:
     )
     errors = list(validation.errors)
     warnings = list(validation.warnings)
-    if _explicit_all_visible_papers_removed(payload):
-        empty_error = "workspace paper_cards is empty."
-        errors = [error for error in errors if error != empty_error]
-        if empty_error in validation.errors:
+    before = _mapping(payload.get("workspace"))
+    # The id is where the document is kept, not something it gets to say.
+    if before.get("workspace_id") and proposed.get("workspace_id") != before.get("workspace_id"):
+        errors.append(f"workspace_id cannot change; this is {before.get('workspace_id')!r}.")
+    empty_error = "workspace paper_cards is empty."
+    if empty_error in errors:
+        if not _mapping(before.get("paper_cards")):
+            # Already empty, so not this change's doing: holding it against
+            # every later rename left a restore as the only way forward.
+            errors.remove(empty_error)
+        elif _explicit_all_visible_papers_removed(payload):
+            errors.remove(empty_error)
             warnings.append("This proposal removes all visible papers from the workspace.")
     return _result(
         "schema_validator",
@@ -387,7 +395,9 @@ def _survey_anchor_ids(workspace: Mapping[str, Any]) -> list[str]:
     for node in _entries(_mapping(workspace.get("tree")).get("nodes")):
         if isinstance(node, Mapping) and node.get("survey_anchor_paper_id"):
             anchors.append(str(node["survey_anchor_paper_id"]))
-    return list(dict.fromkeys(anchor for anchor in anchors if anchor))
+    # Blank ids are left for validation to report against the field that
+    # holds them; as a stand-in candidate, one raised instead.
+    return list(dict.fromkeys(anchor for anchor in anchors if anchor.strip()))
 
 
 def _branch_ids(workspace: Mapping[str, Any]) -> set[str]:

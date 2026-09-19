@@ -8,7 +8,8 @@ drift apart.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields, replace
+import math
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -37,6 +38,8 @@ AGENT_TUNABLE_FIELDS: dict[str, TunableField] = {
 }
 
 MAX_QUERY_OVERRIDES = 8
+# The stages of a build, in the order they run. A rerun starts at one of them.
+PIPELINE_STAGES = ("candidates", "construct", "hydrate", "related")
 
 FORBIDDEN_REQUEST_KEYS = {
     "scoring_algorithm",
@@ -95,6 +98,11 @@ def validate_pipeline_rerun_request(
     topic = str(request.get("topic") or defaults.topic).strip()
     if not topic:
         return _rejected("pipeline rerun topic cannot be empty", prior_defaults)
+    # The tool's schema is not strict, so the stage arrives as whatever the
+    # model wrote. One that is not a stage was saved as a proposal that could
+    # only ever be refused at approval.
+    if (request.get("stage") or PIPELINE_STAGES[0]) not in PIPELINE_STAGES:
+        return _rejected(f"stage must be one of {', '.join(PIPELINE_STAGES)}", prior_defaults)
 
     warnings: list[str] = []
     overrides: dict[str, Any] = {}
@@ -106,6 +114,8 @@ def validate_pipeline_rerun_request(
         try:
             value = float(raw_value)
         except (TypeError, ValueError):
+            return _rejected(f"{request_key} must be a number", prior_defaults)
+        if not math.isfinite(value):
             return _rejected(f"{request_key} must be a number", prior_defaults)
         clamped = min(max(value, tunable.minimum), tunable.maximum)
         if clamped != value:
@@ -145,30 +155,6 @@ def validate_pipeline_rerun_request(
         "prior_defaults": prior_defaults,
         "new_values": {"topic": topic, **overrides},
     }
-
-
-def pipeline_config_from_normalized_args(args: Mapping[str, Any]) -> PipelineConfig:
-    """Rebuild a config from a serialized one, ignoring unknown keys."""
-
-    defaults = PipelineConfig(repo_root=Path(str(args.get("repo_root") or ".")))
-    known = {field.name for field in fields(PipelineConfig)} - {"repo_root"}
-    overrides: dict[str, Any] = {}
-    for name in known:
-        if name not in args or args[name] is None:
-            continue
-        current = getattr(defaults, name)
-        value = args[name]
-        if name == "query_overrides":
-            overrides[name] = tuple(str(item) for item in value or [])
-        elif isinstance(current, bool):
-            overrides[name] = bool(value)
-        elif isinstance(current, int):
-            overrides[name] = int(value)
-        elif isinstance(current, float):
-            overrides[name] = float(value)
-        else:
-            overrides[name] = str(value)
-    return replace(defaults, **overrides)
 
 
 def _requests_algorithm_change(request: Mapping[str, Any]) -> bool:

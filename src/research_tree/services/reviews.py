@@ -279,7 +279,26 @@ class WorkspaceReviewService:
 
         rerun = review.get("pipeline_rerun")
         stage = str((rerun or {}).get("stage") or "candidates")
-        run = self.pipeline_service.rerun(workspace_id, start_stage=stage)
+        try:
+            # Checked against the version the rebuild was proposed for, like a
+            # patch: a rebuild approved after the reader changed the workspace
+            # by hand would replace work the proposal never saw.
+            run = self.pipeline_service.rerun(
+                workspace_id,
+                start_stage=stage,
+                expected_version_hash=str(review.get("base_workspace_version_hash") or "") or None,
+            )
+        except StaleWorkspaceError:
+            # It can never be approved now, so it is retired rather than left
+            # pending behind a button that only ever answers 409.
+            self.repository.reject_review_once(
+                workspace_id,
+                review_id,
+                actor_type="system",
+                actor_id="workspace_agent",
+                reason="the workspace changed after this rebuild was proposed",
+            )
+            raise
         event_id = self.repository.append_workspace_event(
             workspace_id,
             actor="user",

@@ -286,10 +286,16 @@ class WorkspaceAgentNodes:
             if item.get("type") == "web_search_call":
                 _report_progress(_web_search_progress(item))
 
+        # A name that is not a tool is answered as one in `execute_tools`; it
+        # does not stop a real terminal call beside it from being honoured.
         terminal = next(
-            (call for call in turn.tool_calls if ALL_TOOLS[call.name].terminal),
+            (
+                call
+                for call in turn.tool_calls
+                if call.name in ALL_TOOLS and ALL_TOOLS[call.name].terminal
+            ),
             None,
-        ) if all(call.name in ALL_TOOLS for call in turn.tool_calls) else None
+        )
 
         update: dict[str, Any] = {
             "transcript_items": transcript,
@@ -319,7 +325,15 @@ class WorkspaceAgentNodes:
         if turn.tool_calls and not out_of_budget:
             return Command(update=update, goto="execute_tools")
 
-        update["final_response"] = turn.output_text or "Assistant completed."
+        if not turn.output_text:
+            # No words and no calls: the answer was cut off, or there was none.
+            # Reporting that as a completed turn showed the reader a stock
+            # sentence in place of whatever had gone wrong.
+            update["final_response"] = "The model returned no answer to that. Try asking again."
+            update["status"] = "failed"
+            update["errors"] = ["the model's turn carried no text and no tool call"]
+            return Command(update=update, goto="finalize_response")
+        update["final_response"] = turn.output_text
         update["status"] = "completed"
         if out_of_budget:
             update["warnings"] = [
@@ -560,9 +574,11 @@ class WorkspaceAgentNodes:
             "type": "pipeline_rerun_approval",
             "review_id": review_id,
             "question": f"Rerun the {stage} stage of the pipeline?",
+            # What is approved is the stage, so that is what is shown. The
+            # guardrail's other numbers never reach the run, and a card that
+            # listed them described a build nobody would get.
             "stage": stage,
             "reason": reason,
-            "normalized_args": guardrail.get("normalized_args") or {},
             "warnings": guardrail.get("warnings") or [],
             "choices": ["approve", "reject"],
         }
@@ -582,11 +598,7 @@ class WorkspaceAgentNodes:
                 validation_summary={},
                 interrupt_payload=payload,
                 review_type="pipeline_rerun",
-                pipeline_rerun={
-                    "stage": stage,
-                    "reason": reason,
-                    "normalized_args": guardrail.get("normalized_args") or {},
-                },
+                pipeline_rerun={"stage": stage, "reason": reason},
             )
             run_event_id = self._append_agent_run_event(
                 state,
@@ -646,7 +658,10 @@ class WorkspaceAgentNodes:
                 target_branch_id=next_action.get("target_branch_id"),
                 target_paper_ids=next_action.get("target_paper_ids") or [],
                 similar_papers_context=state.get("similar_papers_context") or {},
-                run_metadata={"user_message": state.get("user_message", "")},
+                run_metadata={
+                    "user_message": state.get("user_message", ""),
+                    "add_paper_ids": next_action.get("add_paper_ids") or [],
+                },
                 model=str(state.get("agent_model") or DEFAULT_MODEL),
             )
         except ValueError as error:
@@ -988,6 +1003,7 @@ class WorkspaceAgentNodes:
                 similar_papers_context=state.get("similar_papers_context") or {},
                 run_metadata={
                     "user_message": state.get("user_message", ""),
+                    "add_paper_ids": next_action.get("add_paper_ids") or [],
                     "proposed_workspace": state.get("proposed_workspace") or {},
                     "validation_errors": validation_summary.get("errors") or [],
                 },
@@ -1665,9 +1681,19 @@ def _similar_paper_policy(
         and isinstance(provenance.get("similar_papers_policy"), Mapping)
         else {}
     )
-    alpha = float(prior.get("citation_age_exponent") or DEFAULT_SIMILAR_CITATION_AGE_EXPONENT)
-    floor = float(prior.get("citation_score_floor") or DEFAULT_SIMILAR_CITATION_SCORE_FLOOR)
-    k = int(prior.get("k") or DEFAULT_SIMILAR_PAPERS_K)
+    try:
+        alpha = float(prior.get("citation_age_exponent") or DEFAULT_SIMILAR_CITATION_AGE_EXPONENT)
+        floor = float(prior.get("citation_score_floor") or DEFAULT_SIMILAR_CITATION_SCORE_FLOOR)
+        k = int(prior.get("k") or DEFAULT_SIMILAR_PAPERS_K)
+    except (TypeError, ValueError, OverflowError):
+        # The policy sits in a document a reader can edit and nothing checks
+        # its numbers. One that is not a number is no policy, not a reason for
+        # every refresh of that workspace to fail.
+        alpha, floor, k = (
+            DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
+            DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
+            DEFAULT_SIMILAR_PAPERS_K,
+        )
     request = user_message.casefold()
     if any(term in request for term in ("newer", "newest", "recent", "recency")):
         alpha = max(alpha, 1.75)

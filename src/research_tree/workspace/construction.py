@@ -23,6 +23,7 @@ from research_tree.workspace.prompts import (
     WORKSPACE_CONSTRUCTION_PROMPT_VERSION,
     build_workspace_prompt,
 )
+from research_tree.workspace.prompts.workspace_construction import paper_for_prompt
 from research_tree.workspace.schemas import (
     CandidatePaperMetadata,
     PAPER_ROLES,
@@ -327,7 +328,9 @@ def construct_workspace(
     else:
         workspace.setdefault("schema_version", WORKSPACE_SCHEMA_VERSION)
         if base_workspace is not None:
-            workspace.setdefault("workspace_id", base_workspace.get("workspace_id"))
+            # An edit is of this workspace whatever the answer calls itself.
+            if base_workspace.get("workspace_id"):
+                workspace["workspace_id"] = base_workspace["workspace_id"]
             workspace.setdefault("topic", base_workspace.get("topic"))
             workspace.setdefault("title", base_workspace.get("title"))
     return workspace
@@ -1052,6 +1055,7 @@ def _build_agent_workspace_prompt(
     prompt_artifact = _slim_artifact_for_editing_prompt(
         candidate_artifact,
         base_workspace,
+        named_ids={str(paper_id) for paper_id in run_metadata.get("add_paper_ids") or []},
     )
     if construction_mode == "workspace_repair":
         return build_workspace_repair_prompt(
@@ -1085,44 +1089,61 @@ def _build_agent_workspace_prompt(
     )
 
 
+UNNAMED_CANDIDATES_DESCRIBED = 10
+
+
 def _slim_artifact_for_editing_prompt(
     candidate_artifact: dict[str, Any] | None,
     base_workspace: Mapping[str, Any],
+    *,
+    named_ids: set[str],
 ) -> dict[str, Any] | None:
     """Compact the candidate artifact for the editing prompt.
 
     Papers already visible in the workspace appear in the prompt as cards, so
-    repeating their full candidate payloads only re-reads the same document.
-    The full payload is kept for papers the edit could newly introduce —
-    session discoveries, discarded candidates, anchors without cards."""
+    they are named here and nothing more. A paper the edit was asked to add is
+    described the way construction describes a candidate: title, summary, a
+    bounded abstract. Every other candidate, which is everything the
+    conversation's searches turned up, is a line: the model picks papers by
+    id, and a picked paper's metadata is filled from the artifact, not from
+    the prompt. Sent whole, one turn of searching was a hundred and fifty
+    thousand tokens in every edit that followed it on the thread."""
 
     if not isinstance(candidate_artifact, Mapping):
         return None
-    visible_ids = {
-        str(paper_id)
-        for paper_id in (
-            base_workspace.get("paper_cards")
-            if isinstance(base_workspace.get("paper_cards"), Mapping)
-            else {}
-        )
-    }
+    cards = base_workspace.get("paper_cards")
+    visible_ids = {str(paper_id) for paper_id in cards} if isinstance(cards, Mapping) else set()
+    if not named_ids:
+        # A call that asks for a paper in words and forgets to name its id
+        # still has to find it described: the newest candidates are the ones
+        # the conversation has just been about.
+        offered = [
+            str(paper.get("paper_id"))
+            for key in ("non_survey_papers", "survey_papers")
+            for paper in candidate_artifact.get(key) or []
+            if isinstance(paper, Mapping) and str(paper.get("paper_id")) not in visible_ids
+        ]
+        named_ids = set(offered[-UNNAMED_CANDIDATES_DESCRIBED:])
+
+    def described(paper: Any) -> Any:
+        if not isinstance(paper, Mapping):
+            return paper
+        paper_id = str(paper.get("paper_id"))
+        if paper_id in named_ids and paper_id not in visible_ids:
+            return paper_for_prompt(paper)
+        line = {
+            "paper_id": paper.get("paper_id"),
+            "title": paper.get("title"),
+            "year": paper.get("year"),
+            "is_survey": paper.get("is_survey"),
+        }
+        if paper_id in visible_ids:
+            line["already_visible_in_workspace"] = True
+        return line
+
     slim = dict(candidate_artifact)
     for key in ("non_survey_papers", "survey_papers"):
-        slim[key] = [
-            (
-                {
-                    "paper_id": paper.get("paper_id"),
-                    "title": paper.get("title"),
-                    "year": paper.get("year"),
-                    "is_survey": paper.get("is_survey"),
-                    "already_visible_in_workspace": True,
-                }
-                if isinstance(paper, Mapping)
-                and str(paper.get("paper_id")) in visible_ids
-                else paper
-            )
-            for paper in candidate_artifact.get(key) or []
-        ]
+        slim[key] = [described(paper) for paper in candidate_artifact.get(key) or []]
     return slim
 
 

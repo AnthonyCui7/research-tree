@@ -384,6 +384,14 @@ def _agent_turn_from_response(raw_response: dict[str, Any]) -> AgentTurn:
         # A turn that only calls tools carries no message item; that is the
         # normal mid-loop shape, not a failure.
         output_text = None
+    if output_text is None:
+        # A refusal is the model's answer, in a part that has no `text`.
+        output_text = " ".join(
+            str(part["refusal"])
+            for item in output_items
+            for part in item.get("content") or []
+            if isinstance(part, dict) and part.get("type") == "refusal" and part.get("refusal")
+        ) or None
     return AgentTurn(
         output_items=output_items,
         tool_calls=tool_calls,

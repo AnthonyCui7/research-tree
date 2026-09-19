@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PipelineRerunRequest(BaseModel):
@@ -28,21 +28,38 @@ class ProposalSkepticNotes(BaseModel):
     objections: list[str] = Field(default_factory=list, max_length=2)
 
 
+FindingType = Literal[
+    "weak_branch",
+    "misplaced_paper",
+    "missing_branch",
+    "too_flat",
+    "duplicate_concept",
+    "budget_issue",
+    "paper_path_issue",
+    "other",
+]
+Severity = Literal["low", "medium", "high"]
+
+
 class WorkspaceCritiqueFinding(BaseModel):
-    finding_type: Literal[
-        "weak_branch",
-        "misplaced_paper",
-        "missing_branch",
-        "too_flat",
-        "duplicate_concept",
-        "budget_issue",
-        "paper_path_issue",
-        "other",
-    ]
+    finding_type: FindingType
     target_ids: dict[str, Any] = Field(default_factory=dict)
-    severity: Literal["low", "medium", "high"]
+    severity: Severity
     explanation: str
     suggested_fix: str | None = None
+
+    # The response format is not strict, so a label can come back outside the
+    # list. The two labels are only ever printed beside the explanation, and
+    # one unfamiliar word used to cost the reader the whole critique.
+    @field_validator("finding_type", mode="before")
+    @classmethod
+    def _an_unfamiliar_type_is_other(cls, value: Any) -> Any:
+        return value if value in get_args(FindingType) else "other"
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _an_unfamiliar_severity_is_medium(cls, value: Any) -> Any:
+        return value if value in get_args(Severity) else "medium"
 
 
 class WorkspaceCritique(BaseModel):

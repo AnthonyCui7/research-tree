@@ -1732,7 +1732,7 @@ class HandEditConsistencyTest(unittest.TestCase):
                     "entity_type": "branch",
                     "value": {
                         "node_id": "branch-new",
-                        "parent_id": "branch-main",
+                        "parent_id": "root",
                         "label": "New",
                         "primary_paper_ids": ["p1"],
                         "child_node_ids": ["branch-main"],
@@ -1742,12 +1742,63 @@ class HandEditConsistencyTest(unittest.TestCase):
         )
 
         new = next(node for node in proposed["tree"]["nodes"] if node["node_id"] == "branch-new")
-        parent = next(node for node in proposed["tree"]["nodes"] if node["node_id"] == "branch-main")
         self.assertEqual(new["primary_paper_ids"], [])
         self.assertEqual(new["child_node_ids"], [])
         self.assertTrue(new["is_leaf"])
-        self.assertFalse(parent["is_leaf"])
-        self.assertEqual(parent["child_node_ids"], ["branch-new"])
+
+    def test_a_branch_groups_branches_or_holds_papers_never_both(self) -> None:
+        nested = {
+            "op": "insert",
+            "entity_type": "branch",
+            "value": {"node_id": "branch-new", "parent_id": "branch-main", "label": "New"},
+        }
+        with self.assertRaisesRegex(WorkspacePatchError, "holds papers"):
+            apply_structured_workspace_patch(base_workspace=_workspace(), operations=[nested])
+        with self.assertRaisesRegex(WorkspacePatchError, "holds papers"):
+            apply_structured_workspace_patch(
+                base_workspace=_workspace_with_side_branch(),
+                operations=[
+                    {
+                        "op": "move",
+                        "entity_type": "branch",
+                        "branch_id": "branch-side",
+                        "to_parent_id": "branch-main",
+                    }
+                ],
+            )
+
+    def test_names_are_never_blank_and_text_is_bounded(self) -> None:
+        def rename(entity: dict[str, str], field: str, value: str) -> dict[str, object]:
+            return {"op": "set", **entity, "field": field, "value": value}
+
+        branch = {"entity_type": "branch", "branch_id": "branch-main"}
+        for operation in (
+            rename(branch, "label", "   "),
+            rename(branch, "label", "x" * 201),
+            rename({"entity_type": "workspace"}, "topic", " "),
+            rename(branch, "description", "x" * 20_001),
+        ):
+            with self.assertRaises(WorkspacePatchError):
+                apply_structured_workspace_patch(base_workspace=_workspace(), operations=[operation])
+        kept = apply_structured_workspace_patch(
+            base_workspace=_workspace(), operations=[rename(branch, "description", "")]
+        )
+        self.assertEqual(kept["tree"]["nodes"][0]["description"], "")
+
+    def test_moving_a_paper_to_where_it_already_is_changes_nothing(self) -> None:
+        workspace = _workspace_with_side_branch()
+        moved = apply_structured_workspace_patch(
+            base_workspace=workspace,
+            operations=[
+                {
+                    "op": "move",
+                    "entity_type": "paper_placement",
+                    "paper_id": "p1",
+                    "to_branch_id": "branch-main",
+                }
+            ],
+        )
+        self.assertEqual(moved, workspace)
 
     def test_a_paper_card_written_by_the_caller_is_refused(self) -> None:
         with self.assertRaisesRegex(WorkspacePatchError, "cannot be put back"):

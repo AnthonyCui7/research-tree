@@ -163,7 +163,13 @@ def test_register_sign_in_and_sign_out(
     assert me.status_code == 200
     assert me.json()["auth_mode"] == "accounts"
     assert me.json()["user"]["email"] == "owner@example.com"
-    assert me.json()["user"]["is_admin"] is True
+    # On the operator's list, but nobody has proven the address yet: anyone
+    # could have registered it.
+    assert me.json()["user"]["is_admin"] is False
+    from research_tree.auth.accounts import set_user_flags
+
+    set_user_flags(me.json()["user"]["id"], is_verified=True)
+    assert accounts_client.get("/account/me").json()["user"]["is_admin"] is True
 
     duplicate = accounts_client.post(
         "/auth/register", json={"email": "owner@example.com", "password": "another-long-one"}
@@ -307,6 +313,20 @@ def test_google_identity_is_the_openid_subject_and_verified_email() -> None:
     assert asyncio.run(client.get_id_email("tok")) == ("42", "b@x.io")
     assert seen["url"] == USERINFO_ENDPOINT
     assert seen["auth"] == "Bearer tok"
+
+
+def test_an_ipv6_caller_is_counted_by_its_subnet() -> None:
+    from types import SimpleNamespace
+
+    from research_tree.auth.throttle import _client_ip
+
+    def caller(host: str) -> SimpleNamespace:
+        return SimpleNamespace(client=SimpleNamespace(host=host))
+
+    assert _client_ip(caller("2001:db8:1:2:aaaa::1")) == _client_ip(caller("2001:db8:1:2:bbbb::9"))
+    assert _client_ip(caller("2001:db8:1:3::1")) != _client_ip(caller("2001:db8:1:2::1"))
+    assert _client_ip(caller("203.0.113.9")) == "203.0.113.9"
+    assert _client_ip(SimpleNamespace(client=None)) == "unknown"
 
 
 def test_an_address_that_only_folds_to_a_listed_one_is_not_on_the_list(

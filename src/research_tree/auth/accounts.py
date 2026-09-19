@@ -22,13 +22,16 @@ _USER_COLUMNS = (
 
 def principal_from_row(row: Any) -> Principal:
     email = str(row["email"])
+    verified = bool(row["is_verified"])
     return Principal(
         user_id=str(row["id"]),
         email=email,
         name=row["name"],
         avatar_url=row["avatar_url"],
-        is_admin=bool(row["is_superuser"]) or email.lower() in admin_emails(),
-        is_verified=bool(row["is_verified"]),
+        # An address on the operator's list counts once it has been proven:
+        # anyone can register an address they do not hold.
+        is_admin=bool(row["is_superuser"]) or (verified and email.lower() in admin_emails()),
+        is_verified=verified,
         is_local=False,
     )
 

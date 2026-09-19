@@ -213,6 +213,29 @@ class TestPipelineRerunReview:
         assert len(started) == 1
         assert second["idempotent"] is True
 
+    def test_a_rebuild_proposed_for_an_older_version_is_refused_and_retired(
+        self, tmp_path: Path
+    ) -> None:
+        from research_tree.services.errors import StaleWorkspaceError
+
+        repository = LocalJsonWorkspaceRepository(tmp_path)
+        base_hash = _seed(repository)
+        _save_rerun_review(repository, base_hash, stage="construct")
+        edited = {**_workspace(), "title": "Renamed by hand since"}
+        repository.save_workspace_version(
+            "workspace-1", edited, actor="user", parent_version_hash=base_hash, reason="hand edit"
+        )
+        started: list[dict[str, Any]] = []
+        service = WorkspaceReviewService(
+            repository, pipeline_service=_FakePipeline(started, repository)
+        )
+
+        with pytest.raises(StaleWorkspaceError):
+            service.approve_review("workspace-1", "review-rerun")
+
+        assert started == []
+        assert repository.get_review("workspace-1", "review-rerun")["status"] == "rejected"
+
     def test_approving_a_rejected_rerun_conflicts(self, tmp_path: Path) -> None:
         repository = LocalJsonWorkspaceRepository(tmp_path)
         base_hash = _seed(repository)
@@ -225,12 +248,28 @@ class TestPipelineRerunReview:
 
 
 class _FakePipeline:
-    def __init__(self, started: list[dict[str, Any]]) -> None:
-        self.started = started
+    """Holds `rerun` to the contract the real service keeps: a stale hash is a conflict."""
 
-    def rerun(self, workspace_id: str, *, start_stage: str, **_kwargs: Any) -> dict[str, Any]:
+    def __init__(self, started: list[dict[str, Any]], repository: Any = None) -> None:
+        self.started = started
+        self.repository = repository
+
+    def rerun(
+        self,
+        workspace_id: str,
+        *,
+        start_stage: str,
+        expected_version_hash: str | None = None,
+    ) -> dict[str, Any]:
+        if self.repository is not None and expected_version_hash:
+            from research_tree.services.errors import StaleWorkspaceError
+            from research_tree.workspace.context import workspace_version_hash
+
+            current = self.repository.get_current_workspace(workspace_id)
+            if workspace_version_hash(current) != expected_version_hash:
+                raise StaleWorkspaceError("Workspace changed.")
         self.started.append({"workspace_id": workspace_id, "start_stage": start_stage})
-        return {"run_id": "pipeline_1", "status": "queued"}
+        return {"run_id": "pipeline_1", "workspace_id": workspace_id, "status": "queued"}
 
 
 def _boom(_context: ToolContext, _arguments: dict[str, Any]) -> Any:

@@ -31,6 +31,7 @@ from research_tree.retrieval.semantic_scholar import (
     SemanticScholarClient,
     s2_api_key,
 )
+from research_tree.workspace.construction import DERIVED_PAPER_CARD_FIELDS
 from research_tree.workspace.repository import WorkspaceRepository
 
 
@@ -39,6 +40,7 @@ from research_tree.workspace.repository import WorkspaceRepository
 # would starve pipeline builds running in the same process.
 MAX_SEMANTIC_SCHOLAR_CALLS_PER_RUN = 8
 MAX_SEARCH_RESULTS = 20
+MAX_DISCOVERED_PAPERS_PER_THREAD = 200
 # Tool results are replayed on every later turn, so a large one is paid for
 # repeatedly.
 MAX_TOOL_RESULT_CHARACTERS = 20_000
@@ -82,7 +84,14 @@ class ToolContext:
         for payload in payloads:
             paper_id = str(payload.get("paperId") or "")
             if paper_id:
+                # Re-inserted so the newest sighting is also the last to go.
+                self.discovered_papers.pop(paper_id, None)
                 self.discovered_papers[paper_id] = dict(payload)
+        # A thread keeps its discoveries from turn to turn, each a whole
+        # provider payload in the checkpoint, so the oldest give way. A paper
+        # that has gone can be fetched again.
+        for stale_id in list(self.discovered_papers)[:-MAX_DISCOVERED_PAPERS_PER_THREAD]:
+            del self.discovered_papers[stale_id]
 
 
 @dataclass(frozen=True)
@@ -153,6 +162,12 @@ def _get_paper(context: ToolContext, arguments: dict[str, Any]) -> Any:
         return {"error": f"no paper card with id {paper_id!r}"}
     result: dict[str, Any] = {"paper_card": dict(card)}
     if arguments.get("include_full_text") and context.repository is not None:
+        # The window is sized to fit the result cap beside a card. A card's
+        # derived payloads (the provider's record, its recommendations) are
+        # what pushed the two past it, and the model lost the text and the
+        # offset of the next window to the truncation.
+        for derived_field in DERIVED_PAPER_CARD_FIELDS:
+            result["paper_card"].pop(derived_field, None)
         result.update(_paper_full_text_window(context, paper_id, 0))
     return result
 
@@ -584,8 +599,14 @@ def run_tool(name: str, context: ToolContext, arguments: dict[str, Any]) -> str:
     """Run one read tool and return its JSON result, bounded in size."""
 
     tool = ALL_TOOLS.get(name)
-    if tool is None or tool.handler is None:
+    if tool is None:
         return _as_json({"error": f"unknown tool {name!r}"})
+    if tool.handler is None:
+        # A terminal tool that arrived beside another call the loop took
+        # first. It exists; it was not run.
+        return _as_json(
+            {"error": f"{name} ends the turn and was not run this time. Call it again on its own."}
+        )
     try:
         result = tool.handler(context, arguments)
     except Exception as error:  # Surfaced to the model, which can adapt.

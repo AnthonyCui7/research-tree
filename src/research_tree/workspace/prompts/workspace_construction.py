@@ -88,19 +88,19 @@ def _candidate_artifact_for_prompt(
         "llm_handoff": candidate_artifact.get("llm_handoff"),
         "candidate_pool_order": candidate_artifact.get("candidate_pool_order"),
         "non_survey_papers": [
-            _paper_for_prompt(paper)
+            paper_for_prompt(paper)
             for paper in candidate_artifact.get("non_survey_papers") or []
             if isinstance(paper, Mapping)
         ],
         "survey_papers": [
-            _paper_for_prompt(paper)
+            paper_for_prompt(paper)
             for paper in candidate_artifact.get("survey_papers") or []
             if isinstance(paper, Mapping)
         ],
     }
 
 
-def _paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
+def paper_for_prompt(paper: Mapping[str, Any]) -> dict[str, Any]:
     fields = (
         "paper_id",
         "title",

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import logging
 import time
 from threading import Lock
@@ -155,7 +156,20 @@ def reset() -> None:
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    """The address a limit is counted against.
+
+    One IPv6 subscriber is handed a whole /64 and can send from any address in
+    it, so the /64 is what is counted.
+    """
+
+    host = request.client.host if request.client else "unknown"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if address.version == 6:
+        return str(ipaddress.ip_network(f"{host}/64", strict=False).network_address)
+    return host
 
 
 async def throttle_login(request: Request) -> None:

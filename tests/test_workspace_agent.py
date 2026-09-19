@@ -180,10 +180,16 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         gathered gets written up rather than thrown away as an error.
         """
 
-        client = DeterministicWorkspaceAgentLlmClient(
-            tool_turns=[_tool_turn("search_workspace", {"query": "anything"})]
+        offered: list[list[dict[str, object]]] = []
+
+        class Recording(DeterministicWorkspaceAgentLlmClient):
+            def complete_with_tools(self, *, tools, **kwargs):  # type: ignore[override]
+                offered.append(tools)
+                return super().complete_with_tools(tools=tools, **kwargs)
+
+        nodes = WorkspaceAgentNodes(
+            llm_client=Recording(tool_turns=[_text_turn("Here is what I found so far.")])
         )
-        nodes = WorkspaceAgentNodes(llm_client=client)
 
         command = nodes.agent_loop(
             {
@@ -195,10 +201,151 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
             }
         )
 
+        self.assertEqual(offered, [[]])
         self.assertEqual(command.goto, "finalize_response")
         self.assertEqual(command.update["status"], "completed")
-        self.assertTrue(command.update["final_response"])
+        self.assertEqual(command.update["final_response"], "Here is what I found so far.")
         self.assertIn("tool-call limit", command.update["warnings"][0])
+
+    def test_a_turn_with_no_words_is_a_failure_and_a_refusal_is_an_answer(self) -> None:
+        from research_tree.agents.workspace.llm import AgentTurn, _agent_turn_from_response
+
+        silent = WorkspaceAgentNodes(
+            llm_client=DeterministicWorkspaceAgentLlmClient(
+                tool_turns=[AgentTurn(output_items=[], tool_calls=[], output_text=None)]
+            )
+        ).agent_loop({"user_message": "hello", "workspace_summary": {}, "workspace": _workspace()})
+        self.assertEqual(silent.update["status"], "failed")
+        self.assertIn("no answer", silent.update["final_response"])
+
+        refused = _agent_turn_from_response(
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "refusal", "refusal": "I can't help with that."}],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(refused.output_text, "I can't help with that.")
+
+    def test_a_terminal_call_is_honoured_beside_a_name_that_is_not_a_tool(self) -> None:
+        from research_tree.agents.workspace.llm import AgentTurn, ToolCall
+        from research_tree.agents.workspace.tools import ToolContext, run_tool
+
+        calls = [
+            ToolCall(call_id="c1", name="lookup_doi", arguments={}),
+            ToolCall(
+                call_id="c2",
+                name="propose_workspace_edit",
+                arguments={"instruction": "Rename the branch.", "edit_kind": "structural"},
+            ),
+        ]
+        turn = AgentTurn(
+            output_items=[
+                {"type": "function_call", "call_id": call.call_id, "name": call.name, "arguments": "{}"}
+                for call in calls
+            ],
+            tool_calls=calls,
+            output_text=None,
+        )
+        command = WorkspaceAgentNodes(
+            llm_client=DeterministicWorkspaceAgentLlmClient(tool_turns=[turn])
+        ).agent_loop({"user_message": "rename", "workspace_summary": {}, "workspace": _workspace()})
+        self.assertEqual(command.goto, "build_workspace_context")
+
+        # One that the loop did not take is told so, not told it does not exist.
+        context = ToolContext(workspace=_workspace(), workspace_id="w", repository=None, repo_root=Path("."))
+        self.assertIn("was not run", run_tool("critique_workspace", context, {}))
+        self.assertIn("unknown tool", run_tool("lookup_doi", context, {}))
+
+    def test_an_edit_prompt_describes_what_it_was_asked_to_add_and_lists_the_rest(self) -> None:
+        from research_tree.workspace.construction import (
+            UNNAMED_CANDIDATES_DESCRIBED,
+            _slim_artifact_for_editing_prompt,
+        )
+
+        found = [
+            {
+                "paper_id": f"found-{number}",
+                "title": f"Found Paper {number}",
+                "abstract": "word " * 400,
+                "year": 2024,
+                "semantic_scholar_metadata": {"citationStyles": {"bibtex": "x" * 2000}},
+            }
+            for number in range(40)
+        ]
+        artifact = {"non_survey_papers": [*_candidate_artifact()["non_survey_papers"], *found]}
+
+        named = _slim_artifact_for_editing_prompt(artifact, _workspace(), named_ids={"found-7"})
+        by_id = {paper["paper_id"]: paper for paper in named["non_survey_papers"]}
+        self.assertIn("abstract", by_id["found-7"])
+        self.assertNotIn("semantic_scholar_metadata", by_id["found-7"])
+        self.assertEqual(set(by_id["found-8"]), {"paper_id", "title", "year", "is_survey"})
+        self.assertTrue(by_id["p1"]["already_visible_in_workspace"])
+        self.assertLess(len(json.dumps(named)), 12_000)
+
+        # A call that forgot to name the paper still finds the newest described.
+        unnamed = _slim_artifact_for_editing_prompt(artifact, _workspace(), named_ids=set())
+        described = [paper["paper_id"] for paper in unnamed["non_survey_papers"] if "abstract" in paper]
+        self.assertEqual(described, [f"found-{number}" for number in range(40 - UNNAMED_CANDIDATES_DESCRIBED, 40)])
+
+    def test_a_thread_keeps_a_bounded_number_of_discoveries(self) -> None:
+        from research_tree.agents.workspace.tools import (
+            MAX_DISCOVERED_PAPERS_PER_THREAD,
+            ToolContext,
+        )
+
+        context = ToolContext(workspace=_workspace(), workspace_id="w", repository=None, repo_root=Path("."))
+        context.record_discovered_papers([{"paperId": f"s2-{number}"} for number in range(MAX_DISCOVERED_PAPERS_PER_THREAD + 25)])
+        context.record_discovered_papers([{"paperId": "s2-30"}])
+
+        self.assertEqual(len(context.discovered_papers), MAX_DISCOVERED_PAPERS_PER_THREAD)
+        self.assertNotIn("s2-0", context.discovered_papers)
+        # Seen again, so it is now the newest rather than among the first to go.
+        self.assertEqual(list(context.discovered_papers)[-1], "s2-30")
+
+    def test_a_proposal_cannot_rename_the_workspace_it_is_for(self) -> None:
+        from research_tree.workspace.validators import schema_validator
+
+        renamed = {**_workspace(), "workspace_id": "somebody-elses"}
+        result = schema_validator(
+            {"workspace": _workspace(), "proposed_workspace": renamed, "proposed_operations": []}
+        )
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("workspace_id cannot change" in error for error in result["errors"]))
+
+    def test_an_emptied_workspace_can_still_be_edited(self) -> None:
+        from research_tree.workspace.validators import schema_validator
+
+        emptied = _workspace()
+        emptied["paper_cards"] = {}
+        emptied["paper_paths"] = []
+        emptied["reading_order"] = []
+        emptied["root"]["representative_paper_ids"] = []
+        emptied["tree"]["nodes"][0]["primary_paper_ids"] = []
+        renamed = copy.deepcopy(emptied)
+        renamed["title"] = "A New Name"
+
+        result = schema_validator(
+            {"workspace": emptied, "proposed_workspace": renamed, "proposed_operations": []}
+        )
+        self.assertNotIn("workspace paper_cards is empty.", result["errors"])
+
+    def test_a_critique_with_an_unfamiliar_label_is_still_a_critique(self) -> None:
+        from research_tree.agents.workspace.models import WorkspaceCritique
+
+        critique = WorkspaceCritique.model_validate(
+            {
+                "summary": "Mostly sound.",
+                "findings": [
+                    {"finding_type": "outdated_paper", "severity": "critical", "explanation": "Old."}
+                ],
+            }
+        )
+        self.assertEqual(critique.findings[0].finding_type, "other")
+        self.assertEqual(critique.findings[0].severity, "medium")
 
     def test_semantic_scholar_budget_is_spent_not_exceeded(self) -> None:
         from research_tree.agents.workspace.tools import (
@@ -533,6 +680,17 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         self.assertEqual(allowed["normalized_args"]["citation_age_exponent"], 2.0)
         self.assertFalse(rejected["allowed"])
         self.assertIn("scoring", rejected["rejection_reason"])
+
+        # The tool schema is not strict: a stage that is not one, and a number
+        # that is not finite, are refused here rather than at approval or not
+        # at all.
+        for odd in ({"stage": "everything"}, {"stage": ["construct"]}, {"survey_count": "nan"}):
+            refused = validate_pipeline_rerun_request(
+                {"topic": "retrieval augmented generation", "reason": "test", **odd},
+                repo_root=Path("."),
+                allow_pipeline_rerun=True,
+            )
+            self.assertFalse(refused["allowed"], odd)
 
     def test_graph_rerun_guardrail_preserves_and_rejects_forbidden_fields(self) -> None:
         graph = build_workspace_agent_graph(
