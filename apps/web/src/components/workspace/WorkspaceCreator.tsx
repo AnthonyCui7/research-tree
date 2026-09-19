@@ -633,6 +633,11 @@ function BuildBody({ run }: { run: PipelineRun }) {
           style={{ width: `${progress.percent}%` }}
         />
       </div>
+      {run.status === "queued" ? (
+        <p className="mt-3 mb-0 text-xs leading-[1.5] text-text-secondary">
+          Waiting for a free worker. It starts when the build ahead of it finishes.
+        </p>
+      ) : null}
       <ol className="m-0 mt-[22px] flex list-none flex-col gap-[11px] p-0">
         {progress.stages.map((stage) => (
           <li className="flex items-center gap-[11px]" key={stage.id}>

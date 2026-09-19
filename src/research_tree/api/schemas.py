@@ -196,6 +196,7 @@ class PipelineRunView(BaseModel):
     warnings: list[str] = []
     error: str | None = None
     created_at: str | None = None
+    started_at: str | None = None
     updated_at: str | None = None
     completed_at: str | None = None
 

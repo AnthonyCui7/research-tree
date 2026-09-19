@@ -104,7 +104,10 @@ function percentComplete(run: PipelineRun, stagesDone: number, elapsedMs: number
  * show a bar. The tick is what animates the clock; it stops with the run.
  */
 export function useBuildProgress(run: PipelineRun): BuildProgress {
-  const startedAt = Date.parse(run.created_at);
+  // The clock runs from when a worker picked the build up. A build waiting in
+  // the queue has not started, and a bar that filled while it waited had
+  // nothing left to show once the work began.
+  const startedAt = run.status === "queued" ? Number.NaN : Date.parse(run.started_at ?? run.created_at);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {

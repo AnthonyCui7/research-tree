@@ -107,7 +107,7 @@ function BuildingCaption({ run, selected }: { run: PipelineRun; selected: boolea
           selected ? "text-text-secondary" : "text-text-muted",
         )}
       >
-        Building{progress.currentLabel ? ` · ${lowerFirst(progress.currentLabel)}…` : "…"}
+        {buildingLabel(run, progress.currentLabel)}
       </span>
       <ProgressBar percent={progress.percent} />
     </>
@@ -132,13 +132,17 @@ function BuildPlaceholderRow({ run, onResume }: { run: PipelineRun; onResume: ()
           failed ? "text-error" : "text-text-muted",
         )}
       >
-        {failed
-          ? "Build failed"
-          : `Building${progress.currentLabel ? ` · ${lowerFirst(progress.currentLabel)}…` : "…"}`}
+        {failed ? "Build failed" : buildingLabel(run, progress.currentLabel)}
       </span>
       {failed ? null : <ProgressBar percent={progress.percent} />}
     </button>
   );
+}
+
+/** A build in the queue has not started, and says so rather than "Building". */
+function buildingLabel(run: PipelineRun, currentLabel: string | null): string {
+  if (run.status === "queued") return "Waiting for a free worker…";
+  return `Building${currentLabel ? ` · ${lowerFirst(currentLabel)}` : ""}…`;
 }
 
 function ProgressBar({ percent }: { percent: number }) {

@@ -134,6 +134,8 @@ export type PipelineRun = {
   warnings: string[];
   error: string | null;
   created_at: string;
+  /** When a worker picked the build up; absent while it waits in the queue. */
+  started_at?: string | null;
   updated_at: string;
 };
 

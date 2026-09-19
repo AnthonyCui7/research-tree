@@ -331,7 +331,10 @@ class WorkspacePipelineService:
             )
             return
         run["status"] = "running"
-        run["updated_at"] = _now()
+        # When the work began, as opposed to when it was asked for: a build can
+        # wait in the queue behind others, and the reader's progress clock
+        # should not run while nothing is happening.
+        run["started_at"] = run["updated_at"] = _now()
         self.repository.save_pipeline_run(run)
         heartbeat = _Heartbeat.start(self.repository, run_id)
         try:
