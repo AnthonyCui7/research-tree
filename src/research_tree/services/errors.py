@@ -114,6 +114,13 @@ class ProviderUnreachableError(WorkspaceServiceError):
     error_code = "provider_unreachable"
 
 
+class StoredKeyUnreadableError(WorkspaceServiceError):
+    """The account has a saved key and it could not be opened."""
+
+    status_code = 503
+    error_code = "stored_key_unreadable"
+
+
 class ProviderRefusedError(WorkspaceServiceError):
     """OpenAI refused the account's own key, credit, limit or model access."""
 
@@ -144,6 +151,7 @@ PUBLIC_ERROR_CODES = {
     "byok_unavailable",
     "provider_unreachable",
     "provider_refused",
+    "stored_key_unreadable",
     "service_unavailable",
 }
 

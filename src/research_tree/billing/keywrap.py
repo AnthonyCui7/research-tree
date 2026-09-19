@@ -17,7 +17,9 @@ import base64
 import binascii
 import hashlib
 import os
+import time
 from functools import lru_cache
+from threading import Lock
 from typing import Any, Protocol
 
 KEY_ENCRYPTION_KEY_ENV = "RESEARCH_TREE_KEY_ENCRYPTION_KEY"
@@ -25,6 +27,16 @@ KEY_VAULT_URL_ENV = "RESEARCH_TREE_KEY_VAULT_URL"
 KEY_VAULT_KEK_NAME_ENV = "RESEARCH_TREE_KEY_VAULT_KEK_NAME"
 DEFAULT_KEK_NAME = "byok-kek"
 LOCAL_KEK_PREFIX = "local:"
+# How long the vault's answer to one unwrap is kept in this process, and how
+# many answers. Every model call opens the account's key, a build or an
+# annotation job makes hundreds, and each unwrap is a request to a vault that
+# meters them and can fail. What a wrapped data key unwraps to never changes,
+# and the key's row is still read from the database on every call, so a key
+# that was removed stops being used at once: nothing looks its data key up
+# again. A data key opens one row and is no more to hold than the API key it
+# seals, which is already in memory for the length of the call.
+UNWRAPPED_KEY_TTL_SECONDS = 5 * 60
+UNWRAPPED_KEY_LIMIT = 512
 
 
 class KeyUnavailableError(RuntimeError):
@@ -101,6 +113,8 @@ class KeyVaultKeyWrapper:
         self._credential = credential
         self._kek_id: str | None = None
         self._clients: dict[str, Any] = {}
+        self._unwrapped: dict[tuple[str, bytes], tuple[float, bytes]] = {}
+        self._unwrapped_lock = Lock()
 
     def _get_credential(self) -> Any:
         if self._credential is None:
@@ -136,10 +150,25 @@ class KeyVaultKeyWrapper:
     def unwrap(self, wrapped: bytes, kek_id: str) -> bytes:
         if not self.can_unwrap(kek_id):
             raise KeyUnavailableError(f"{kek_id} is not a version of {self.key_name} in this vault")
+        now = time.monotonic()
+        with self._unwrapped_lock:
+            expires_at, data_key = self._unwrapped.get((kek_id, wrapped), (0.0, b""))
+        if expires_at > now:
+            return data_key
         from azure.keyvault.keys.crypto import KeyWrapAlgorithm
 
         result = self._client(kek_id).unwrap_key(KeyWrapAlgorithm.rsa_oaep_256, wrapped)
-        return bytes(result.key)
+        data_key = bytes(result.key)
+        with self._unwrapped_lock:
+            if len(self._unwrapped) >= UNWRAPPED_KEY_LIMIT:
+                self._unwrapped = {
+                    key: kept for key, kept in self._unwrapped.items() if kept[0] > now
+                }
+            if len(self._unwrapped) >= UNWRAPPED_KEY_LIMIT:
+                # Insertion order is age order: the first entry is the oldest.
+                del self._unwrapped[next(iter(self._unwrapped))]
+            self._unwrapped[(kek_id, wrapped)] = (now + UNWRAPPED_KEY_TTL_SECONDS, data_key)
+        return data_key
 
     def can_unwrap(self, kek_id: str) -> bool:
         return kek_id.startswith(f"{self.vault_url}/keys/{self.key_name}/")

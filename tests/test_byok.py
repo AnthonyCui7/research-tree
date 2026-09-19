@@ -426,6 +426,59 @@ def test_saving_a_key_checks_it_stores_it_sealed_and_never_echoes_it(
         assert active.scalar() == 0
 
 
+def test_a_saved_key_that_cannot_be_opened_is_an_error_not_an_absence(
+    accounts_client, repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The account chose its own key; that choice holds when the key cannot be read."""
+
+    from research_tree.billing.allowances import grant_allowance
+    from research_tree.services.errors import StoredKeyUnreadableError
+
+    _postgres_only(repository)
+    monkeypatch.setenv("RESEARCH_TREE_KEY_ENCRYPTION_KEY", _kek())
+    forget_key_wrapper()
+    user_id = _signed_in_user_id(accounts_client, "vault@example.com")
+    monkeypatch.setattr("research_tree.billing.user_keys.validate_openai_key", lambda key: None)
+    assert accounts_client.put("/account/api-keys", json={"api_key": SECRET}).status_code == 200
+    grant_allowance(email="vault@example.com", limit_usd=Decimal("5"))
+    monkeypatch.setenv("OPENAI_API_KEY", PLATFORM_KEY)
+
+    # The key-encryption key changes underneath the row, as a vault outage or
+    # a lost KEK would look from here.
+    monkeypatch.setenv("RESEARCH_TREE_KEY_ENCRYPTION_KEY", _kek())
+    forget_key_wrapper()
+    with bind_principal(Principal(user_id=user_id, email="vault@example.com", is_verified=True)):
+        with pytest.raises(StoredKeyUnreadableError) as refused:
+            credentials.openai_api_key()
+        assert current_binding().credential_source is None
+    assert SECRET not in refused.value.message
+    review = accounts_client.post("/workspaces/topic-review", json={"topic": "prompting"})
+    assert review.status_code == 503
+    assert review.json()["error_code"] == "stored_key_unreadable"
+
+
+def test_the_vault_is_asked_once_for_each_data_key() -> None:
+    from types import SimpleNamespace
+
+    from research_tree.billing.keywrap import KeyVaultKeyWrapper
+
+    asked: list[bytes] = []
+
+    class Vault:
+        def unwrap_key(self, _algorithm: object, wrapped: bytes) -> SimpleNamespace:
+            asked.append(wrapped)
+            return SimpleNamespace(key=b"k" * 32)
+
+    wrapper = KeyVaultKeyWrapper("https://vault.example.net", "byok-kek", credential=object())
+    kek_id = "https://vault.example.net/keys/byok-kek/version1"
+    wrapper._clients[kek_id] = Vault()
+
+    for _ in range(50):
+        assert wrapper.unwrap(b"wrapped-one", kek_id) == b"k" * 32
+    wrapper.unwrap(b"wrapped-two", kek_id)
+    assert asked == [b"wrapped-one", b"wrapped-two"]
+
+
 def test_saving_a_key_needs_a_key_encryption_key(accounts_client, repository) -> None:
     _postgres_only(repository)
     _signed_in_user_id(accounts_client, "nokek@example.com")

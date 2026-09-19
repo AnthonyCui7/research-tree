@@ -28,6 +28,7 @@ from research_tree.services.errors import (
     ApiKeyInvalidError,
     ByokUnavailableError,
     ProviderUnreachableError,
+    StoredKeyUnreadableError,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -40,6 +41,10 @@ MAX_KEY_LENGTH = 400
 SAVING_DISABLED_MESSAGE = "Saving keys is not enabled on this server."
 KEY_REJECTED_MESSAGE = "OpenAI did not accept that key."
 KEY_CHECK_FAILED_MESSAGE = "We could not check that key with OpenAI. Try again."
+KEY_UNREADABLE_MESSAGE = (
+    "Your saved OpenAI key could not be read just now. Try again in a moment. "
+    "If it keeps happening, save the key again under API keys."
+)
 
 
 @dataclass(frozen=True)
@@ -165,7 +170,12 @@ def store_user_key(user_id: str, api_key: str, *, wrapper: KeyWrapper | None = N
 
 
 def load_user_key(user_id: str, *, wrapper: KeyWrapper | None = None) -> str | None:
-    """The account's current key in the clear, or None when it has none or it cannot be opened."""
+    """The account's current key in the clear, or None when it has none.
+
+    A key that is there and cannot be opened is an error, not an absence: the
+    account chose whose key its work runs on, and that choice is not remade
+    for it because a vault did not answer.
+    """
 
     with get_engine().begin() as conn:
         row = (
@@ -193,8 +203,8 @@ def load_user_key(user_id: str, *, wrapper: KeyWrapper | None = None) -> str | N
         )
     wrapper = wrapper or key_wrapper_from_env()
     if wrapper is None:
-        logger.warning("account %s has a stored key but no key-encryption key is configured", user_id)
-        return None
+        logger.error("account %s has a stored key but no key-encryption key is configured", user_id)
+        raise StoredKeyUnreadableError(KEY_UNREADABLE_MESSAGE)
     sealed = SealedSecret(
         ciphertext=bytes(row["ciphertext"]),
         nonce=bytes(row["nonce"]),
@@ -203,14 +213,14 @@ def load_user_key(user_id: str, *, wrapper: KeyWrapper | None = None) -> str | N
     )
     try:
         return open_secret(wrapper, sealed, user_id=user_id, key_id=str(row["id"]), provider=PROVIDER)
-    except Exception as error:  # noqa: BLE001 - a missing KEK or a tampered row, never the key itself
+    except Exception as error:  # noqa: BLE001 - the vault, a missing KEK or a changed row, never the key itself
         logger.error(
             "stored key %s for account %s could not be opened: %s",
             row["id"],
             user_id,
             type(error).__name__,
         )
-        return None
+        raise StoredKeyUnreadableError(KEY_UNREADABLE_MESSAGE) from None
 
 
 def delete_user_key(user_id: str) -> bool:
