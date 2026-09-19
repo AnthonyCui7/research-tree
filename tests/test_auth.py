@@ -89,6 +89,45 @@ def test_cross_site_writes_are_rejected(client: TestClient) -> None:
     assert response.json()["error_code"] == "csrf_origin_rejected"
 
 
+def test_a_read_sent_from_another_site_is_rejected(client: TestClient) -> None:
+    """Reads behind sign-in answer to this site's own pages, like writes."""
+
+    navigated = client.get(
+        "/workspaces/workspace-1/paper-annotations?paper_id=p1&refresh=true",
+        headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"},
+    )
+    embedded = client.get("/workspaces", headers={"Sec-Fetch-Site": "same-site"})
+
+    assert navigated.status_code == 403
+    assert navigated.json()["error_code"] == "csrf_origin_rejected"
+    assert embedded.status_code == 403
+
+
+def test_another_site_may_still_send_a_reader_to_the_front_door(client: TestClient) -> None:
+    arriving = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+
+    assert client.get("/health", headers=arriving).status_code == 200
+    # No Google client is configured here, so the route is absent; what matters
+    # is that the origin check let the request through to be routed at all.
+    assert client.get("/auth/google/callback?code=x", headers=arriving).status_code != 403
+    assert client.get("/workspaces", headers={"Sec-Fetch-Site": "same-origin"}).status_code == 200
+
+
+def test_a_separately_hosted_frontend_is_let_in_by_its_origin(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RESEARCH_TREE_ALLOWED_ORIGINS", "https://app.example.com")
+    elsewhere = {"Sec-Fetch-Site": "cross-site", "Origin": "https://app.example.com"}
+    stranger = {"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example.com"}
+
+    assert client.get("/workspaces", headers=elsewhere).status_code == 200
+    assert client.get("/workspaces", headers=stranger).status_code == 403
+    assert (
+        client.post("/workspaces/topic-review", json={"topic": " "}, headers=stranger).status_code
+        == 403
+    )
+
+
 def test_browser_hardening_headers_are_present(client: TestClient) -> None:
     response = client.get("/health")
 

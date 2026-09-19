@@ -87,7 +87,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     ) -> User:
         # Counted here rather than at the route, which runs before the body is
         # validated: a mistyped address used to spend the hour's registrations.
-        count_registration(request)
+        await count_registration(request)
         ensure_email_allowed(user_create.email)
         return await super().create(user_create, safe=safe, request=request)
 

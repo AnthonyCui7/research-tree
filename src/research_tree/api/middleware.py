@@ -1,4 +1,4 @@
-"""Pure ASGI middlewares: browser hardening, same-origin writes, a body cap.
+"""Pure ASGI middlewares: browser hardening, same-origin requests, a body cap.
 
 Written against the ASGI interface rather than Starlette's BaseHTTPMiddleware
 so streaming responses (the two SSE endpoints) pass through untouched.
@@ -119,11 +119,14 @@ class SecurityHeadersMiddleware:
 
 
 class SameOriginMiddleware:
-    """Refuse state-changing requests that a browser made from another site.
+    """Refuse requests a browser made from another site.
 
     Cookies travel with cross-site requests; this is the check that makes a
-    session cookie safe to rely on. `Sec-Fetch-Site` is authoritative when a
-    browser sends it; otherwise an `Origin` header has to match the site.
+    session cookie safe to rely on. Every write is checked, and so is every
+    read outside the few paths another site may legitimately send a reader
+    to, so that nothing behind sign-in depends on a route being read-only.
+    `Sec-Fetch-Site` says where a request came from when a browser sends it;
+    otherwise an `Origin` header has to match the site.
     Requests with neither header (curl, the test client, server-to-server)
     carry no ambient credentials and pass.
     """
@@ -132,7 +135,10 @@ class SameOriginMiddleware:
         self.app = app
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and scope["method"] in STATE_CHANGING_METHODS:
+        if scope["type"] == "http" and (
+            scope["method"] in STATE_CHANGING_METHODS
+            or not _open_to_other_sites(scope.get("path") or "/")
+        ):
             headers = {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in scope["headers"]}
             if not _same_origin(headers, scope):
                 await _json_response(
@@ -190,14 +196,27 @@ class _BodyTooLarge(Exception):
     pass
 
 
+def _open_to_other_sites(path: str) -> bool:
+    """Where a link on another site, or Google's sign-in, may land a reader."""
+
+    return (
+        path in {"/", "/favicon.png", "/health"}
+        or path.startswith("/assets/")
+        or path.endswith("/auth/google/callback")
+    )
+
+
 def _same_origin(headers: dict[str, str], scope: dict[str, Any]) -> bool:
     fetch_site = headers.get("sec-fetch-site")
-    if fetch_site:
-        return fetch_site in {"same-origin", "none"}
-    origin = headers.get("origin")
-    if not origin:
+    if fetch_site in {"same-origin", "none"}:
         return True
-    return origin.rstrip("/") in _acceptable_origins(headers, scope)
+    # From elsewhere, or from a client that does not say. A separately hosted
+    # frontend is elsewhere and names itself in `Origin`; a navigation or an
+    # embed from another site names nothing.
+    origin = headers.get("origin")
+    if origin:
+        return origin.rstrip("/") in _acceptable_origins(headers, scope)
+    return fetch_site is None
 
 
 def _acceptable_origins(headers: dict[str, str], scope: dict[str, Any]) -> set[str]:

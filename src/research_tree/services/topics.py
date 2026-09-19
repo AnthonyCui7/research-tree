@@ -10,6 +10,7 @@ import time
 from urllib.parse import urlparse
 from typing import Any
 
+from research_tree.auth.throttle import count_account_action
 from research_tree.credentials import openai_api_key
 from research_tree.llm import DEFAULT_MODEL, LlmRequestError, call_responses_api
 from research_tree.redis_client import get_redis
@@ -46,6 +47,7 @@ class TopicReviewService:
         raw_topic = " ".join(topic.split()).strip()
         if not raw_topic:
             return _result(raw_topic, raw_topic, False, "Enter a research topic.")
+        count_account_action("topic_review")
         # Resolved before any lookup so an account with nothing to spend hears
         # so first, without a Semantic Scholar request on its behalf.
         api_key = openai_api_key()

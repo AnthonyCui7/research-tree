@@ -39,7 +39,9 @@ from research_tree.artifact_store import ArtifactStore, FilesystemArtifactStore
 from research_tree.principal import LOCAL_USER_ID
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.repository import (
+    MAX_ACTIVE_BUILDS_PER_ACCOUNT,
     StaleVersionError,
+    TooManyActiveBuildsError,
     WorkspaceRepositoryBase,
     _actor_fields,
     _now,
@@ -756,6 +758,7 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
             ).first()
             if building is not None:
                 raise ValueError("a workspace for this topic is already being built.")
+            self._refuse_past_the_active_build_limit(conn)
             self._upsert_pipeline_run(conn, pipeline_run)
 
     def reserve_pipeline_rerun(self, pipeline_run: Mapping[str, Any]) -> None:
@@ -773,7 +776,26 @@ class PostgresWorkspaceRepository(WorkspaceRepositoryBase):
             ).first()
             if active is not None:
                 raise ValueError("a pipeline run for this workspace is already active.")
+            self._refuse_past_the_active_build_limit(conn)
             self._upsert_pipeline_run(conn, pipeline_run)
+
+    def _refuse_past_the_active_build_limit(self, conn: Connection) -> None:
+        # Serialised per account, and always the last lock a reservation
+        # takes: builds of different topics hold different topic locks, so
+        # without this they would each count the others as not yet there.
+        conn.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"builds:{self.owner_id}"},
+        )
+        active = conn.execute(
+            text(
+                "SELECT count(*) FROM pipeline_runs "
+                "WHERE owner_id = :owner AND status IN ('queued', 'running')"
+            ),
+            self._params(),
+        ).scalar_one()
+        if active >= MAX_ACTIVE_BUILDS_PER_ACCOUNT:
+            raise TooManyActiveBuildsError()
 
     def get_pipeline_run(self, run_id: str) -> dict[str, Any]:
         with self._transaction() as conn:

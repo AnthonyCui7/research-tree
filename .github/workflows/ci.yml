@@ -120,16 +120,24 @@ jobs:
             sleep 10
           done
           echo "migration $execution did not finish in time"; exit 1
+      # A replica being replaced is told to stop and then given this long to
+      # finish what it has in hand before it is killed: two minutes covers an
+      # assistant turn, and ten (the platform's ceiling) covers most builds.
+      # The server and the worker both stop taking new work at the signal. The
+      # server's window is kept short because open event streams hold the old
+      # replica, and its database connections, until the window ends.
       - name: Roll out the API
         run: |
           az containerapp update -n api -g ${{ vars.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.IMAGE }}:${{ github.sha }} --output none
+            --image ${{ env.IMAGE }}:${{ github.sha }} \
+            --termination-grace-period 120 --output none
       # The worker last: it consumes what the API just started enqueueing,
       # and task names are stable across versions.
       - name: Roll out the worker
         run: |
           az containerapp update -n worker -g ${{ vars.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.IMAGE }}:${{ github.sha }} --output none
+            --image ${{ env.IMAGE }}:${{ github.sha }} \
+            --termination-grace-period 600 --output none
       # The registry's Basic tier includes 10 GiB and every push leaves the old
       # build cache behind untagged. Keep the newest three images (this one and
       # two rollback targets) plus the current cache; needs AcrDelete.

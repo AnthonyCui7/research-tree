@@ -30,6 +30,7 @@ from research_tree.annotation import (
 from research_tree.annotation.config import annotation_model, retrieval_mode
 from research_tree.annotation.pipeline import PaperTooLongError
 from research_tree.artifact_store import ArtifactStore, default_artifact_store
+from research_tree.auth.throttle import count_account_action
 from research_tree.principal import bind_principal
 from research_tree.retrieval.full_text import download_open_access_pdf
 from research_tree.services.errors import (
@@ -148,6 +149,7 @@ class PaperAnnotationService:
 
         redis = self._redis_client()
         if redis is None:
+            count_account_action("annotation_job")
             return self._generate_and_store(
                 safe_workspace_id, safe_paper_id, card, pdf_bytes, pdf_sha256, requested_mode
             )
@@ -293,6 +295,7 @@ class PaperAnnotationService:
         existing = _active_job(redis, active_key)
         if existing is not None:
             return _job_view(existing)
+        count_account_action("annotation_job")
         now = _now()
         job = {
             "job_id": f"annotation_{uuid4().hex}",

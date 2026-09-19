@@ -1,10 +1,10 @@
-"""Fixed-window limits on the two unauthenticated routes, and on key checks.
+"""Fixed-window limits on sign-in, registration, key checks and costly actions.
 
-In process, because one replica serves the site: a limit that resets on restart
-is still a limit an attacker cannot lean on for long. Sign-in is counted at the
+The counts live in Redis when it is configured, so they hold across replicas
+and outlast a deploy, and in this process otherwise. Sign-in is counted at the
 route, where every attempt is one guess. Registration is counted from the user
 manager instead, which is the first point a request has a real email and
-password behind it — counting it at the route charged people for typing their
+password behind it: counting it at the route charged people for typing their
 address wrong.
 
 Sign-in is counted per address, and per address and email together, never per
@@ -18,12 +18,16 @@ ten characters at least, off the common list, behind argon2.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import time
 from threading import Lock
+from typing import Any
 
 from fastapi import Request
 
+from research_tree.principal import current_principal
 from research_tree.services.errors import RateLimitedError
 
 logger = logging.getLogger("uvicorn.error")
@@ -38,6 +42,25 @@ REGISTRATIONS_PER_IP = (20, 60 * 60)
 # makes the route a way to test keys from this server's address. A person
 # saves a key a few times in a lifetime; a script trying a list is stopped.
 KEY_CHECKS_PER_ACCOUNT = (20, 60 * 60)
+# What one account may ask of the parts every account shares: the Semantic
+# Scholar lane, the worker's queue, the threads assistant turns run on. Each
+# is set at a few times what a person working flat out gets through in an
+# hour, so it is only ever a script that meets one.
+ACTIONS_PER_ACCOUNT = {
+    "topic_review": (60, 60 * 60, "Too many topics reviewed this hour. Try again later."),
+    "build": (12, 60 * 60, "Too many builds started this hour. Try again later."),
+    "assistant_turn": (120, 60 * 60, "Too many messages to the assistant this hour. Try again later."),
+    "annotation_job": (40, 60 * 60, "Too many papers sent for annotation this hour. Try again later."),
+}
+# How long the shared counts stay out of play after Redis refuses one call.
+REDIS_RETRY_SECONDS = 30.0
+
+# Counts one hit and starts the window on the first, atomically.
+_COUNT_HIT_LUA = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return count
+"""
 
 # One entry per email or address seen inside its window. Entries expire, so the
 # steady-state size is the request rate times the window: reaching this needs
@@ -58,11 +81,18 @@ class _FixedWindowLimiter:
     distinct attempts inside one window is the attack rather than the traffic.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, redis_client: Any = None) -> None:
         self._hits: dict[str, tuple[int, float, int]] = {}
         self._lock = Lock()
+        self._redis_client = redis_client
+        self._redis_resolved = redis_client is not None
+        self._redis_unavailable_until = 0.0
+        self._count_hit: Any = None
 
     def hit(self, key: str, limit: int, window_seconds: int) -> bool:
+        shared = self._shared_count(key, window_seconds)
+        if shared is not None:
+            return shared <= limit
         now = time.monotonic()
         with self._lock:
             count, window_start, _ = self._hits.get(key, (0, now, window_seconds))
@@ -83,6 +113,32 @@ class _FixedWindowLimiter:
                     return False
             self._hits[key] = (count, window_start, window_seconds)
         return count <= limit
+
+    def _shared_count(self, key: str, window_seconds: int) -> int | None:
+        """The count across every process, or None when Redis is not in play.
+
+        A Redis that fails falls back to this process's own table rather than
+        refusing sign-ins or waving everything through. The stored key is a
+        digest, so the store holds no addresses and no emails.
+        """
+
+        if not self._redis_resolved:
+            from research_tree.redis_client import get_redis
+
+            self._redis_client = get_redis()
+            self._redis_resolved = True
+        if self._redis_client is None or time.monotonic() < self._redis_unavailable_until:
+            return None
+        try:
+            if self._count_hit is None:
+                self._count_hit = self._redis_client.register_script(_COUNT_HIT_LUA)
+            digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+            return int(self._count_hit(keys=[f"throttle:{digest}"], args=[window_seconds]))
+        except Exception as error:  # noqa: BLE001 - count locally rather than not at all
+            self._count_hit = None
+            self._redis_unavailable_until = time.monotonic() + REDIS_RETRY_SECONDS
+            logger.warning("shared throttle unavailable (%s); counting in this process.", error)
+            return None
 
     def reset(self) -> None:
         with self._lock:
@@ -112,22 +168,28 @@ async def throttle_login(request: Request) -> None:
     form = await request.form()
     email = str(form.get("username") or "").strip().casefold()
     ip = _client_ip(request)
+    # Off the event loop: with Redis behind it a count is a network call.
     ok_email = (
-        _limiter.hit(f"login:ip:{ip}:email:{email}", *LOGIN_ATTEMPTS_PER_ADDRESS_AND_EMAIL)
+        await asyncio.to_thread(
+            _limiter.hit, f"login:ip:{ip}:email:{email}", *LOGIN_ATTEMPTS_PER_ADDRESS_AND_EMAIL
+        )
         if email
         else True
     )
-    ok_ip = _limiter.hit(f"login:ip:{ip}", *LOGIN_ATTEMPTS_PER_ADDRESS)
+    ok_ip = await asyncio.to_thread(_limiter.hit, f"login:ip:{ip}", *LOGIN_ATTEMPTS_PER_ADDRESS)
     if not (ok_email and ok_ip):
         raise RateLimitedError("Too many sign-in attempts. Wait a few minutes and try again.")
 
 
-def count_registration(request: Request | None) -> None:
+async def count_registration(request: Request | None) -> None:
     """Count one real attempt to create an account."""
 
     if request is None:
         return
-    if not _limiter.hit(f"register:ip:{_client_ip(request)}", *REGISTRATIONS_PER_IP):
+    allowed = await asyncio.to_thread(
+        _limiter.hit, f"register:ip:{_client_ip(request)}", *REGISTRATIONS_PER_IP
+    )
+    if not allowed:
         raise RateLimitedError("Too many accounts created from here. Try again later.")
 
 
@@ -136,3 +198,18 @@ def count_key_check(user_id: str) -> None:
 
     if not _limiter.hit(f"key-check:user:{user_id}", *KEY_CHECKS_PER_ACCOUNT):
         raise RateLimitedError("Too many keys checked recently. Wait an hour and try again.")
+
+
+def count_account_action(action: str) -> None:
+    """Count one costly action against the account making it.
+
+    The local profile is one person on their own machine and is not counted.
+    Called from request handlers that already run off the event loop.
+    """
+
+    principal = current_principal()
+    if principal is None or principal.is_local:
+        return
+    limit, window_seconds, refusal = ACTIONS_PER_ACCOUNT[action]
+    if not _limiter.hit(f"{action}:user:{principal.user_id}", limit, window_seconds):
+        raise RateLimitedError(refusal)

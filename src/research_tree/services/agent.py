@@ -6,7 +6,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from research_tree.agents.workspace.graph import build_workspace_agent_graph
-from research_tree.llm import AGENT_MODELS, DEFAULT_MODEL
+from research_tree.auth.throttle import count_account_action
+from research_tree.llm import AGENT_MODELS, DEFAULT_MODEL, LlmRequestError
 from research_tree.agents.workspace.run import ProgressCallback, run_workspace_agent
 from research_tree.services.errors import (
     InvalidPayloadError,
@@ -23,8 +24,10 @@ logger = logging.getLogger("uvicorn.error")
 
 # Threads with a turn in flight, in this process. A second turn on the same
 # thread would run from the same checkpoint and the last one to finish would
-# overwrite the other's state, so it is refused instead. One replica serves
-# the site, which is what makes a process-wide set enough.
+# overwrite the other's state, so it is refused instead. The set is this
+# replica's alone. Between replicas the worst two racing turns can do is lose
+# one of their own conversation checkpoints: a workspace only changes through
+# a review, and a review is checked against the version it was drafted from.
 _active_threads: set[str] = set()
 _active_threads_lock = Lock()
 BUSY_THREAD_MESSAGE = "The assistant is still answering the previous message. Wait for it to finish."
@@ -127,6 +130,7 @@ class WorkspaceAgentService:
         safe_workspace_id = self.ensure_agent_available(workspace_id)
         active_thread_id = self.thread_id(safe_workspace_id, thread_id)
 
+        count_account_action("assistant_turn")
         with _active_threads_lock:
             if active_thread_id in _active_threads:
                 raise WorkspaceBusyError(BUSY_THREAD_MESSAGE)
@@ -151,11 +155,18 @@ class WorkspaceAgentService:
             # limited — already says what to do about it. Swallowing it into
             # "try again" told people to retry something that cannot succeed.
             raise
-        except Exception:  # API callers get a structured agent failure.
+        except Exception as error:  # API callers get a structured agent failure.
             # The traceback goes to the log, not to the client: exception text
             # from anywhere in the graph can carry internal paths and payloads.
+            # Whose failure it was is worth saying, though: a provider that
+            # did not answer is not something wrong with the workspace.
             logger.exception(
                 "workspace assistant failed workspace_id=%s", safe_workspace_id
+            )
+            reason = (
+                "OpenAI did not complete a request the assistant depends on. Try again in a moment."
+                if isinstance(error, LlmRequestError)
+                else "The assistant could not complete that request. Try again."
             )
             return {
                 "workspace_id": safe_workspace_id,
@@ -164,7 +175,7 @@ class WorkspaceAgentService:
                 # conversation after a failed turn.
                 "thread_id": active_thread_id,
                 "final_response": "Assistant failed before completing the request.",
-                "errors": ["The assistant could not complete that request. Try again."],
+                "errors": [reason],
                 "warnings": [],
             }
         finally:

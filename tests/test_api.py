@@ -876,6 +876,29 @@ def test_failed_pipeline_does_not_publish_a_partial_workspace(repository) -> Non
         repository.get_current_workspace(run["workspace_id"])
 
 
+def test_an_account_may_only_hold_so_many_builds_at_once(repository) -> None:
+    from research_tree.services.errors import RateLimitedError
+    from research_tree.workspace.repository import MAX_ACTIVE_BUILDS_PER_ACCOUNT
+
+    # Nothing executes the runs, so each one stays queued.
+    service = WorkspacePipelineService(
+        repository, repo_root=_temp_dir(), dispatch=lambda owner_id, run_id, execute: None
+    )
+    for number in range(MAX_ACTIVE_BUILDS_PER_ACCOUNT):
+        _start_approved(service, repository, f"Held Topic {number}")
+
+    with pytest.raises(RateLimitedError) as refused:
+        _start_approved(service, repository, "One Topic Too Many")
+    assert "builds in progress" in refused.value.message
+    # The refused build kept neither a run nor the name it had claimed.
+    assert len(repository.list_active_pipeline_runs()) == MAX_ACTIVE_BUILDS_PER_ACCOUNT
+
+    # A finished build frees its place.
+    held = repository.list_active_pipeline_runs()[0]
+    repository.cancel_pipeline_runs(held["workspace_id"])
+    _start_approved(service, repository, "One Topic Too Many")
+
+
 def test_workspace_pipeline_always_uses_luna_for_construction(repository) -> None:
     service = WorkspacePipelineService(
         repository,

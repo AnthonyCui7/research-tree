@@ -6,7 +6,9 @@ result backend is needed. The worker runs the same image as the API with
     celery -A research_tree.tasks worker -B --concurrency=2
 
 where `-B` embeds the beat scheduler (one worker replica, so one beat). Beat
-keeps the free-plan database from pausing and takes the weekly backup.
+keeps the free-plan database from pausing and takes the weekly backup. A
+second replica adds a second build at a time and should run without `-B`, or
+the backup is taken twice.
 
 Azure Managed Redis shards keys by slot and refuses multi-key commands
 across slots; the `{research-tree}` hash tag on every kombu key keeps the
@@ -16,6 +18,7 @@ queue, its unacked set, and its index together.
 from __future__ import annotations
 
 import logging
+import socket
 import ssl
 import sys
 from functools import lru_cache
@@ -101,10 +104,12 @@ def _repository():
     return build_workspace_repository()
 
 
-# One build at a time per worker: two builds' models do not fit in the
-# container together. A build that finds the slot taken waits on the queue,
-# touching its run so the queued-run reclaimer knows it is alive.
-BUILD_SLOT_KEY = "pipeline:build_slot"
+# One build at a time per worker container: two builds' models do not fit in
+# one together. The slot is named for the container, so a second worker
+# replica is a second build at a time rather than a second waiter on the same
+# slot. A build that finds the slot taken waits on the queue, touching its run
+# so the queued-run reclaimer knows it is alive.
+BUILD_SLOT_KEY = f"pipeline:build_slot:{socket.gethostname()}"
 BUILD_SLOT_TTL_SECONDS = 4000
 BUILD_SLOT_RETRY_SECONDS = 30
 

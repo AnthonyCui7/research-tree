@@ -1712,6 +1712,8 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
                         and normalized_topic_key(str(item.get("topic") or "")) == topic_key
                     ):
                         raise ValueError("a workspace for this topic is already being built.")
+            if len(self.list_active_pipeline_runs()) >= MAX_ACTIVE_BUILDS_PER_ACCOUNT:
+                raise TooManyActiveBuildsError()
             self.save_pipeline_run(pipeline_run)
 
     def reserve_pipeline_rerun(self, pipeline_run: Mapping[str, Any]) -> None:
@@ -1732,6 +1734,8 @@ class LocalJsonWorkspaceRepository(WorkspaceRepositoryBase):
                         and item.get("status") in {"queued", "running"}
                     ):
                         raise ValueError("a pipeline run for this workspace is already active.")
+            if len(self.list_active_pipeline_runs()) >= MAX_ACTIVE_BUILDS_PER_ACCOUNT:
+                raise TooManyActiveBuildsError()
             self.save_pipeline_run(pipeline_run)
 
     def get_pipeline_run(self, run_id: str) -> dict[str, Any]:
@@ -2192,6 +2196,20 @@ def _safe_version_hash(version_hash: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", normalized):
         raise ValueError("version_hash must be a 64-character SHA-256 hash.")
     return normalized
+
+
+# Builds one account may have queued or running at once. A worker runs one
+# build at a time for everyone, so an account that queued a dozen would hold
+# it for hours while every other account's build waited behind them.
+MAX_ACTIVE_BUILDS_PER_ACCOUNT = 3
+
+
+class TooManyActiveBuildsError(ValueError):
+    def __init__(self) -> None:
+        super().__init__(
+            f"You already have {MAX_ACTIVE_BUILDS_PER_ACCOUNT} builds in progress. "
+            "Wait for one to finish before starting another."
+        )
 
 
 def normalized_topic_key(value: str) -> str:

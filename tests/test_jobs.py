@@ -157,6 +157,59 @@ def test_topic_review_tokens_are_shared_through_redis(redis_env, repository: Wor
     assert service.consume_approved_topic(token=token, topic="Prompting") is None
 
 
+# ---- limits counted across processes ------------------------------------------
+
+
+def test_limits_are_counted_across_processes_and_hold_no_addresses(redis_client) -> None:
+    from research_tree.auth.throttle import _FixedWindowLimiter
+
+    api, another_replica = _FixedWindowLimiter(redis_client), _FixedWindowLimiter(redis_client)
+    key = "login:ip:203.0.113.9:email:someone@example.com"
+
+    assert api.hit(key, 2, 60)
+    assert another_replica.hit(key, 2, 60)
+    assert not api.hit(key, 2, 60)
+    stored = [name.decode("utf-8") for name in redis_client.keys("throttle:*")]
+    assert len(stored) == 1
+    assert "203.0.113.9" not in stored[0] and "someone" not in stored[0]
+    assert 0 < redis_client.ttl(stored[0]) <= 60
+
+
+def test_limits_fall_back_to_this_process_when_redis_fails() -> None:
+    from research_tree.auth.throttle import _FixedWindowLimiter
+
+    class Broken:
+        def register_script(self, script: str) -> Any:
+            raise ConnectionError("down")
+
+    limiter = _FixedWindowLimiter(Broken())
+    assert limiter.hit("key", 1, 60)
+    assert not limiter.hit("key", 1, 60)
+
+
+def test_costly_actions_are_counted_per_account_and_never_for_the_local_profile(
+    monkeypatch,
+) -> None:
+    from research_tree.auth import throttle
+    from research_tree.principal import LOCAL_PRINCIPAL, Principal, bind_principal
+    from research_tree.services.errors import RateLimitedError
+
+    throttle.reset()
+    monkeypatch.setitem(throttle.ACTIONS_PER_ACCOUNT, "topic_review", (2, 3600, "Too many."))
+    with bind_principal(LOCAL_PRINCIPAL):
+        for _ in range(5):
+            throttle.count_account_action("topic_review")
+    with bind_principal(Principal(user_id="account-a", email="a@example.com")):
+        throttle.count_account_action("topic_review")
+        throttle.count_account_action("topic_review")
+        with pytest.raises(RateLimitedError):
+            throttle.count_account_action("topic_review")
+    # Another account has its own count.
+    with bind_principal(Principal(user_id="account-b", email="b@example.com")):
+        throttle.count_account_action("topic_review")
+    throttle.reset()
+
+
 # ---- the shared Semantic Scholar lane ---------------------------------------
 
 

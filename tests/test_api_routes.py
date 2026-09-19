@@ -405,6 +405,50 @@ def _save_run(
     return run
 
 
+# ---- the threads assistant turns run on --------------------------------------
+
+
+def test_assistant_turns_are_bounded_and_shared_out_between_accounts() -> None:
+    import threading
+
+    import pytest
+
+    from research_tree.api.routes.agent import _TurnThreads
+    from research_tree.principal import Principal, bind_principal, current_principal
+    from research_tree.services.errors import RateLimitedError, ServiceUnavailableError
+
+    async def scenario() -> None:
+        threads = _TurnThreads(total=2, per_account=1)
+        release = threading.Event()
+        seen: list[str | None] = []
+
+        def turn() -> str:
+            principal = current_principal()
+            seen.append(principal.user_id if principal else None)
+            release.wait(5)
+            return "answered"
+
+        with bind_principal(Principal(user_id="account-a", email="a@example.com")):
+            first = asyncio.ensure_future(threads.run("account-a", turn))
+        await asyncio.sleep(0.05)
+        # The same account again is refused; another account still gets a thread.
+        with pytest.raises(RateLimitedError):
+            await threads.run("account-a", turn)
+        second = asyncio.ensure_future(threads.run("account-b", turn))
+        await asyncio.sleep(0.05)
+        with pytest.raises(ServiceUnavailableError):
+            await threads.run("account-c", turn)
+
+        release.set()
+        assert await first == "answered"
+        assert await second == "answered"
+        # The turn ran as the account that asked, and its place came back.
+        assert "account-a" in seen
+        assert await threads.run("account-a", lambda: "again") == "again"
+
+    asyncio.run(scenario())
+
+
 # ---- what a request body may carry ------------------------------------------
 
 

@@ -101,7 +101,11 @@ def create_app() -> FastAPI:
             "accounts live in Postgres."
         )
 
-    app = FastAPI(title="Research Tree API", version="0.1.0", lifespan=lifespan)
+    # The interactive docs are a development aid. Behind sign-in they describe
+    # every route to anyone who asks, and their page cannot run anyway: it
+    # loads its scripts from a CDN the content security policy refuses.
+    docs = {} if mode == "none" else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    app = FastAPI(title="Research Tree API", version="0.1.0", lifespan=lifespan, **docs)
 
     # The dev server proxies /api to this process, so same-origin needs nothing.
     # A separately hosted frontend sets its origins here.

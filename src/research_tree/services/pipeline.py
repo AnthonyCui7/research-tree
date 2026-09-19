@@ -13,6 +13,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from research_tree.artifact_store import ArtifactStore, default_artifact_store
+from research_tree.auth.throttle import count_account_action
 from research_tree.artifacts import write_json_file
 from research_tree.retrieval.cache import JsonRequestError
 from research_tree.retrieval.candidate_preparation import (
@@ -31,6 +32,7 @@ from research_tree.principal import (
 )
 from research_tree.services.errors import (
     InvalidPayloadError,
+    RateLimitedError,
     StaleWorkspaceError,
     TopicReviewExpiredError,
     WorkspaceNotFoundError,
@@ -43,7 +45,7 @@ from research_tree.llm import DEFAULT_MODEL, LlmRequestError
 from research_tree.workspace.construction import construct_workspace_from_candidates
 from research_tree.workspace.context import workspace_version_hash
 from research_tree.workspace.publishing import publish_workspace_version
-from research_tree.workspace.repository import WorkspaceRepository
+from research_tree.workspace.repository import TooManyActiveBuildsError, WorkspaceRepository
 from research_tree.workspace.enrichment import (
     hydrate_workspace_papers,
     prefetch_paper_content,
@@ -228,6 +230,7 @@ class WorkspacePipelineService:
         reserve_topic: bool = False,
         instructions: str | None = None,
     ) -> dict[str, Any]:
+        count_account_action("build")
         run_id = f"pipeline_{uuid4().hex}"
         start_index = PIPELINE_STAGES.index(start_stage)
         run = {
@@ -266,6 +269,8 @@ class WorkspacePipelineService:
                 self.repository.reserve_new_workspace_run(run)
             else:
                 self.repository.reserve_pipeline_rerun(run)
+        except TooManyActiveBuildsError as error:
+            raise RateLimitedError(str(error)) from error
         except ValueError as error:
             raise InvalidPayloadError(str(error)) from error
         try:
