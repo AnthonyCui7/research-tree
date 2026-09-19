@@ -47,6 +47,17 @@ KEY_UNREADABLE_MESSAGE = (
 )
 
 
+# A key that is removed or replaced is gone, not only switched off. The row
+# stays for the account's history (which key, when), and what could still be
+# opened is overwritten: a key taken out of this service is very likely still
+# good at the provider, and should not be sitting here sealed for ever.
+_RETIRE_ACTIVE_KEY = (
+    "UPDATE user_api_keys SET revoked_at = now(), "
+    "ciphertext = ''::bytea, nonce = ''::bytea, wrapped_dek = ''::bytea "
+    "WHERE user_id = CAST(:user_id AS uuid) AND provider = :provider AND revoked_at IS NULL"
+)
+
+
 @dataclass(frozen=True)
 class SealedSecret:
     ciphertext: bytes
@@ -141,13 +152,7 @@ def store_user_key(user_id: str, api_key: str, *, wrapper: KeyWrapper | None = N
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
             {"key": f"user_api_key:{user_id}"},
         )
-        conn.execute(
-            text(
-                "UPDATE user_api_keys SET revoked_at = now() "
-                "WHERE user_id = CAST(:user_id AS uuid) AND provider = :provider AND revoked_at IS NULL"
-            ),
-            {"user_id": user_id, "provider": PROVIDER},
-        )
+        conn.execute(text(_RETIRE_ACTIVE_KEY), {"user_id": user_id, "provider": PROVIDER})
         conn.execute(
             text(
                 "INSERT INTO user_api_keys "
@@ -226,11 +231,7 @@ def load_user_key(user_id: str, *, wrapper: KeyWrapper | None = None) -> str | N
 def delete_user_key(user_id: str) -> bool:
     with get_engine().begin() as conn:
         result = conn.execute(
-            text(
-                "UPDATE user_api_keys SET revoked_at = now() "
-                "WHERE user_id = CAST(:user_id AS uuid) AND provider = :provider AND revoked_at IS NULL"
-            ),
-            {"user_id": user_id, "provider": PROVIDER},
+            text(_RETIRE_ACTIVE_KEY), {"user_id": user_id, "provider": PROVIDER}
         )
     return result.rowcount > 0
 

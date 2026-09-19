@@ -77,15 +77,6 @@ def session_is_live(user_id: str, token: str | None) -> bool:
     return row is not None
 
 
-def user_id_for_email(email: str) -> str | None:
-    with get_engine().begin() as conn:
-        row = conn.execute(
-            text('SELECT id FROM "user" WHERE lower(email) = lower(:email)'),
-            {"email": email.strip()},
-        ).first()
-    return str(row[0]) if row is not None else None
-
-
 def list_users() -> list[dict[str, Any]]:
     with get_engine().begin() as conn:
         rows = (

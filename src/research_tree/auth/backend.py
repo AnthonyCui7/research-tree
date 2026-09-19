@@ -10,7 +10,6 @@ answers the Google callback with a redirect back into the app.
 from __future__ import annotations
 
 import uuid
-from typing import Literal
 
 from fastapi import Depends
 from fastapi.responses import RedirectResponse, Response
@@ -84,5 +83,3 @@ fastapi_users: FastAPIUsers[User, uuid.UUID] = FastAPIUsers(
 # Resolves the cookie to a user, or None; the API turns None into 401 itself
 # so every unauthenticated answer has the same shape.
 optional_current_user = fastapi_users.current_user(active=True, optional=True)
-
-SameSite = Literal["lax", "strict", "none"]

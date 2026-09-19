@@ -424,6 +424,12 @@ def test_saving_a_key_checks_it_stores_it_sealed_and_never_echoes_it(
     with repository._engine.begin() as conn:
         active = conn.execute(text("SELECT count(*) FROM user_api_keys WHERE revoked_at IS NULL"))
         assert active.scalar() == 0
+        # The rows stay as history; what could be opened does not.
+        retired = conn.execute(
+            text("SELECT last4, length(ciphertext), length(nonce), length(wrapped_dek) FROM user_api_keys")
+        ).all()
+    assert sorted(row[0] for row in retired) == ["6789", "9999"]
+    assert all(tuple(row[1:]) == (0, 0, 0) for row in retired)
 
 
 def test_a_saved_key_that_cannot_be_opened_is_an_error_not_an_absence(
