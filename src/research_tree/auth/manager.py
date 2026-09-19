@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -16,12 +17,17 @@ from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
 from research_tree.auth.db import get_user_db
 from research_tree.auth.google import USERINFO_ENDPOINT
 from research_tree.auth.models import User
-from research_tree.auth.accounts import revoke_sessions
+from research_tree.auth.accounts import claim_unproven_account
 from research_tree.auth.settings import email_is_allowed, session_secret
 from research_tree.auth.throttle import count_registration
 from research_tree.services.errors import ForbiddenError
 
 logger = logging.getLogger("uvicorn.error")
+
+# Password hashes in flight at once. Each holds 64 MB while it runs, and the
+# sign-in route is open to anyone, so the number is what a small container can
+# spare rather than what its thread pool would allow.
+_hashing = asyncio.Semaphore(2)
 
 MIN_PASSWORD_LENGTH = 10
 # The handful of passwords that appear on every breach list; a length rule
@@ -109,7 +115,13 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             # account or the allowlist against.
             raise ForbiddenError(UNVERIFIED_EMAIL_MESSAGE)
         ensure_email_allowed(account_email)
-        await self._claim_unproven_account(account_email)
+        try:
+            await self.get_by_oauth_account(oauth_name, account_id)
+        except exceptions.UserNotExists:
+            # Only an identity signing in for the first time is joined to an
+            # account by its address. One that is already linked signs in to
+            # the account it is linked to, whatever address it carries now.
+            await self._claim_unproven_account(account_email)
         user = await super().oauth_callback(
             oauth_name,
             access_token,
@@ -160,23 +172,45 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             "revoking its password and sessions user_id=%s",
             existing.id,
         )
-        await self.user_db.update(
-            existing,
-            {
-                "hashed_password": self.password_helper.hash(self.password_helper.generate()),
-                "is_verified": True,
-            },
+        # Off the event loop: the hash is tens of milliseconds of CPU and the
+        # write is a blocking call on the synchronous engine.
+        unguessable = await asyncio.to_thread(
+            self.password_helper.hash, self.password_helper.generate()
         )
-        revoke_sessions(str(existing.id))
+        await asyncio.to_thread(claim_unproven_account, str(existing.id), unguessable)
 
     async def authenticate(self, credentials: Any) -> User | None:
+        """The library's sign-in, with the hashing taken off the event loop.
+
+        One argon2 verification is tens of milliseconds of CPU and 64 MB, and
+        the library runs it inline, where it holds up every open stream and
+        every other request for that long. Hashing releases the interpreter
+        lock, so a thread really does free the loop; two at a time bounds the
+        memory. An unknown address is still hashed, as the library does, so
+        it answers no faster than a wrong password.
+        """
+
+        try:
+            user = await self.get_by_email(credentials.username)
+        except exceptions.UserNotExists:
+            async with _hashing:
+                await asyncio.to_thread(self.password_helper.hash, credentials.password)
+            return None
+        async with _hashing:
+            verified, updated_hash = await asyncio.to_thread(
+                self.password_helper.verify_and_update,
+                credentials.password,
+                user.hashed_password,
+            )
+        if not verified:
+            return None
+        if updated_hash is not None:
+            await self.user_db.update(user, {"hashed_password": updated_hash})
         # The allowlist is checked on every request once signed in, but the
         # sign-in route itself is fastapi-users' own and knew nothing of it:
         # a removed address still got a 204 and a cookie, and only the next
         # request said no. Refusing here says so at the door instead.
-        user = await super().authenticate(credentials)
-        if user is not None:
-            ensure_email_allowed(user.email)
+        ensure_email_allowed(user.email)
         return user
 
     async def on_after_login(

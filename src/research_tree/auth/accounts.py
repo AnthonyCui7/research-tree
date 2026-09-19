@@ -27,7 +27,7 @@ def principal_from_row(row: Any) -> Principal:
         email=email,
         name=row["name"],
         avatar_url=row["avatar_url"],
-        is_admin=bool(row["is_superuser"]) or email.casefold() in admin_emails(),
+        is_admin=bool(row["is_superuser"]) or email.lower() in admin_emails(),
         is_verified=bool(row["is_verified"]),
         is_local=False,
     )
@@ -114,6 +114,27 @@ def set_user_flags(user_id: str, **flags: bool) -> bool:
                 text("DELETE FROM accesstoken WHERE user_id = CAST(:id AS uuid)"), {"id": user_id}
             )
     return result.rowcount > 0
+
+
+def claim_unproven_account(user_id: str, hashed_password: str) -> None:
+    """Replace the password, mark the address proven and end every session, together.
+
+    In one transaction because the three are one decision, and none of them
+    should be able to land without the others.
+    """
+
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                'UPDATE "user" SET hashed_password = :hashed_password, is_verified = true '
+                "WHERE id = CAST(:user_id AS uuid)"
+            ),
+            {"user_id": user_id, "hashed_password": hashed_password},
+        )
+        conn.execute(
+            text("DELETE FROM accesstoken WHERE user_id = CAST(:user_id AS uuid)"),
+            {"user_id": user_id},
+        )
 
 
 def revoke_sessions(user_id: str) -> int:

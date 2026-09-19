@@ -90,6 +90,10 @@ class _FixedWindowLimiter:
         self._count_hit: Any = None
 
     def hit(self, key: str, limit: int, window_seconds: int) -> bool:
+        # A digest, here as in Redis: part of a key is whatever the caller
+        # typed into the email field, at whatever length, and neither table
+        # should hold that.
+        key = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
         shared = self._shared_count(key, window_seconds)
         if shared is not None:
             return shared <= limit
@@ -118,8 +122,7 @@ class _FixedWindowLimiter:
         """The count across every process, or None when Redis is not in play.
 
         A Redis that fails falls back to this process's own table rather than
-        refusing sign-ins or waving everything through. The stored key is a
-        digest, so the store holds no addresses and no emails.
+        refusing sign-ins or waving everything through.
         """
 
         if not self._redis_resolved:
@@ -132,8 +135,7 @@ class _FixedWindowLimiter:
         try:
             if self._count_hit is None:
                 self._count_hit = self._redis_client.register_script(_COUNT_HIT_LUA)
-            digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
-            return int(self._count_hit(keys=[f"throttle:{digest}"], args=[window_seconds]))
+            return int(self._count_hit(keys=[f"throttle:{key}"], args=[window_seconds]))
         except Exception as error:  # noqa: BLE001 - count locally rather than not at all
             self._count_hit = None
             self._redis_unavailable_until = time.monotonic() + REDIS_RETRY_SECONDS

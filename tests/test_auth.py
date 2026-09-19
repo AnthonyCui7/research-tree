@@ -309,6 +309,86 @@ def test_google_identity_is_the_openid_subject_and_verified_email() -> None:
     assert seen["auth"] == "Bearer tok"
 
 
+def test_an_address_that_only_folds_to_a_listed_one_is_not_on_the_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Case folding reads a long s as an s; the account table does not."""
+
+    from research_tree.auth.settings import admin_emails, email_is_allowed
+
+    monkeypatch.setenv("RESEARCH_TREE_ALLOWED_EMAILS", "Boss@Example.com")
+    monkeypatch.setenv("RESEARCH_TREE_ADMIN_EMAILS", "Boss@Example.com")
+
+    assert email_is_allowed("BOSS@example.com")
+    assert not email_is_allowed("bo\u017fs@example.com")
+    assert "bo\u017fs@example.com".lower() not in admin_emails()
+
+
+def test_google_claims_an_unproven_account_all_at_once_and_only_for_a_new_identity(
+    accounts_client: TestClient, repository: WorkspaceRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _postgres_only(repository)
+    import asyncio
+
+    from sqlalchemy import text
+
+    from research_tree.auth import db as auth_db
+    from research_tree.auth.manager import UserManager
+    from research_tree.auth.models import OAuthAccount, User
+    from research_tree.db import get_engine
+
+    _register_and_sign_in(accounts_client, "squatted@example.com")
+    assert accounts_client.get("/account/me").status_code == 200
+
+    async def google_signs_in(account_id: str, email: str) -> str:
+        from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
+
+        async with auth_db._session_factory()() as session:
+            manager = UserManager(SQLAlchemyUserDatabase(session, User, OAuthAccount))
+            user = await manager.oauth_callback(
+                "google", "token", account_id, email, associate_by_email=True,
+                is_verified_by_default=True,
+            )
+            return str(user.id)
+
+    async def no_profile(_token: str) -> dict:
+        return {}
+
+    monkeypatch.setattr("research_tree.auth.manager._google_profile", no_profile)
+    # The async engine is bound to the loop that made it, and this test makes its own.
+    auth_db.get_async_engine.cache_clear()
+    auth_db._session_factory.cache_clear()
+    claimed_id = asyncio.run(google_signs_in("google-1", "squatted@example.com"))
+
+    with get_engine().begin() as conn:
+        row = conn.execute(
+            text('SELECT is_verified FROM "user" WHERE id = CAST(:id AS uuid)'), {"id": claimed_id}
+        ).first()
+        sessions = conn.execute(
+            text("SELECT count(*) FROM accesstoken WHERE user_id = CAST(:id AS uuid)"),
+            {"id": claimed_id},
+        ).scalar_one()
+    assert row[0] is True
+    assert sessions == 0
+    auth_db.get_async_engine.cache_clear()
+    auth_db._session_factory.cache_clear()
+    # The session opened with the old password is gone with the password.
+    assert accounts_client.get("/account/me").status_code == 401
+
+    # A second, unproven account now shares an address with the linked identity.
+    # Signing in with that identity goes to the account it is linked to and
+    # leaves the other one alone.
+    other = TestClient(accounts_client.app)
+    _register_and_sign_in(other, "renamed@example.com")
+    auth_db.get_async_engine.cache_clear()
+    auth_db._session_factory.cache_clear()
+    signed_into = asyncio.run(google_signs_in("google-1", "renamed@example.com"))
+    auth_db.get_async_engine.cache_clear()
+    auth_db._session_factory.cache_clear()
+    assert signed_into == claimed_id
+    assert other.get("/account/me").status_code == 200
+
+
 # ---- the sign-in throttle under pressure -------------------------------------
 
 

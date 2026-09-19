@@ -107,7 +107,9 @@ def record_llm_usage(*, model: str, raw_response: dict[str, Any], label: str) ->
                 },
             )
             if source == "sponsored" and cost > 0:
-                if charge_allowance(conn, binding.principal.user_id, cost):
+                # None means there is no allowance left to charge, which ends
+                # the work as surely as spending it all does.
+                if charge_allowance(conn, binding.principal.user_id, cost) is not False:
                     binding.spend.exhausted = True
     except Exception as error:  # noqa: BLE001 - metering must never fail the call it meters
         logger.warning("usage not recorded for %s (%s): %s", label, model, error)

@@ -38,8 +38,10 @@ def cookies_are_secure() -> bool:
 
 
 def _email_set(variable: str) -> set[str]:
+    # Lowercased, which is how the account table decides two addresses are the
+    # same, so the list and the table never disagree about who is who.
     return {
-        item.strip().casefold()
+        item.strip().lower()
         for item in (os.environ.get(variable) or "").split(",")
         if item.strip()
     }
@@ -57,7 +59,7 @@ def email_is_allowed(email: str) -> bool:
     """An empty allowlist admits everyone; otherwise the email must be on it."""
 
     allowed = allowed_emails()
-    return not allowed or email.strip().casefold() in allowed
+    return not allowed or email.strip().lower() in allowed
 
 
 def google_client() -> tuple[str, str] | None:

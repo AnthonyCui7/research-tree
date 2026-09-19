@@ -130,7 +130,7 @@ def grant_allowance(
     *,
     email: str,
     limit_usd: Decimal,
-    period: str = "one_off",
+    period: str | None = None,
     expires_at: datetime | None = None,
     granted_by: str | None = None,
     note: str | None = None,
@@ -139,15 +139,23 @@ def grant_allowance(
 
     One address, one allowance, one number. A second grant tops the same one up
     rather than queuing behind it, and a negative amount takes credit away
-    without ever pushing the total below what has already been spent.
+    without ever pushing the total below what has already been spent. A top-up
+    changes the period or the expiry only when it names one: adding five
+    dollars to a monthly allowance that ends in December used to leave a
+    one-off that never ended. A first grant with no period is a one-off.
     """
 
-    if period not in PERIODS:
+    if period is not None and period not in PERIODS:
         raise ValueError(f"period must be one of {', '.join(PERIODS)}")
     if limit_usd == 0:
         raise ValueError("the amount cannot be zero")
     allowance_id = str(uuid.uuid4())
     with get_engine().begin() as conn:
+        if limit_usd < 0 and not conn.execute(
+            text("SELECT 1 FROM allowances WHERE email = lower(:email) AND status = 'active'"),
+            {"email": email.strip()},
+        ).first():
+            raise ValueError("there is no allowance at that address to take credit from")
         # Attach immediately when a verified account already has this email.
         user = conn.execute(
             text('SELECT id FROM "user" WHERE lower(email) = lower(:email) AND is_verified'),
@@ -159,15 +167,15 @@ def grant_allowance(
                 INSERT INTO allowances
                     (id, email, user_id, limit_usd, period, expires_at, granted_by, note)
                 VALUES
-                    (CAST(:id AS uuid), lower(:email), :user_id, :limit_usd, :period,
-                     :expires_at, :granted_by, :note)
+                    (CAST(:id AS uuid), lower(:email), :user_id, :limit_usd,
+                     COALESCE(CAST(:period AS text), 'one_off'), :expires_at, :granted_by, :note)
                 ON CONFLICT (email) WHERE status = 'active' DO UPDATE
                 SET limit_usd = GREATEST(
                         allowances.limit_usd + EXCLUDED.limit_usd, allowances.spent_usd
                     ),
                     user_id = COALESCE(allowances.user_id, EXCLUDED.user_id),
-                    period = EXCLUDED.period,
-                    expires_at = EXCLUDED.expires_at,
+                    period = COALESCE(CAST(:period AS text), allowances.period),
+                    expires_at = COALESCE(EXCLUDED.expires_at, allowances.expires_at),
                     granted_by = EXCLUDED.granted_by,
                     note = COALESCE(EXCLUDED.note, allowances.note)
                 RETURNING id

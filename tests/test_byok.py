@@ -551,6 +551,62 @@ def test_an_allowance_is_one_number_that_grants_add_to(accounts_client, reposito
     assert (clawed_back["limit_usd"], clawed_back["remaining_usd"]) == (5.0, 0.0)
     assert allowance_status(user_id, "topup@example.com", verified=True) == "exhausted"
 
+    # There has to be an allowance to take credit from.
+    with pytest.raises(ValueError):
+        grant_allowance(email="nobody@example.com", limit_usd=Decimal("-1.00"))
+
+
+def test_a_top_up_keeps_the_period_and_the_expiry_it_was_not_told_to_change(
+    accounts_client, repository
+) -> None:
+    _postgres_only(repository)
+    from datetime import UTC, datetime
+
+    from research_tree.auth.accounts import set_user_flags
+    from research_tree.billing.allowances import allowance_summary, grant_allowance
+
+    user_id = _signed_in_user_id(accounts_client, "monthly@example.com")
+    set_user_flags(user_id, is_verified=True)
+    ends = datetime(2030, 12, 31, 23, 59, 59, tzinfo=UTC)
+    grant_allowance(
+        email="monthly@example.com", limit_usd=Decimal("10"), period="monthly", expires_at=ends
+    )
+    grant_allowance(email="monthly@example.com", limit_usd=Decimal("5"))
+
+    topped_up = allowance_summary(user_id, "monthly@example.com", verified=True)
+    assert topped_up["limit_usd"] == 15.0
+    assert topped_up["period"] == "monthly"
+    assert topped_up["expires_at"].startswith("2030-12-31")
+
+
+def test_sponsored_work_stops_when_its_allowance_is_taken_away(
+    accounts_client, repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job resolves its key once, so the allowance is checked again as it is charged."""
+
+    _postgres_only(repository)
+    from research_tree.auth.accounts import set_user_flags
+    from research_tree.billing.allowances import grant_allowance, revoke_allowance
+
+    user_id = _signed_in_user_id(accounts_client, "revoked@example.com")
+    set_user_flags(user_id, is_verified=True)
+    allowance_id = grant_allowance(email="revoked@example.com", limit_usd=Decimal("5"))
+    monkeypatch.setenv("OPENAI_API_KEY", PLATFORM_KEY)
+    response = {"usage": {"input_tokens": 1000, "output_tokens": 1000}}
+
+    with bind_principal(Principal(user_id=user_id, email="revoked@example.com", is_verified=True)):
+        assert credentials.openai_api_key() == PLATFORM_KEY
+        record_llm_usage(model="gpt-5.6-luna", raw_response=response, label="test")
+        assert current_binding().spend.exhausted is False
+        assert revoke_allowance(allowance_id) is True
+        record_llm_usage(model="gpt-5.6-luna", raw_response=response, label="test")
+        assert current_binding().spend.exhausted is True
+        monkeypatch.setattr("research_tree.llm._post", lambda *_a, **_k: response)
+        with pytest.raises(AllowanceExhaustedError):
+            call_responses_api(
+                {"model": "gpt-5.6-luna"}, api_key=PLATFORM_KEY, timeout_seconds=5, label="test"
+            )
+
 
 def test_allowances_attach_to_verified_accounts_and_spend_down(
     accounts_client, repository, monkeypatch: pytest.MonkeyPatch

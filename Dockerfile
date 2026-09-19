@@ -82,4 +82,8 @@ EXPOSE 8000
 # did not add — the caller's real one. Trusting `*` made it take the leftmost
 # entry instead, which the caller writes, so the per-IP sign-in and registration
 # limits could be sidestepped, or aimed at somebody else, with one header.
-CMD ["python", "-m", "uvicorn", "research_tree.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1,::1,fd00::/8"]
+# The four 100.100 ranges are the ones a workload-profile environment reserves
+# for its own infrastructure, the ingress included; they are shared address
+# space that nothing on the internet connects from. To check a deployment:
+# `curl -sI https://<site>/workspaces/` must redirect to an https location.
+CMD ["python", "-m", "uvicorn", "research_tree.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.100.0.0/17,100.100.128.0/19,100.100.160.0/19,100.100.192.0/19,127.0.0.1,::1,fd00::/8"]
