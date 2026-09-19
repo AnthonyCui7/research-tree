@@ -67,6 +67,18 @@ def retrieve_open_access_paper_content(
     return PaperContentResult(content=content, warning=warning)
 
 
+def upgraded_to_https(url: str) -> str:
+    """The same link over HTTPS.
+
+    Semantic Scholar still hands out plain `http://arxiv.org/pdf/...` links,
+    and links stored before HTTPS was required are the same. Those hosts serve
+    both, and only HTTPS is ever fetched, so the link is upgraded rather than
+    the paper refused.
+    """
+
+    return f"https://{url[len('http://'):]}" if url.startswith("http://") else url
+
+
 def download_open_access_pdf(url: str, *, timeout_seconds: float = 30.0) -> bytes:
     """Fetch a paper's PDF, refusing anything that is not a public HTTPS PDF."""
 
@@ -197,5 +209,7 @@ def _unavailable(
             "truncated": False,
             "error": reason,
         },
-        warning=f"Full text unavailable for {title}: {reason}",
+        # The reason stays on the record; the run's warnings are read by the
+        # person who asked for the build, who can do nothing with it.
+        warning=f"Full text unavailable for {title}.",
     )

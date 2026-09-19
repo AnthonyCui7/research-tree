@@ -32,7 +32,7 @@ from research_tree.annotation.pipeline import PaperTooLongError
 from research_tree.artifact_store import ArtifactStore, default_artifact_store
 from research_tree.auth.throttle import count_account_action
 from research_tree.principal import bind_principal
-from research_tree.retrieval.full_text import download_open_access_pdf
+from research_tree.retrieval.full_text import download_open_access_pdf, upgraded_to_https
 from research_tree.services.errors import (
     InvalidPayloadError,
     InvalidResourceIdError,
@@ -447,7 +447,7 @@ def paper_pdf_url(card: dict[str, Any]) -> str | None:
     content = card.get("paper_content")
     resolved = content.get("source_url") if isinstance(content, dict) else None
     if isinstance(resolved, str) and resolved.strip():
-        return _https(resolved.strip())
+        return upgraded_to_https(resolved.strip())
 
     # The link's host is checked, not its text: a card is part of a document
     # the reader can edit, and "arxiv.org/abs/" appears in any URL that puts
@@ -470,12 +470,6 @@ def _known_pdf_sha256(card: dict[str, Any]) -> str | None:
     content = card.get("paper_content")
     value = content.get("sha256") if isinstance(content, dict) else None
     return value if isinstance(value, str) and PDF_SHA256.fullmatch(value) else None
-
-
-def _https(url: str) -> str:
-    # Stored links predate the requirement that a paper URL be HTTPS; the same
-    # hosts serve both, so upgrade rather than reject.
-    return f"https://{url[len('http://'):]}" if url.startswith("http://") else url
 
 
 def _response(workspace_id: str, paper_id: str, payload: dict[str, Any]) -> dict[str, Any]:

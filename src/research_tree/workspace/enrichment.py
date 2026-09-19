@@ -9,6 +9,7 @@ from research_tree.retrieval.cache import JsonRequestError
 from research_tree.retrieval.full_text import (
     PaperContentResult,
     retrieve_open_access_paper_content,
+    upgraded_to_https,
 )
 from research_tree.retrieval.semantic_scholar import (
     SemanticScholarClient,
@@ -38,12 +39,10 @@ def prefetch_paper_content(
     """
 
     def fetch(paper: CandidatePaperMetadata) -> tuple[str, PaperContentResult]:
-        metadata = paper.semantic_scholar_metadata or {}
-        source_url = _open_access_pdf_url(metadata, {"arxiv_id": paper.arxiv_id})
-        return paper.paper_id, retrieve_open_access_paper_content(
+        return paper.paper_id, _retrieve_from_first_source_that_answers(
             paper_id=paper.paper_id,
             title=paper.title or paper.paper_id,
-            source_url=source_url,
+            sources=_pdf_sources(paper.semantic_scholar_metadata or {}, paper.arxiv_id),
         )
 
     papers = list(papers)
@@ -113,11 +112,10 @@ def hydrate_workspace_papers(
                 warnings.append(f"A summary could not be generated for {paper_id}.")
         content_result = (prefetched_content or {}).get(str(paper_id))
         if content_result is None:
-            source_url = _open_access_pdf_url(details, raw_card)
-            content_result = retrieve_open_access_paper_content(
+            content_result = _retrieve_from_first_source_that_answers(
                 paper_id=str(paper_id),
                 title=str(raw_card.get("title") or paper_id),
-                source_url=source_url,
+                sources=_pdf_sources(details, raw_card.get("arxiv_id")),
             )
         content_key = repository.save_paper_content(
             workspace_id, str(paper_id), content_result.content
@@ -173,12 +171,37 @@ def load_paper_content_context(
     return contents, warnings
 
 
-def _open_access_pdf_url(details: Mapping[str, Any], card: Mapping[str, Any]) -> str | None:
+def _pdf_sources(details: Mapping[str, Any], arxiv_id: Any) -> list[str]:
+    """Where a paper's PDF may be fetched from, best first.
+
+    Semantic Scholar's open-access link, then arXiv's own copy when the paper
+    has one. The first is often a publisher's landing page, or a host that
+    refuses anything that is not a browser, and the arXiv PDF is the same
+    paper.
+    """
+
+    sources: list[str] = []
     open_access_pdf = details.get("openAccessPdf")
     if isinstance(open_access_pdf, Mapping) and open_access_pdf.get("url"):
-        return str(open_access_pdf["url"])
-    arxiv_id = card.get("arxiv_id")
-    return f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else None
+        sources.append(upgraded_to_https(str(open_access_pdf["url"]).strip()))
+    if arxiv_id:
+        sources.append(f"https://arxiv.org/pdf/{arxiv_id}")
+    return list(dict.fromkeys(sources))
+
+
+def _retrieve_from_first_source_that_answers(
+    *, paper_id: str, title: str, sources: list[str]
+) -> PaperContentResult:
+    result = retrieve_open_access_paper_content(
+        paper_id=paper_id, title=title, source_url=sources[0] if sources else None
+    )
+    for source in sources[1:]:
+        if str(result.content.get("status") or "").startswith("available"):
+            break
+        result = retrieve_open_access_paper_content(
+            paper_id=paper_id, title=title, source_url=source
+        )
+    return result
 
 
 def _fill_card_metadata(card: dict[str, Any], paper: Any) -> None:

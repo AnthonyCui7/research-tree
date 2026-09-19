@@ -694,6 +694,38 @@ class WorkspaceBackendTest(unittest.TestCase):
         self.assertEqual(workspace["paper_cards"]["p1"]["title"], "Core Method")
         self.assertTrue(any("metadata was unavailable" in warning for warning in warnings))
 
+    def test_a_plain_http_link_is_upgraded_and_arxiv_answers_when_a_publisher_refuses(self) -> None:
+        from research_tree.workspace.enrichment import (
+            _pdf_sources,
+            _retrieve_from_first_source_that_answers,
+        )
+
+        self.assertEqual(
+            _pdf_sources({"openAccessPdf": {"url": "http://arxiv.org/pdf/2211.17192"}}, "2211.17192"),
+            ["https://arxiv.org/pdf/2211.17192"],
+        )
+        sources = _pdf_sources(
+            {"openAccessPdf": {"url": "https://doi.org/10.1145/3620666.3651335"}}, "2305.09781"
+        )
+        self.assertEqual(sources[-1], "https://arxiv.org/pdf/2305.09781")
+
+        tried: list[str | None] = []
+
+        def fake_retrieve(*, paper_id: str, title: str, source_url, timeout_seconds=30.0):
+            tried.append(source_url)
+            status = "available" if "arxiv.org" in str(source_url) else "unavailable"
+            return PaperContentResult(content={"status": status, "source_url": source_url})
+
+        with patch(
+            "research_tree.workspace.enrichment.retrieve_open_access_paper_content", fake_retrieve
+        ):
+            result = _retrieve_from_first_source_that_answers(
+                paper_id="p1", title="SpecInfer", sources=sources
+            )
+
+        self.assertEqual(tried, sources)
+        self.assertEqual(result.content["source_url"], "https://arxiv.org/pdf/2305.09781")
+
     def test_hydration_uses_prefetched_content_without_downloading(self) -> None:
         class FakeSemanticScholar:
             def get_paper_details(
