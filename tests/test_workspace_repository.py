@@ -268,6 +268,36 @@ def test_restore_moves_current_to_an_immutable_previous_snapshot(repository) -> 
     assert _count_events(events, "workspace_restored") == 1
 
 
+def test_a_retried_restore_finds_its_own_result(repository) -> None:
+    first_hash = repository.save_workspace_version(
+        "workspace-1", _workspace(), actor="system", parent_version_hash=None, reason="initial"
+    )
+    second_hash = repository.save_workspace_version(
+        "workspace-1",
+        {**_workspace(), "title": "Rebuilt Topic"},
+        actor="system",
+        parent_version_hash=first_hash,
+        reason="rebuilt",
+    )
+
+    def restore() -> dict:
+        return repository.restore_workspace_version(
+            "workspace-1",
+            first_hash,
+            actor="user",
+            reason="undo",
+            expected_version_hash=second_hash,
+        )
+
+    assert restore()["restored"]
+    # The first response was lost and the same request comes again.
+    retried = restore()
+    assert not retried["restored"]
+    assert retried["version_hash"] == first_hash
+    events = repository.list_workspace_events("workspace-1")
+    assert _count_events(events, "workspace_restored") == 1
+
+
 def test_saves_pending_review_and_marks_approved(repository) -> None:
     workspace = _workspace()
     base_hash = repository.save_workspace_version(

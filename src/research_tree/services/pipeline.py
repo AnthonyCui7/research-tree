@@ -437,12 +437,6 @@ class WorkspacePipelineService:
                     provenance["updated_at"] = now
                 write_json_file(hydrated_path, workspace)
                 artifacts["hydrated_workspace_json"] = str(hydrated_path)
-                self._stage(
-                    run,
-                    "hydrate",
-                    "completed_with_warnings" if hydration_warnings else "completed",
-                    outputs={"workspace_json": str(hydrated_path)},
-                )
                 # The stage that produced this ran for a minute or more, and
                 # the reader may have pressed Cancel during it. Publishing now
                 # overwrites the workspace they were protecting.
@@ -468,7 +462,15 @@ class WorkspacePipelineService:
                 published_parent_hash = publish["version_hash"]
                 artifacts["core_workspace_version_hash"] = publish["version_hash"]
                 run["artifacts"] = artifacts
-                self.repository.save_pipeline_run(run)
+                # Finished only once published: a reader watching the build
+                # opens the workspace the moment this stage reads as done, and
+                # the workspace is not listed before its first version.
+                self._stage(
+                    run,
+                    "hydrate",
+                    "completed_with_warnings" if hydration_warnings else "completed",
+                    outputs={"workspace_json": str(hydrated_path)},
+                )
 
             if "related" in run["requested_stages"]:
                 self._stage(run, "related", "running")

@@ -21,6 +21,7 @@ import logging
 import socket
 import ssl
 import sys
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -107,10 +108,14 @@ def _repository():
 # One build at a time per worker container: two builds' models do not fit in
 # one together. The slot is named for the container, so a second worker
 # replica is a second build at a time rather than a second waiter on the same
-# slot. A build that finds the slot taken waits on the queue, touching its run
-# so the queued-run reclaimer knows it is alive.
+# slot. It is a lease the running build renews: a build that finds the slot
+# taken waits on the queue, touching its run so the queued-run reclaimer knows
+# it is alive, and a worker that dies mid-build stops renewing, so its slot
+# lapses on its own. A build that is only slow (a long model call, a cancelled
+# build finishing its stage) keeps it, because its models are still loaded.
 BUILD_SLOT_KEY = f"pipeline:build_slot:{socket.gethostname()}"
-BUILD_SLOT_TTL_SECONDS = 4000
+BUILD_SLOT_LEASE_SECONDS = 120
+BUILD_SLOT_RENEW_SECONDS = 30
 BUILD_SLOT_RETRY_SECONDS = 30
 
 
@@ -124,62 +129,67 @@ def run_pipeline(self, owner_id: str, run_id: str) -> None:
     repository = _repository().for_owner(owner_id)
     redis = get_redis()
     slot = f"{owner_id}:{run_id}"
-    if redis is not None and not redis.set(BUILD_SLOT_KEY, slot, nx=True, ex=BUILD_SLOT_TTL_SECONDS):
-        holder = (redis.get(BUILD_SLOT_KEY) or b"").decode("utf-8")
-        if holder != slot and not _take_over_abandoned_slot(redis, holder, slot):
+    lease = None
+    if redis is not None:
+        if not redis.set(BUILD_SLOT_KEY, slot, nx=True, ex=BUILD_SLOT_LEASE_SECONDS):
+            holder = (redis.get(BUILD_SLOT_KEY) or b"").decode("utf-8")
+            if holder == slot:
+                # The broker delivered this build again while it runs; the
+                # copy that holds the slot is the one doing the work.
+                logger.info("build %s was delivered again while it runs", run_id)
+                return
             logger.info("build %s waits for the slot held by %s", run_id, holder)
             repository.touch_pipeline_run(run_id)
             raise self.retry(countdown=BUILD_SLOT_RETRY_SECONDS)
+        lease = _BuildSlotLease(redis, slot)
     try:
         WorkspacePipelineService(repository, repo_root=REPO_ROOT)._execute(run_id)
     finally:
-        if redis is not None:
-            _release_build_slot(redis, slot)
+        if lease is not None:
+            lease.release()
 
 
-def _take_over_abandoned_slot(redis, holder: str, slot: str) -> bool:
-    """Claim the slot when the run holding it is no longer running.
+class _BuildSlotLease:
+    """Renews the build slot for as long as the build runs, then gives it up."""
 
-    A worker that restarts mid-build never reaches the release in `finally`,
-    and the slot outlived the run by up to an hour while every other account's
-    build retried against it. The run record says whether the holder is
-    still alive: the reclaimer fails a run whose heartbeat stopped.
-    """
+    def __init__(self, redis, slot: str) -> None:
+        self._redis = redis
+        self._slot = slot
+        self._stopped = threading.Event()
+        threading.Thread(target=self._renew_until_released, daemon=True).start()
 
-    owner_id, _, run_id = holder.partition(":")
-    if not owner_id or not run_id:
-        return False
-    try:
-        run = _repository().for_owner(owner_id).get_pipeline_run(run_id)
-    except FileNotFoundError:
-        run = {}
-    except Exception as error:  # noqa: BLE001 - a read that fails is not a reason to jump the queue
-        logger.warning("could not check the build slot holder %s: %s", holder, error)
-        return False
-    if run.get("status") in {"queued", "running"}:
-        return False
-    # Compare-and-set: the slot is replaced only if it still names the dead run.
-    taken = redis.eval(_TAKE_OVER_SLOT_LUA, 1, BUILD_SLOT_KEY, holder, slot, BUILD_SLOT_TTL_SECONDS)
-    if taken:
-        logger.info("build slot held by finished run %s taken over by %s", holder, slot)
-    return bool(taken)
+    def _renew_until_released(self) -> None:
+        while not self._stopped.wait(BUILD_SLOT_RENEW_SECONDS):
+            try:
+                self._redis.eval(
+                    _RENEW_SLOT_LUA, 1, BUILD_SLOT_KEY, self._slot, BUILD_SLOT_LEASE_SECONDS
+                )
+            except Exception as error:  # noqa: BLE001 - the next renewal tries again
+                logger.warning("could not renew the build slot: %s", error)
+
+    def release(self) -> None:
+        self._stopped.set()
+        try:
+            self._redis.eval(_RELEASE_SLOT_LUA, 1, BUILD_SLOT_KEY, self._slot)
+        except Exception as error:  # noqa: BLE001 - the lease lapses on its own
+            logger.warning("could not release the build slot: %s", error)
 
 
-_TAKE_OVER_SLOT_LUA = """
+# Both act only while the slot still names this build: a lease that lapsed may
+# already belong to the next one.
+_RENEW_SLOT_LUA = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
-    redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
-    return 1
+    return redis.call('EXPIRE', KEYS[1], ARGV[2])
 end
 return 0
 """
 
-
-def _release_build_slot(redis, slot: str) -> None:
-    try:
-        if redis.get(BUILD_SLOT_KEY) == slot.encode("utf-8"):
-            redis.delete(BUILD_SLOT_KEY)
-    except Exception as error:  # noqa: BLE001 - the slot expires on its own
-        logger.warning("could not release the build slot: %s", error)
+_RELEASE_SLOT_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
 
 
 @app.task(name="research_tree.generate_annotations")

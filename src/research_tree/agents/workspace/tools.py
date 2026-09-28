@@ -342,8 +342,14 @@ def _list_reading_order(context: ToolContext, _arguments: dict[str, Any]) -> Any
 def _list_workspace_history(context: ToolContext, _arguments: dict[str, Any]) -> Any:
     if context.repository is None:
         return {"error": "no workspace repository is available"}
-    versions = context.repository.list_workspace_versions(context.workspace_id)
-    reviews = context.repository.list_workspace_reviews(context.workspace_id)
+    # Newest first: the recent changes are the ones a question about history
+    # is about. Versions are stored oldest first, reviews by id.
+    versions = context.repository.list_workspace_versions(context.workspace_id)[::-1]
+    reviews = sorted(
+        context.repository.list_workspace_reviews(context.workspace_id),
+        key=lambda review: str(review.get("created_at") or ""),
+        reverse=True,
+    )
     return {
         "versions": [
             {

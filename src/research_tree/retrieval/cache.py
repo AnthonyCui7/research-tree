@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import http.client
 import os
 import json
 import socket
@@ -364,10 +365,13 @@ class CachedJsonClient:
                     min(asked_for, max(backoffs)) if asked_for else backoffs[attempt]
                 )
                 time.sleep(wait_seconds)
-            except urllib.error.URLError as error:
+            except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as error:
+                # urllib wraps a failed connect in URLError but lets a
+                # connection dropped while the answer is read through as it
+                # is; both are the network, and both wait their turn again.
                 last_error = error
                 if attempt >= len(backoffs):
-                    raise JsonRequestError(str(error), transient=True) from error
+                    raise JsonRequestError(str(error) or type(error).__name__, transient=True) from error
                 time.sleep(backoffs[attempt])
             except (TimeoutError, socket.timeout) as error:
                 last_error = error

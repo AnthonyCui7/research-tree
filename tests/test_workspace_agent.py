@@ -1048,6 +1048,34 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
 
 
 class WorkspaceAgentPureHelperTest(unittest.TestCase):
+    def test_the_paper_database_is_read_from_the_store_when_its_file_is_elsewhere(self) -> None:
+        # The build ran on the worker: the run names a file this container
+        # does not have, and the digest of the copy it uploaded.
+        from research_tree.agents.workspace.nodes import _paper_database_for_workspace
+
+        payload = json.dumps({"papers": [_candidate("p3", "Narrow Application")]}).encode()
+        digest = "d" * 64
+        run = {
+            "status": "completed",
+            "artifacts": {
+                "paper_database_json": "/nowhere/paper_database.json",
+                "paper_database_json_sha256": digest,
+            },
+        }
+
+        class Runs:
+            def list_pipeline_runs(self, workspace_id: str) -> list[dict[str, object]]:
+                return [run]
+
+        class Store:
+            def get(self, key: str) -> bytes | None:
+                return payload if key == f"pipeline/{digest}" else None
+
+        with patch("research_tree.agents.workspace.nodes.default_artifact_store", return_value=Store()):
+            papers = _paper_database_for_workspace(_workspace(), Runs(), Path(tempfile.mkdtemp()))
+
+        self.assertEqual([paper.paper_id for paper in papers or []], ["p3"])
+
     def test_similar_papers_are_context_not_visible_count(self) -> None:
         workspace = _workspace()
         workspace["paper_cards"]["p1"]["similar_papers"] = [

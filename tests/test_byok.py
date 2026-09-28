@@ -523,6 +523,26 @@ def test_key_checks_are_bounded_per_account(
     assert accounts_client.put("/account/api-keys", json={"api_key": "sk-short"}).status_code == 400
 
 
+def test_a_grant_after_an_allowance_expired_starts_a_new_one(accounts_client, repository) -> None:
+    _postgres_only(repository)
+    from datetime import UTC, datetime, timedelta
+
+    from research_tree.auth.accounts import set_user_flags
+    from research_tree.billing.allowances import allowance_status, grant_allowance
+
+    user_id = _signed_in_user_id(accounts_client, "lapsed@example.com")
+    set_user_flags(user_id, is_verified=True)
+    grant_allowance(
+        email="lapsed@example.com",
+        limit_usd=Decimal("5"),
+        expires_at=datetime.now(UTC) - timedelta(days=1),
+    )
+    assert allowance_status(user_id, "lapsed@example.com", verified=True) == "none"
+
+    grant_allowance(email="lapsed@example.com", limit_usd=Decimal("10"))
+    assert allowance_status(user_id, "lapsed@example.com", verified=True) == "ok"
+
+
 def test_an_allowance_is_one_number_that_grants_add_to(accounts_client, repository) -> None:
     """Every grant used to make a row and only the oldest was read, so top-ups did nothing."""
 

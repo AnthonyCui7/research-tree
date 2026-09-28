@@ -40,6 +40,7 @@ from research_tree.agents.workspace.tools import (
     web_search_enabled,
 )
 from research_tree.agents.workspace.state import WorkspaceAgentState
+from research_tree.artifact_store import default_artifact_store
 from research_tree.llm import DEFAULT_MODEL
 from research_tree.paths import data_root
 from research_tree.retrieval.pipeline_args import validate_pipeline_rerun_request
@@ -67,7 +68,7 @@ from research_tree.workspace.operations import (
 )
 from research_tree.workspace.repository import WorkspaceRepository
 from research_tree.workspace.serialization import load_candidate_artifact, load_json_artifact
-from research_tree.workspace.schemas import paper_database_from_artifact
+from research_tree.workspace.schemas import CandidatePaperMetadata, paper_database_from_artifact
 from research_tree.workspace.similar_papers import (
     DEFAULT_SIMILAR_CITATION_AGE_EXPONENT,
     DEFAULT_SIMILAR_CITATION_SCORE_FLOOR,
@@ -746,12 +747,12 @@ class WorkspaceAgentNodes:
                 "node_trace": [_trace("adjust_similar_papers")],
             }
         policy = _similar_paper_policy(workspace, str(state.get("user_message") or ""))
-        paper_database_path = _paper_database_path_for_workspace(
+        paper_database = _paper_database_for_workspace(
             workspace,
             self.workspace_repository,
             self.repo_root,
         )
-        if paper_database_path is None:
+        if paper_database is None:
             return {
                 "proposed_workspace": workspace,
                 "status": "failed",
@@ -760,9 +761,6 @@ class WorkspaceAgentNodes:
                 ],
                 "node_trace": [_trace("adjust_similar_papers")],
             }
-        paper_database = paper_database_from_artifact(
-            load_json_artifact(paper_database_path)
-        )
         try:
             proposed, _debug = build_similar_papers(
                 workspace=workspace,
@@ -1331,19 +1329,8 @@ def _similar_papers_context_for_scope(
     if not isinstance(cards, Mapping) or not paper_ids:
         return {}
 
-    paper_database_by_id: dict[str, Any] = {}
-    paper_database_path = _paper_database_path_for_workspace(
-        workspace,
-        repository,
-        repo_root,
-    )
-    if paper_database_path is not None:
-        paper_database_by_id = {
-            paper.paper_id: paper
-            for paper in paper_database_from_artifact(
-                load_json_artifact(paper_database_path)
-            )
-        }
+    paper_database = _paper_database_for_workspace(workspace, repository, repo_root) or []
+    paper_database_by_id: dict[str, Any] = {paper.paper_id: paper for paper in paper_database}
 
     context: dict[str, Any] = {}
     for paper_id in sorted(paper_ids):
@@ -1702,31 +1689,43 @@ def _similar_paper_policy(
     return {"k": k, "citation_age_exponent": alpha, "citation_score_floor": floor}
 
 
-def _paper_database_path_for_workspace(
+def _paper_database_for_workspace(
     workspace: Mapping[str, Any],
     repository: WorkspaceRepository | None,
     repo_root: Path,
-) -> Path | None:
+) -> list[CandidatePaperMetadata] | None:
+    """The candidate papers the workspace was built from, or None.
+
+    A build runs on the worker, so its file is usually not on the container
+    answering the assistant; the copy the build uploaded to the artifact
+    store, named by its digest in the run record, is read instead.
+    """
+
+    references: list[tuple[Any, Any]] = []
     provenance = workspace.get("provenance")
     if isinstance(provenance, Mapping):
         pipeline_run = provenance.get("pipeline_run")
         if isinstance(pipeline_run, Mapping):
-            path = _existing_artifact_path(pipeline_run.get("paper_database_json"), repo_root)
-            if path is not None:
-                return path
-
+            references.append((pipeline_run.get("paper_database_json"), None))
     workspace_id = str(workspace.get("workspace_id") or "")
-    if not workspace_id or repository is None:
-        return None
-    for run in repository.list_pipeline_runs(workspace_id):
-        if run.get("status") not in {"completed", "completed_with_warnings"}:
-            continue
-        artifacts = run.get("artifacts")
-        if not isinstance(artifacts, Mapping):
-            continue
-        path = _existing_artifact_path(artifacts.get("paper_database_json"), repo_root)
+    if workspace_id and repository is not None:
+        for run in repository.list_pipeline_runs(workspace_id):
+            artifacts = run.get("artifacts")
+            if run.get("status") in {"completed", "completed_with_warnings"} and isinstance(
+                artifacts, Mapping
+            ):
+                references.append(
+                    (artifacts.get("paper_database_json"), artifacts.get("paper_database_json_sha256"))
+                )
+
+    for path_value, digest in references:
+        path = _existing_artifact_path(path_value, repo_root)
         if path is not None:
-            return path
+            return paper_database_from_artifact(load_json_artifact(path))
+        if digest:
+            stored = default_artifact_store().get(f"pipeline/{digest}")
+            if stored is not None:
+                return paper_database_from_artifact(json.loads(stored))
     return None
 
 

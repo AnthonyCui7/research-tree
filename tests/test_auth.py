@@ -358,7 +358,16 @@ def test_google_claims_an_unproven_account_all_at_once_and_only_for_a_new_identi
     from research_tree.db import get_engine
 
     _register_and_sign_in(accounts_client, "squatted@example.com")
-    assert accounts_client.get("/account/me").status_code == 200
+    me = accounts_client.get("/account/me")
+    assert me.status_code == 200
+    # Whoever registered the address first saved their own key on it.
+    import base64
+
+    from research_tree.billing.user_keys import load_user_key, store_user_key
+
+    monkeypatch.setenv("RESEARCH_TREE_KEY_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode())
+    squatter_id = me.json()["user"]["id"]
+    store_user_key(squatter_id, "sk-proj-" + "s" * 40)
 
     async def google_signs_in(account_id: str, email: str) -> str:
         from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
@@ -390,6 +399,7 @@ def test_google_claims_an_unproven_account_all_at_once_and_only_for_a_new_identi
         ).scalar_one()
     assert row[0] is True
     assert sessions == 0
+    assert load_user_key(claimed_id) is None
     auth_db.get_async_engine.cache_clear()
     auth_db._session_factory.cache_clear()
     # The session opened with the old password is gone with the password.

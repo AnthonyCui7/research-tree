@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import text
 
 from research_tree.auth.settings import SESSION_LIFETIME_SECONDS, admin_emails
+from research_tree.billing.user_keys import retire_user_key
 from research_tree.db import get_engine
 from research_tree.principal import Principal
 
@@ -111,13 +112,17 @@ def set_user_flags(user_id: str, **flags: bool) -> bool:
 
 
 def claim_unproven_account(user_id: str, hashed_password: str) -> None:
-    """Replace the password, mark the address proven and end every session, together.
+    """Replace the password, mark the address proven, end every session and
+    retire any saved key, together.
 
-    In one transaction because the three are one decision, and none of them
-    should be able to land without the others.
+    In one transaction because the four are one decision, and none of them
+    should be able to land without the others. The key goes because whoever
+    registered the address first may have saved their own, and a saved key is
+    what every model call of the account would then run on.
     """
 
     with get_engine().begin() as conn:
+        retire_user_key(conn, user_id)
         conn.execute(
             text(
                 'UPDATE "user" SET hashed_password = :hashed_password, is_verified = true '

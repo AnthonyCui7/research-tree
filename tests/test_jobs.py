@@ -350,7 +350,6 @@ def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPa
 
     executed: list[str] = []
     touched: list[str] = []
-    runs: dict[str, dict[str, Any]] = {}
 
     class Service:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -359,6 +358,8 @@ def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPa
         def _execute(self, run_id: str) -> None:
             executed.append(run_id)
             assert redis_env.get(tasks.BUILD_SLOT_KEY) == f"local_user:{run_id}".encode("utf-8")
+            # A lease, not a reservation for the whole build.
+            assert 0 < redis_env.ttl(tasks.BUILD_SLOT_KEY) <= tasks.BUILD_SLOT_LEASE_SECONDS
 
     class Repository:
         def for_owner(self, owner_id: str) -> "Repository":
@@ -368,32 +369,43 @@ def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPa
         def touch_pipeline_run(self, run_id: str) -> None:
             touched.append(run_id)
 
-        def get_pipeline_run(self, run_id: str) -> dict[str, Any]:
-            if run_id not in runs:
-                raise FileNotFoundError(run_id)
-            return runs[run_id]
-
     monkeypatch.setattr("research_tree.services.pipeline.WorkspacePipelineService", Service)
     monkeypatch.setattr(tasks, "_repository", lambda: Repository())
     tasks.run_pipeline.apply(args=["local_user", "pipeline_one"], throw=True)
     assert executed == ["pipeline_one"]
     assert redis_env.get(tasks.BUILD_SLOT_KEY) is None
 
-    # A slot held by a run that is still running is waited for.
-    runs["pipeline_other"] = {"status": "running"}
-    redis_env.set(tasks.BUILD_SLOT_KEY, "local_user:pipeline_other")
+    # A slot another build holds is waited for, whatever that build's run
+    # says: a cancelled build still runs until its stage ends.
+    redis_env.set(tasks.BUILD_SLOT_KEY, "local_user:pipeline_other", ex=60)
     with pytest.raises(Retry):
         tasks.run_pipeline.apply(args=["local_user", "pipeline_two"], throw=True)
     assert executed == ["pipeline_one"]
     assert touched == ["pipeline_two"]
     assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"local_user:pipeline_other"
 
-    # A slot left behind by a run that is over (a worker restart skipped the
-    # release) is taken over rather than waited out.
-    runs["pipeline_other"] = {"status": "failed"}
-    tasks.run_pipeline.apply(args=["local_user", "pipeline_two"], throw=True)
-    assert executed == ["pipeline_one", "pipeline_two"]
-    assert redis_env.get(tasks.BUILD_SLOT_KEY) is None
+    # The broker delivering the holder again neither runs it twice nor frees
+    # the slot it is running in.
+    tasks.run_pipeline.apply(args=["local_user", "pipeline_other"], throw=True)
+    assert executed == ["pipeline_one"]
+    assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"local_user:pipeline_other"
+
+
+def test_a_build_slot_lease_renews_and_releases_only_its_own_slot(redis_env) -> None:
+    from research_tree import tasks
+
+    redis_env.set(tasks.BUILD_SLOT_KEY, "local_user:pipeline_one", ex=5)
+    lease = tasks._BuildSlotLease(redis_env, "local_user:pipeline_one")
+    redis_env.eval(
+        tasks._RENEW_SLOT_LUA, 1, tasks.BUILD_SLOT_KEY, "local_user:pipeline_one",
+        tasks.BUILD_SLOT_LEASE_SECONDS,
+    )
+    assert redis_env.ttl(tasks.BUILD_SLOT_KEY) > 5
+    # The lease lapsed and the next build took the slot: releasing the old
+    # lease must not free the new holder's slot.
+    redis_env.set(tasks.BUILD_SLOT_KEY, "local_user:pipeline_two", ex=60)
+    lease.release()
+    assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"local_user:pipeline_two"
 
 
 def test_the_worker_knows_every_task() -> None:
@@ -432,3 +444,38 @@ def test_a_job_whose_worker_stopped_is_failed_on_read(client: TestClient, job_se
     assert again.status_code == 202
     assert again.json()["job_id"] != job["job_id"]
     assert queued == [job["job_id"], again.json()["job_id"]]
+
+
+def test_a_dropped_event_stream_hands_its_redis_connection_back(redis_env) -> None:
+    import anyio
+
+    from research_tree.api.routes.workspaces import _ChangeSignal
+    from research_tree.redis_client import get_async_redis
+
+    async def stream_until_the_client_leaves() -> None:
+        # Leaving mid-wait is what a closed tab does: the stream is cancelled.
+        with anyio.move_on_after(0.2):
+            async with _ChangeSignal("workspaces:test", poll_seconds=0.05) as changes:
+                while True:
+                    await changes.wait()
+
+    async def drop_streams() -> int:
+        for _ in range(3):
+            await stream_until_the_client_leaves()
+        # Private to redis-py, but it is the pool's own count of checked-out
+        # connections, and nothing public reports it.
+        return len(get_async_redis().connection_pool._in_use_connections)
+
+    assert anyio.run(drop_streams) == 0
+
+
+def test_two_deliveries_of_one_annotation_job_start_it_once(redis_env) -> None:
+    from research_tree.services.annotations import _claim_queued_job, _save_job
+
+    job = {"job_id": "job-1", "status": "queued"}
+    _save_job(redis_env, job)
+    # Both deliveries loaded the job while it was still queued.
+    first, second = dict(job), dict(job)
+    assert _claim_queued_job(redis_env, first)
+    assert not _claim_queued_job(redis_env, second)
+
