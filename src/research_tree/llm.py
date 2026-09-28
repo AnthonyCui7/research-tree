@@ -290,6 +290,11 @@ def _refusal_of_the_key(status: int, detail: str, *, model: str) -> WorkspaceSer
         )
     elif code == "model_not_found":
         sentence = f"Your OpenAI key cannot use the model {model}. Allow it for the key's project, or use another key."
+    elif status == 403 and "Missing scopes" in message:
+        sentence = (
+            "Your OpenAI key is restricted and lacks a permission this needs. Allow it "
+            "model requests and the Responses API, or use another key."
+        )
     else:
         return None
     binding = current_binding()

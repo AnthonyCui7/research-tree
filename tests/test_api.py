@@ -36,6 +36,21 @@ def test_health(client) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_a_body_too_large_is_refused_as_such_without_a_declared_length(client) -> None:
+    def chunks():
+        for _ in range(11):
+            yield b" " * 100_000
+
+    response = client.post(
+        "/workspaces/workspace-1/agent",
+        content=chunks(),
+        headers={"content-type": "application/json"},
+    )
+
+    assert "content-length" not in {name.lower() for name in response.request.headers}
+    assert response.status_code == 413
+
+
 def test_topic_review_approval_is_single_use(repository) -> None:
     service = TopicReviewService(repository)
     reviewed = {

@@ -112,7 +112,7 @@ def looks_like_openai_key(value: str) -> bool:
 
 
 def validate_openai_key(api_key: str, *, timeout_seconds: float = KEY_CHECK_TIMEOUT_SECONDS) -> None:
-    """One cheap authenticated call; the key is refused if OpenAI refuses it.
+    """One cheap authenticated call; the key is refused if OpenAI does not know it.
 
     Exceptions are raised `from None` so no traceback carries the request
     that held the key.
@@ -127,8 +127,13 @@ def validate_openai_key(api_key: str, *, timeout_seconds: float = KEY_CHECK_TIME
         with open_openai_request(request, timeout_seconds=timeout_seconds) as response:
             response.read(64)
     except urllib.error.HTTPError as error:
-        if error.code in (401, 403):
+        if error.code == 401:
             raise ApiKeyInvalidError(KEY_REJECTED_MESSAGE) from None
+        # A 403 is a key OpenAI knows but will not let list models: a
+        # restricted key granted only what this service's calls need. What it
+        # may run is answered by those calls.
+        if error.code == 403:
+            return
         raise ProviderUnreachableError(KEY_CHECK_FAILED_MESSAGE) from None
     except (urllib.error.URLError, TimeoutError, socket.timeout, OSError):
         raise ProviderUnreachableError(KEY_CHECK_FAILED_MESSAGE) from None

@@ -11,6 +11,8 @@ import os
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from research_tree.auth.settings import PUBLIC_ORIGIN_ENV
 
 ASGIApp = Callable[[dict[str, Any], Callable[[], Awaitable[dict[str, Any]]], Callable[[dict[str, Any]], Awaitable[None]]], Awaitable[None]]
@@ -192,8 +194,11 @@ class BodyLimitMiddleware:
             )
 
 
-class _BodyTooLarge(Exception):
-    pass
+class _BodyTooLarge(StarletteHTTPException):
+    # An HTTPException because FastAPI answers anything else raised while it
+    # reads a body as a 400 about parsing; this one it lets through.
+    def __init__(self) -> None:
+        super().__init__(413, "That request is too large.")
 
 
 def _open_to_other_sites(path: str) -> bool:
