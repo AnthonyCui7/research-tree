@@ -1,21 +1,29 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError, errorNotice, type ErrorNotice } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
-import { isOpenable, isRunActive, useBuildProgress } from "../../lib/pipelineStages";
+import {
+  durationLabel,
+  isOpenable,
+  isRunActive,
+  stageSpans,
+  useBuildProgress,
+  type BuildStage,
+} from "../../lib/pipelineStages";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import type { BuildRun } from "../../data/useBuildRun";
 import {
-  chipClass,
   compactActionClass,
   errorNoticeClass,
   ghostActionClass,
   kickerClass,
+  kickerTypeClass,
   plainNoticeClass,
   primaryActionClass,
   secondaryActionClass,
   warningNoticeClass,
 } from "../../lib/controlClasses";
-import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, WarningIcon } from "../ui/icons";
+import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, CloseIcon, PlusIcon, TreeIcon, WarningIcon } from "../ui/icons";
+import { BuildIllustration } from "./BuildIllustration";
 import type { PipelineRun, TopicReview } from "../../lib/types";
 
 type NewWorkspacePageProps = {
@@ -123,7 +131,7 @@ export function NewWorkspacePage({ build, onOpenWorkspace, onOpenApiKeys }: NewW
 
   return (
     <div className="scrollbar-rt h-full overflow-y-auto bg-surface">
-      <div className="mx-auto flex min-h-full w-full max-w-[660px] flex-col justify-center px-6 pt-12 pb-[14vh]">
+      <div className="mx-auto flex min-h-full w-full max-w-[680px] flex-col justify-center px-6 pt-14 pb-[12vh]">
         {content}
       </div>
     </div>
@@ -165,16 +173,22 @@ function TopicStep({
 
   return (
     <div className="animate-interface-center-enter">
-      <h1 className="m-0 text-center text-[28px] leading-[1.25] font-semibold tracking-[-0.02em] text-text-primary">
+      <span
+        className="mx-auto grid h-11 w-11 place-items-center rounded-[14px] bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
+        aria-hidden="true"
+      >
+        <TreeIcon className="h-[22px] w-[22px]" />
+      </span>
+      <h1 className="mt-6 mb-0 text-center text-[30px] leading-[1.2] font-semibold tracking-[-0.025em] text-text-primary">
         What field do you want to map?
       </h1>
-      <p className="mx-auto mt-2.5 mb-0 max-w-[50ch] text-center text-[14px] leading-[1.6] text-text-secondary">
+      <p className="mx-auto mt-3 mb-0 max-w-[46ch] text-center text-[15px] leading-[1.6] text-text-secondary">
         Research Tree drafts an editable map of the literature: its branches, key papers, and
         reading paths.
       </p>
 
       <form
-        className="mt-8 rounded-2xl border border-border bg-surface shadow-composer transition-[border-color] duration-150 focus-within:border-border-strong"
+        className="mt-9 rounded-[20px] border border-border bg-surface shadow-composer transition-[border-color,box-shadow] duration-200 focus-within:border-[color-mix(in_srgb,var(--color-accent)_45%,var(--color-border))] focus-within:shadow-[0_0_0_4px_var(--color-accent-wash),var(--shadow-composer)]"
         aria-busy={busy}
         onSubmit={(event) => {
           event.preventDefault();
@@ -183,7 +197,7 @@ function TopicStep({
       >
         <input
           ref={topicRef}
-          className="block w-full border-0 bg-transparent px-4 pt-4 pb-2 text-[16px] text-text-primary outline-0 placeholder:text-text-muted"
+          className="block w-full border-0 bg-transparent px-5 pt-[18px] pb-2 text-[16.5px] text-text-primary outline-0 placeholder:text-text-muted"
           type="text"
           value={topic}
           onChange={(event) => onTopic(event.target.value)}
@@ -193,30 +207,42 @@ function TopicStep({
           disabled={busy}
         />
         {instructionsOpen ? (
-          <textarea
-            ref={instructionsRef}
-            className="block min-h-[72px] w-full resize-none border-0 bg-transparent px-4 pt-1 pb-2 text-[14px] leading-[1.55] text-text-primary outline-0 placeholder:text-text-muted"
-            value={instructions}
-            onChange={(event) => onInstructions(event.target.value)}
-            placeholder="Instructions for the build, e.g. emphasize evaluation methods; leave out hardware-specific serving papers."
-            maxLength={2000}
-            rows={3}
-            aria-label="Instructions for the build"
-            disabled={busy}
-          />
+          <div className="mx-5 animate-settle border-t border-hairline pt-3">
+            <label className={kickerClass} htmlFor="build-instructions">
+              Instructions
+            </label>
+            <textarea
+              id="build-instructions"
+              ref={instructionsRef}
+              className="mt-1.5 block min-h-[76px] w-full resize-none border-0 bg-transparent p-0 text-[14px] leading-[1.6] text-text-primary outline-0 placeholder:text-text-muted"
+              value={instructions}
+              onChange={(event) => onInstructions(event.target.value)}
+              placeholder="e.g. emphasize evaluation methods; leave out hardware-specific serving papers."
+              maxLength={2000}
+              rows={3}
+              disabled={busy}
+            />
+          </div>
         ) : null}
-        <div className="flex items-center gap-2 px-3 pt-1 pb-3">
+        <div className="flex items-center gap-2 px-3 pt-2 pb-3">
           <button
-            className="flex h-8 items-center gap-1.5 rounded-full border border-border bg-surface px-3 text-[12.5px] font-medium text-text-secondary transition-[background-color,color] duration-150 enabled:hover:bg-surface-subtle enabled:hover:text-text-primary"
+            className={cx(
+              "flex h-8 items-center gap-1.5 rounded-full border px-3 text-[12.5px] font-medium transition-[background-color,border-color,color] duration-150",
+              instructionsOpen
+                ? "border-accent-border bg-accent-wash text-accent-deep enabled:hover:bg-accent-subtle"
+                : "border-border bg-surface text-text-secondary enabled:hover:bg-surface-subtle enabled:hover:text-text-primary",
+            )}
             type="button"
             onClick={() => onInstructions(instructionsOpen ? null : "")}
             aria-expanded={instructionsOpen}
+            aria-label={instructionsOpen ? "Remove instructions" : "Add instructions"}
             disabled={busy}
           >
-            {instructionsOpen ? "Remove instructions" : "Add instructions"}
+            {instructionsOpen ? <CloseIcon className="h-3 w-3" /> : <PlusIcon className="h-3.5 w-3.5" />}
+            Instructions
           </button>
           <button
-            className="ml-auto grid h-9 w-9 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-white transition-[background-color] duration-150 enabled:hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-border-strong"
+            className="ml-auto grid h-9 w-9 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-white shadow-[0_1px_2px_rgb(23_102_71/30%)] transition-[background-color,transform] duration-150 enabled:hover:bg-accent-deep enabled:active:scale-95 disabled:cursor-not-allowed disabled:bg-border-strong disabled:shadow-none"
             type="submit"
             disabled={busy || !topic.trim()}
             aria-label="Review topic"
@@ -234,13 +260,10 @@ function TopicStep({
         </div>
       </form>
 
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+      <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
         {EXAMPLE_TOPICS.map((example) => (
           <button
-            className={cx(
-              chipClass,
-              "border border-transparent py-1 transition-[background-color,color,border-color] duration-150 hover:border-border hover:bg-surface hover:text-text-primary",
-            )}
+            className="rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12.5px] text-text-secondary transition-[background-color,border-color,color] duration-150 enabled:hover:border-border-strong enabled:hover:bg-surface-subtle enabled:hover:text-text-primary"
             key={example}
             type="button"
             onClick={() => {
@@ -263,6 +286,7 @@ function TopicStep({
 function StepError({ error, onOpenApiKeys }: { error: ErrorNotice; onOpenApiKeys: () => void }) {
   return (
     <div className={cx(errorNoticeClass, "mt-6 flex items-center gap-3")} role="alert">
+      <WarningIcon className="h-4 w-4 flex-none" />
       <span className="min-w-0 flex-1">{error.message}</span>
       {error.needsKey ? (
         <button className={cx(compactActionClass, "flex-none")} type="button" onClick={onOpenApiKeys}>
@@ -299,32 +323,31 @@ function ReviewStep({
   return (
     <div className="animate-interface-center-enter">
       {recognized ? (
-        <p className="m-0 flex items-center gap-2 text-[13px] font-medium text-accent-deep">
-          <span
-            className="grid h-5 w-5 place-items-center rounded-full bg-accent-subtle"
-            aria-hidden="true"
-          >
-            <CheckIcon className="h-2.5 w-2.5" />
+        <p className="m-0 flex items-center gap-2.5 text-[13px] font-medium text-accent-deep">
+          <span className="grid h-6 w-6 place-items-center rounded-full bg-accent-subtle" aria-hidden="true">
+            <CheckIcon className="h-3.5 w-3.5" />
           </span>
           Recognized research field
         </p>
       ) : (
-        <p className="m-0 flex items-center gap-2 text-[13px] font-medium text-warning">
-          <WarningIcon className="h-4 w-4" />
+        <p className="m-0 flex items-center gap-2.5 text-[13px] font-medium text-warning">
+          <span className="grid h-6 w-6 place-items-center rounded-full bg-warning-surface" aria-hidden="true">
+            <WarningIcon className="h-3.5 w-3.5" />
+          </span>
           Not recognized as a research field
         </p>
       )}
-      <h1 className="mt-3 mb-0 text-[28px] leading-[1.25] font-semibold tracking-[-0.02em] text-text-primary [overflow-wrap:anywhere]">
+      <h1 className="mt-4 mb-0 text-[30px] leading-[1.2] font-semibold tracking-[-0.025em] text-text-primary [overflow-wrap:anywhere]">
         {recognized ? review.normalized_topic : review.submitted_topic}
       </h1>
       {review.guidance || !recognized ? (
-        <p className="mt-2.5 mb-0 max-w-[62ch] text-[14px] leading-[1.6] text-text-secondary">
+        <p className="mt-3 mb-0 max-w-[60ch] text-[15px] leading-[1.6] text-text-secondary">
           {review.guidance || "Try a specific field, method, benchmark, or research question."}
         </p>
       ) : null}
 
       {recognized && (review.source_paper || instructions) ? (
-        <dl className="mt-7 mb-0 grid gap-4 border-t border-hairline pt-5">
+        <dl className="mt-7 mb-0 grid gap-4 rounded-2xl border border-hairline bg-surface p-5">
           {review.source_paper ? (
             <ReviewFact label="Linked paper">
               {review.source_paper.title} will anchor the map.
@@ -335,7 +358,8 @@ function ReviewStep({
       ) : null}
 
       {existing ? (
-        <p className={cx(warningNoticeClass, "mt-6 mb-0")}>
+        <p className={cx(warningNoticeClass, "mt-6 mb-0 flex items-center gap-2.5")}>
+          <WarningIcon className="h-4 w-4 flex-none" />
           You already have a “{existing.title}” workspace for this topic.
         </p>
       ) : null}
@@ -353,6 +377,7 @@ function ReviewStep({
             onClick={() => onOpenExisting(existing.workspace_id)}
           >
             Open it instead
+            <ArrowRightIcon className="h-3.5 w-3.5" />
           </button>
         ) : recognized && review.can_create ? (
           <button className={cx(primaryActionClass, "ml-auto")} type="button" disabled={busy} onClick={onBuild}>
@@ -369,7 +394,7 @@ function ReviewFact({ label, children }: { label: string; children: ReactNode })
   return (
     <div>
       <dt className={kickerClass}>{label}</dt>
-      <dd className="m-0 mt-1.5 max-w-[62ch] text-[14px] leading-[1.6] text-text-primary [overflow-wrap:anywhere]">
+      <dd className="m-0 mt-1.5 text-[14px] leading-[1.6] text-text-primary [overflow-wrap:anywhere]">
         {children}
       </dd>
     </div>
@@ -377,6 +402,8 @@ function ReviewFact({ label, children }: { label: string; children: ReactNode })
 }
 
 /* ---------------------------------------------------------------- build --- */
+
+const TIME = new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit" });
 
 function BuildProgress({
   run,
@@ -395,48 +422,49 @@ function BuildProgress({
   const [canceling, setCanceling] = useState(false);
   const warnings = (run.warnings ?? []).map((warning) => warning.trim()).filter(Boolean);
   const active = isRunActive(run);
+  const spans = stageSpans(run, progress.stages);
+  const started = Date.parse(run.started_at ?? "");
 
   return (
     <div className="animate-interface-center-enter" aria-live="polite">
-      <div className="flex items-baseline gap-4">
-        <h1 className="m-0 min-w-0 flex-1 text-[24px] leading-[1.3] font-semibold tracking-[-0.02em] text-text-primary [overflow-wrap:anywhere]">
-          Mapping {run.topic}
-        </h1>
-        <span className="flex-none text-[15px] font-semibold text-accent tabular-nums">
-          {progress.percent}%
+      <div className="flex items-end gap-4">
+        <div className="min-w-0 flex-1">
+          <BuildStatus run={run} />
+          <h1 className="mt-2.5 mb-0 text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-text-primary [overflow-wrap:anywhere]">
+            Mapping {run.topic}
+          </h1>
+          <p className="mt-1.5 mb-0 text-[13px] text-text-muted tabular-nums">
+            {run.status === "queued"
+              ? "Waiting for a free worker. It starts when the build ahead of it finishes."
+              : Number.isNaN(started)
+                ? null
+                : `Started ${TIME.format(started)}${active ? ` · ${durationLabel(progress.now - started)} so far` : ""}`}
+          </p>
+        </div>
+        <span className="flex-none text-[28px] leading-none font-semibold tracking-[-0.02em] text-accent tabular-nums">
+          {progress.percent}
+          <span className="text-[16px] font-medium">%</span>
         </span>
       </div>
-      <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-track" aria-hidden="true">
+      <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-track" aria-hidden="true">
         <div
           className="h-full rounded-full bg-accent transition-[width] duration-500 ease-linear"
           style={{ width: `${progress.percent}%` }}
         />
       </div>
-      {run.status === "queued" ? (
-        <p className="mt-3 mb-0 text-[13px] leading-[1.5] text-text-secondary">
-          Waiting for a free worker. It starts when the build ahead of it finishes.
-        </p>
-      ) : null}
 
-      <ol className="m-0 mt-7 grid list-none gap-3.5 p-0">
-        {progress.stages.map((stage) => (
-          <li className="flex items-center gap-3" key={stage.id}>
-            <StageMark state={stage.state} />
-            <span
-              className={cx(
-                "text-[14px]",
-                stage.state === "waiting"
-                  ? "text-text-muted"
-                  : stage.state === "failed"
-                    ? "text-error"
-                    : stage.state === "current"
-                      ? "font-medium text-text-primary"
-                      : "text-text-secondary",
-              )}
-            >
-              {stage.label}
-            </span>
-          </li>
+      <div className="tree-grid-bg mt-6 overflow-hidden rounded-2xl border border-hairline px-5 py-5">
+        <BuildIllustration stages={progress.stages} />
+      </div>
+
+      <ol className="m-0 mt-6 grid list-none p-0">
+        {progress.stages.map((stage, index) => (
+          <StageRow
+            key={stage.id}
+            stage={stage}
+            last={index === progress.stages.length - 1}
+            took={stageDuration(spans[stage.id], progress.now)}
+          />
         ))}
       </ol>
 
@@ -468,7 +496,7 @@ function BuildProgress({
         {active ? (
           <>
             <button
-              className={cx(ghostActionClass, "-ml-3 enabled:hover:text-error")}
+              className={cx(ghostActionClass, "-ml-3")}
               type="button"
               disabled={canceling}
               onClick={() => {
@@ -495,21 +523,86 @@ function BuildProgress({
   );
 }
 
-function StageMark({ state }: { state: "done" | "current" | "waiting" | "failed" }) {
+/** Where the build stands, in the page's kicker. */
+function BuildStatus({ run }: { run: PipelineRun }) {
+  if (run.status === "failed") {
+    return <span className={cx(kickerTypeClass, "text-error")}>Build failed</span>;
+  }
+  if (run.status === "cancelled") {
+    return <span className={kickerClass}>Build cancelled</span>;
+  }
+  return (
+    <span className={cx(kickerTypeClass, "flex items-center gap-2 text-accent-deep")}>
+      <span className="relative flex h-2 w-2" aria-hidden="true">
+        <span className="absolute inset-0 animate-breathe rounded-full bg-accent" />
+        <span className="relative h-2 w-2 rounded-full bg-accent" />
+      </span>
+      {run.status === "queued" ? "Queued" : "Building"}
+    </span>
+  );
+}
+
+function StageRow({ stage, last, took }: { stage: BuildStage; last: boolean; took: string | null }) {
+  return (
+    <li className="relative flex items-center gap-3 py-[9px]">
+      {last ? null : (
+        <span
+          className={cx(
+            "absolute top-[29px] bottom-[-9px] left-[8.5px] w-px",
+            stage.state === "done" ? "bg-accent-border" : "bg-hairline",
+          )}
+          aria-hidden="true"
+        />
+      )}
+      <StageMark state={stage.state} />
+      <span
+        className={cx(
+          "min-w-0 flex-1 text-[14px]",
+          stage.state === "waiting"
+            ? "text-text-muted"
+            : stage.state === "failed"
+              ? "text-error"
+              : stage.state === "current"
+                ? "font-medium text-text-primary"
+                : "text-text-secondary",
+        )}
+      >
+        {stage.label}
+      </span>
+      {took ? (
+        <span
+          className={cx(
+            "flex-none text-[12.5px] tabular-nums",
+            stage.state === "current" ? "text-text-secondary" : "text-text-muted",
+          )}
+        >
+          {took}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
+function stageDuration(span: { start: number; end: number | null } | undefined, now: number): string | null {
+  if (!span) return null;
+  return durationLabel((span.end ?? now) - span.start);
+}
+
+function StageMark({ state }: { state: BuildStage["state"] }) {
   if (state === "done") {
     return (
       <span
-        className="grid h-[18px] w-[18px] flex-none place-items-center rounded-full bg-accent-subtle text-accent-deep"
+        className="relative grid h-[18px] w-[18px] flex-none place-items-center rounded-full bg-accent text-white"
         aria-hidden="true"
       >
-        <CheckIcon className="h-[9px] w-[9px]" />
+        <CheckIcon className="h-[11px] w-[11px]" />
       </span>
     );
   }
   if (state === "current") {
     return (
       <span
-        className="h-[18px] w-[18px] flex-none animate-progress-spin rounded-full border-2 border-track border-t-accent"
+        className="relative h-[18px] w-[18px] flex-none animate-progress-spin rounded-full border-2 border-accent-subtle border-t-accent bg-surface"
         aria-hidden="true"
       />
     );
@@ -517,10 +610,17 @@ function StageMark({ state }: { state: "done" | "current" | "waiting" | "failed"
   if (state === "failed") {
     return (
       <span
-        className="h-[18px] w-[18px] flex-none rounded-full border-2 border-error bg-error-surface"
+        className="relative grid h-[18px] w-[18px] flex-none place-items-center rounded-full bg-error text-white"
         aria-hidden="true"
-      />
+      >
+        <CloseIcon className="h-[10px] w-[10px]" />
+      </span>
     );
   }
-  return <span className="h-[18px] w-[18px] flex-none rounded-full border-2 border-track" aria-hidden="true" />;
+  return (
+    <span
+      className="relative h-[18px] w-[18px] flex-none rounded-full border-2 border-hairline bg-surface"
+      aria-hidden="true"
+    />
+  );
 }

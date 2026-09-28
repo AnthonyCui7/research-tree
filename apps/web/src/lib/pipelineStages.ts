@@ -103,7 +103,7 @@ function percentComplete(run: PipelineRun, stagesDone: number, elapsedMs: number
  * Progress that advances between stage transitions, for the components that
  * show a bar. The tick is what animates the clock; it stops with the run.
  */
-export function useBuildProgress(run: PipelineRun): BuildProgress {
+export function useBuildProgress(run: PipelineRun): BuildProgress & { now: number } {
   // The clock runs from when a worker picked the build up. A build waiting in
   // the queue has not started, and a bar that filled while it waited had
   // nothing left to show once the work began.
@@ -116,11 +116,47 @@ export function useBuildProgress(run: PipelineRun): BuildProgress {
     return () => window.clearInterval(timer);
   }, [run]);
 
-  return buildProgress(run, Number.isNaN(startedAt) ? 0 : now - startedAt);
+  return { ...buildProgress(run, Number.isNaN(startedAt) ? 0 : now - startedAt), now };
 }
 
 /** Matches the bar's width transition, so the fill reads as continuous. */
 const CLOCK_TICK_MS = 500;
+
+export type StageSpan = { start: number; end: number | null };
+
+/**
+ * When each stage ran, as far as the run record says. A stage records the
+ * time of its last change, so a finished stage ended at its `updated_at` and
+ * began when the one before it ended (the first when the run started); the
+ * current stage has a start and no end yet. A stage reused from an earlier
+ * run carries that run's times and gets no span.
+ */
+export function stageSpans(run: PipelineRun, stages: BuildStage[]): Record<string, StageSpan> {
+  const spans: Record<string, StageSpan> = {};
+  let previousEnd = Date.parse(run.started_at ?? "");
+  for (const stage of stages) {
+    if (Number.isNaN(previousEnd)) break;
+    if (stage.state === "current") {
+      spans[stage.id] = { start: previousEnd, end: null };
+      break;
+    }
+    if (stage.state !== "done") break;
+    const end = Date.parse(run.stages?.[stage.id]?.updated_at ?? "");
+    if (Number.isNaN(end) || end < previousEnd) continue;
+    spans[stage.id] = { start: previousEnd, end };
+    previousEnd = end;
+  }
+  return spans;
+}
+
+/** "42s", "3m 05s", "1h 02m": how long something took, or has taken so far. */
+export function durationLabel(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
 
 /** Structure plus paper details have landed; later stages only enrich it. */
 export function isOpenable(run: PipelineRun): boolean {

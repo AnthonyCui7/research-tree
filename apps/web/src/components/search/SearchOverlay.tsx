@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { cx } from "../../lib/cx";
 import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { useModalDialog } from "../../lib/modalDialog";
 import { branchTint } from "../../lib/familyTint";
 import { pluralize } from "../../lib/format";
 import { kickerClass } from "../../lib/controlClasses";
-import { SearchIcon } from "../ui/icons";
+import { PaperIcon, SearchIcon, TreeIcon } from "../ui/icons";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import type { BranchTreeNode, PaperTreeNode, TreeNodeId, TreeViewModel } from "../../lib/types";
 
@@ -160,7 +160,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
                     active={activeIndex === index}
                     onHover={() => setActiveIndex(index)}
                     onSelect={() => open({ kind: "branch", node })}
-                    badge="B"
+                    icon={<TreeIcon className="h-3.5 w-3.5" />}
                     tint={branchTint(node.family)}
                     title={node.title}
                     trailing={pluralize(node.paperCount, "paper")}
@@ -180,8 +180,8 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
                       active={activeIndex === resultIndex}
                       onHover={() => setActiveIndex(resultIndex)}
                       onSelect={() => open({ kind: "paper", node })}
-                      badge="P"
-                      tint="#f1f3f4"
+                      icon={<PaperIcon className="h-3.5 w-3.5" />}
+                      tint="var(--color-surface)"
                       title={node.title}
                       subtitle={`${authorLine(node.authors)} · ${publicationDate(node)} · ${node.branchTitle}`}
                     />
@@ -236,7 +236,7 @@ function ResultRow({
   active,
   onHover,
   onSelect,
-  badge,
+  icon,
   tint,
   title,
   subtitle,
@@ -246,7 +246,7 @@ function ResultRow({
   active: boolean;
   onHover: () => void;
   onSelect: () => void;
-  badge: string;
+  icon: ReactNode;
   tint: string;
   title: string;
   subtitle?: string;
@@ -265,11 +265,11 @@ function ResultRow({
       onClick={onSelect}
     >
       <span
-        className="grid h-5 w-5 flex-none place-items-center rounded-[6px] border border-border text-[9.5px] font-semibold text-text-secondary"
+        className="grid h-7 w-7 flex-none place-items-center rounded-lg border border-hairline text-text-secondary"
         style={{ background: tint }}
         aria-hidden="true"
       >
-        {badge}
+        {icon}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13.5px] font-medium text-text-primary">{title}</span>

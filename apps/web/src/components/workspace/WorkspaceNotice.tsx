@@ -4,7 +4,7 @@ import { secondaryActionClass } from "../../lib/controlClasses";
 type WorkspaceNoticeProps = {
   title: string;
   detail?: string;
-  tone?: "neutral" | "error";
+  tone: "error" | "loading";
   actionLabel?: string;
   onAction?: () => void;
 };
@@ -13,7 +13,7 @@ type WorkspaceNoticeProps = {
 export function WorkspaceNotice({
   title,
   detail,
-  tone = "neutral",
+  tone,
   actionLabel,
   onAction,
 }: WorkspaceNoticeProps) {
@@ -23,10 +23,16 @@ export function WorkspaceNotice({
         className="flex max-w-[400px] flex-col items-center text-center"
         role={tone === "error" ? "alert" : "status"}
       >
+        {tone === "loading" ? (
+          <span
+            className="mb-3 h-5 w-5 animate-progress-spin rounded-full border-2 border-accent-subtle border-t-accent"
+            aria-hidden="true"
+          />
+        ) : null}
         <h2
           className={cx(
-            "m-0 text-[15px] font-semibold tracking-[-0.01em]",
-            tone === "error" ? "text-error" : "text-text-secondary",
+            "m-0 tracking-[-0.01em]",
+            tone === "error" ? "text-[15px] font-semibold text-error" : "text-[13.5px] font-medium text-text-muted",
           )}
         >
           {title}

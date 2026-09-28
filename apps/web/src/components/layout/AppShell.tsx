@@ -174,6 +174,16 @@ export function AppShell({
     setRenamingNodeId(null);
   }, [selectedNodeId]);
 
+  // The browser tab names what it holds, so a reader with several open can
+  // tell them apart.
+  const pageTitle = home ? "New workspace" : (tree?.title ?? activeSummary?.title ?? null);
+  useEffect(() => {
+    document.title = pageTitle ? `${pageTitle} · Research Tree` : "Research Tree";
+    return () => {
+      document.title = "Research Tree";
+    };
+  }, [pageTitle]);
+
   useEffect(() => {
     if (!followPaper || !tree || tree.currentVersionHash === followPaper.from) return;
     const moved = tree.nodes.find(
@@ -273,7 +283,7 @@ export function AppShell({
       />
     );
   } else if (!route || !activeSummary) {
-    mainContent = <WorkspaceNotice title="Loading…" />;
+    mainContent = <WorkspaceNotice title="Loading" tone="loading" />;
   } else {
     mainContent = (
       <>
@@ -293,7 +303,7 @@ export function AppShell({
         />
         <div className="relative flex min-h-0 flex-1">
           <section className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-            {!tree && workspaceLoading ? <WorkspaceNotice title="Loading workspace…" /> : null}
+            {!tree && workspaceLoading ? <WorkspaceNotice title="Loading workspace" tone="loading" /> : null}
             {!tree && !workspaceLoading && workspaceError ? (
               <WorkspaceNotice
                 title="Workspace failed to load"

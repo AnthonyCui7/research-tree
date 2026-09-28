@@ -5,6 +5,7 @@ import { cx } from "../../lib/cx";
 import { dateTimeLabel } from "../../lib/format";
 import { compactActionClass, errorNoticeClass } from "../../lib/controlClasses";
 import { PanelHeader } from "../panel/RightPanel";
+import { ChatIcon, PencilIcon, TreeIcon } from "../ui/icons";
 import type { WorkspaceVersion } from "../../lib/types";
 
 type WorkspaceHistoryProps = {
@@ -109,23 +110,27 @@ export function WorkspaceHistory({
             const last = index === ordered.length - 1;
             return (
               <li
-                className="relative flex gap-3.5 pb-5 last:pb-0"
+                className="relative flex gap-3.5 pb-6 last:pb-0"
                 key={`${version.navigation_index ?? 0}:${version.version_hash}`}
               >
                 {last ? null : (
                   <span
-                    className="absolute top-[18px] bottom-0 left-[4.5px] w-px bg-hairline"
+                    className="absolute top-7 bottom-1 left-[13.5px] w-px bg-hairline"
                     aria-hidden="true"
                   />
                 )}
                 <span
                   className={cx(
-                    "relative mt-[5px] h-2.5 w-2.5 flex-none rounded-full border-2",
-                    current ? "border-accent bg-accent" : "border-border-strong bg-surface",
+                    "relative grid h-7 w-7 flex-none place-items-center rounded-full",
+                    current
+                      ? "bg-accent text-white shadow-[0_0_0_4px_var(--color-accent-subtle)]"
+                      : "border border-hairline bg-surface text-text-muted",
                   )}
                   aria-hidden="true"
-                />
-                <div className="min-w-0 flex-1">
+                >
+                  <ActorGlyph version={version} />
+                </span>
+                <div className="min-w-0 flex-1 pt-[3px]">
                   <div className="flex items-start gap-2">
                     <p className="m-0 flex-1 text-[13.5px] leading-[1.45] font-medium text-text-primary [overflow-wrap:anywhere]">
                       {humanReason(version.reason)}
@@ -179,4 +184,11 @@ function editorLabel(version: WorkspaceVersion): string {
   if (actor === "user") return "You";
   if (actor === "agent") return "Assistant, approved by you";
   return "Build";
+}
+
+function ActorGlyph({ version }: { version: WorkspaceVersion }) {
+  const actor = version.actor_type || version.actor;
+  if (actor === "user") return <PencilIcon className="h-3.5 w-3.5" />;
+  if (actor === "agent") return <ChatIcon className="h-3.5 w-3.5" />;
+  return <TreeIcon className="h-3.5 w-3.5" />;
 }
