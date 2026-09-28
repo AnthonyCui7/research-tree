@@ -3,9 +3,8 @@ import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../../
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { cx } from "../../lib/cx";
 import { dateTimeLabel } from "../../lib/format";
-import { compactActionClass } from "../../lib/controlClasses";
+import { compactActionClass, errorNoticeClass } from "../../lib/controlClasses";
 import { PanelHeader } from "../panel/RightPanel";
-import { ClockIcon } from "../ui/icons";
 import type { WorkspaceVersion } from "../../lib/types";
 
 type WorkspaceHistoryProps = {
@@ -89,65 +88,73 @@ export function WorkspaceHistory({
 
   return (
     <>
-      <PanelHeader
-        title="Version history"
-        icon={<ClockIcon className="h-3.5 w-3.5" />}
-        onClose={onClose}
-        closeLabel="Close version history"
-      />
-      <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-3 py-3.5">
+      <PanelHeader title="Version history" onClose={onClose} closeLabel="Close version history" />
+      <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 py-5">
         {error ? (
-          <p className="mb-3 rounded-lg border border-error-border bg-error-surface px-[13px] py-2.5 text-xs leading-[1.5] text-error" role="alert">
+          <p className={cx(errorNoticeClass, "mt-0 mb-4")} role="alert">
             {error}
           </p>
         ) : null}
         {ordered.length === 0 ? (
-          <p className="px-2.5 py-3.5 text-xs text-text-muted">
+          <p className="m-0 text-[13px] text-text-muted">
             {loading ? "Loading versions…" : "No saved versions yet."}
           </p>
         ) : null}
-        <ol className="m-0 flex list-none flex-col gap-0.5 p-0">
-          {ordered.map((version) => {
+        <ol className="m-0 list-none p-0">
+          {ordered.map((version, index) => {
             // The server marks exactly one entry current, by position. Matching
             // on the hash marked both halves of a duplicate that older
             // workspaces can still carry, so neither offered a way back.
             const current = version.is_current ?? version.version_hash === currentVersionHash;
+            const last = index === ordered.length - 1;
             return (
               <li
-                className={cx("rounded-[9px] px-2.5 py-3", current && "bg-accent-wash")}
+                className="relative flex gap-3.5 pb-5 last:pb-0"
                 key={`${version.navigation_index ?? 0}:${version.version_hash}`}
               >
-                <div className="flex items-start gap-2">
-                  <p className="m-0 flex-1 text-[12.5px] font-semibold leading-[1.45] text-text-primary [overflow-wrap:anywhere]">
-                    {humanReason(version.reason)}
-                  </p>
-                  {current ? (
-                    <span className="flex-none rounded-[5px] bg-accent-subtle px-2 py-0.5 text-[10px] font-semibold tracking-[0.02em] text-accent-deep uppercase">
-                      Current
-                    </span>
-                  ) : null}
-                </div>
-                <p className="mt-[3px] mb-0 text-[11px] leading-[1.5] text-text-muted">
-                  {dateTimeLabel(version.created_at)}
-                </p>
-                <p className="mt-px mb-0 text-[11px] leading-[1.5] text-text-muted">
-                  {editorLabel(version)}
-                </p>
-                {!current ? (
-                  <div className="mt-2 flex items-center gap-1.5">
-                    <button
-                      className={compactActionClass}
-                      type="button"
-                      disabled={busyHash !== null || replacedHash !== null}
-                      onClick={() => void restore(version.version_hash)}
-                    >
-                      {busyHash === version.version_hash ? "Restoring…" : "Restore"}
-                    </button>
-                    <span className="font-mono text-[10px] text-text-muted">
-                      {version.version_hash.slice(0, 7)}
-                    </span>
+                {last ? null : (
+                  <span
+                    className="absolute top-[18px] bottom-0 left-[4.5px] w-px bg-hairline"
+                    aria-hidden="true"
+                  />
+                )}
+                <span
+                  className={cx(
+                    "relative mt-[5px] h-2.5 w-2.5 flex-none rounded-full border-2",
+                    current ? "border-accent bg-accent" : "border-border-strong bg-surface",
+                  )}
+                  aria-hidden="true"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start gap-2">
+                    <p className="m-0 flex-1 text-[13.5px] leading-[1.45] font-medium text-text-primary [overflow-wrap:anywhere]">
+                      {humanReason(version.reason)}
+                    </p>
+                    {current ? (
+                      <span className="flex-none rounded-full bg-accent-subtle px-2 py-px text-[11px] font-semibold text-accent-deep">
+                        Current
+                      </span>
+                    ) : null}
                   </div>
-                ) : null}
+                  <p className="mt-0.5 mb-0 text-[12px] leading-[1.5] text-text-muted">
+                    {editorLabel(version)} · {dateTimeLabel(version.created_at)}
+                  </p>
+                  {current ? null : (
+                    <div className="mt-2 flex items-center gap-2.5">
+                      <button
+                        className={compactActionClass}
+                        type="button"
+                        disabled={busyHash !== null || replacedHash !== null}
+                        onClick={() => void restore(version.version_hash)}
+                      >
+                        {busyHash === version.version_hash ? "Restoring…" : "Restore"}
+                      </button>
+                      <span className="font-mono text-[11px] text-text-muted">
+                        {version.version_hash.slice(0, 7)}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </li>
             );
           })}
@@ -166,9 +173,10 @@ function humanReason(reason: string): string {
   return label.length > 96 ? `${label.slice(0, 93).trimEnd()}…` : label;
 }
 
+/** Who made the version: the reader, the assistant with the reader's approval, or a build. */
 function editorLabel(version: WorkspaceVersion): string {
   const actor = version.actor_type || version.actor;
-  if (actor === "user") return "Editor: You";
-  if (actor === "agent") return "Editors: You + Assistant";
-  return "Editor: Pipeline";
+  if (actor === "user") return "You";
+  if (actor === "agent") return "Assistant, approved by you";
+  return "Build";
 }

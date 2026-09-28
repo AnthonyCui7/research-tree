@@ -9,10 +9,12 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cx } from "../../lib/cx";
-import { DROPDOWN_EXIT_MS, useExitAnimation } from "../../lib/animation";
 import { pluralize } from "../../lib/format";
+import { errorNoticeClass, warningNoticeClass } from "../../lib/controlClasses";
 import { agentRunFailed, type AgentSession } from "../../data/useAgentSession";
-import { ArrowRightIcon, ChevronDownIcon, CheckIcon, CloseIcon, SendIcon } from "../ui/icons";
+import { PanelHeader } from "../panel/RightPanel";
+import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
+import { CheckIcon, ChevronDownIcon, CloseIcon, SendIcon } from "../ui/icons";
 import { ProposedRevision } from "./ProposedRevision";
 import type {
   AgentActivity,
@@ -30,18 +32,18 @@ type WorkspaceAgentProps = {
 };
 
 const MODELS = [
-  { id: "gpt-5.6-luna", label: "gpt-5.6-luna", detail: "Recommended" },
-  { id: "gpt-5.6-terra", label: "gpt-5.6-terra", detail: "Smarter" },
-  { id: "gpt-5.6-sol", label: "gpt-5.6-sol", detail: "Smartest" },
+  { id: "gpt-5.6-luna", detail: "Recommended" },
+  { id: "gpt-5.6-terra", detail: "Smarter" },
+  { id: "gpt-5.6-sol", detail: "Smartest" },
 ] as const;
 
+/** Tallest the composer grows before it scrolls. */
+const COMPOSER_MAX_HEIGHT = 200;
+
 export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) {
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const modelMenu = useExitAnimation(modelMenuOpen, DROPDOWN_EXIT_MS);
-  const modelPickerRef = useRef<HTMLDivElement>(null);
+  const [modelAnchor, setModelAnchor] = useState<MenuAnchor | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const activeModel = MODELS.find((option) => option.id === session.model) ?? MODELS[0];
   const {
     activity,
     busy,
@@ -56,16 +58,6 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
   } = session;
 
   useEffect(() => {
-    function closeModelMenu(event: MouseEvent) {
-      if (!modelPickerRef.current?.contains(event.target as Node)) {
-        setModelMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", closeModelMenu);
-    return () => document.removeEventListener("mousedown", closeModelMenu);
-  }, []);
-
-  useEffect(() => {
     const element = conversationRef.current;
     if (!element) return;
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
@@ -75,7 +67,7 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
     const composer = composerRef.current;
     if (!composer) return;
     composer.style.height = "auto";
-    composer.style.height = `${Math.min(composer.scrollHeight, 168)}px`;
+    composer.style.height = `${Math.min(composer.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
   }, [message]);
 
   function submit() {
@@ -102,158 +94,95 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
 
   return (
     <>
-      <header className="flex h-11 flex-none items-center gap-2 border-b border-[#e9e8e4] px-7">
-        <h2 className="m-0 flex-1 text-[13.5px] font-bold text-text-primary">Assistant</h2>
-        <button
-          className="grid h-[26px] w-[26px] flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
-          type="button"
-          onClick={onClose}
-          aria-label="Close assistant"
-          title="Close"
-        >
-          <CloseIcon className="h-3 w-3" />
-        </button>
-      </header>
+      <PanelHeader title="Assistant" onClose={onClose} closeLabel="Close assistant" />
 
-      <div
-        className={cx(
-          // Static 28px gutters: the panel stretches to half the screen and
-          // beyond, and the chat column should not ride its edges when it does.
-          "scrollbar-rt flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-7 pt-[18px] pb-2",
-          // With nothing said yet the panel is mostly empty space, so the
-          // opening prompts sit in the middle of it rather than clinging to the
-          // top of a tall blank column.
-          showIntro && "justify-center",
-        )}
-        ref={conversationRef}
-        aria-live="polite"
-      >
-        {showIntro ? <AgentIntro tree={tree} onUse={fillComposer} /> : null}
+      <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto" ref={conversationRef} aria-live="polite">
+        <div className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-6 px-6 pt-6 pb-4">
+          {showIntro ? <AgentIntro tree={tree} onUse={fillComposer} /> : null}
 
-        {conversation.map((item, index) =>
-          item.role === "user" ? (
-            <div className="flex justify-end" key={`user-${index}`}>
-              <p className="m-0 max-w-[46ch] rounded-[14px_14px_4px_14px] border border-agent-user-border bg-agent-user-surface px-[13px] py-[9px] text-[13px] leading-[1.62] text-text-primary [overflow-wrap:anywhere]">
-                {item.text}
-              </p>
+          {conversation.map((item, index) =>
+            item.role === "user" ? (
+              <div className="flex justify-end pl-10" key={`user-${index}`}>
+                <p className="m-0 rounded-[20px] bg-surface-subtle px-4 py-2.5 text-[14px] leading-[1.6] whitespace-pre-wrap text-text-primary [overflow-wrap:anywhere]">
+                  {item.text}
+                </p>
+              </div>
+            ) : (
+              <div className="text-[14px] leading-[1.7] text-text-primary" key={`agent-${index}`}>
+                {item.steps?.length ? <StepsTaken steps={item.steps} /> : null}
+                <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+                  {displayMarkdown(item.text)}
+                </ReactMarkdown>
+              </div>
+            ),
+          )}
+
+          {busy ? <ActivityTrail steps={steps} activity={activity} /> : null}
+
+          {pendingReview ? (
+            <ProposedRevision
+              result={pendingReview}
+              tree={tree}
+              busy={busy}
+              onDecide={session.decide}
+              restoredUserMessage={session.restoredUserMessage}
+            />
+          ) : null}
+
+          {outcome ? <ReviewOutcomeLine outcome={outcome} /> : null}
+          {result ? <AgentRunNotices result={result} /> : null}
+          {error ? (
+            <div className={cx(errorNoticeClass, "flex items-start gap-2")} role="alert">
+              <span className="min-w-0 flex-1">{error}</span>
+              <button
+                className="-mr-1 grid h-5 w-5 flex-none place-items-center rounded-[5px] border-0 bg-transparent p-0 hover:bg-error-border/40"
+                type="button"
+                onClick={session.dismissError}
+                aria-label="Dismiss assistant error"
+              >
+                <CloseIcon className="h-2.5 w-2.5" />
+              </button>
             </div>
-          ) : (
-            <div className="text-[13px] leading-[1.62] text-text-primary" key={`agent-${index}`}>
-              {item.steps?.length ? <StepsTaken steps={item.steps} /> : null}
-              <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-                {displayMarkdown(item.text)}
-              </ReactMarkdown>
-            </div>
-          ),
-        )}
-
-        {busy ? <ActivityTrail steps={steps} activity={activity} /> : null}
-
-        {pendingReview ? (
-          <ProposedRevision
-            result={pendingReview}
-            tree={tree}
-            busy={busy}
-            onDecide={session.decide}
-            restoredUserMessage={session.restoredUserMessage}
-          />
-        ) : null}
-
-        {outcome === "applied" ? (
-          <div className="flex items-center gap-2 rounded-lg border border-accent-border bg-accent-subtle px-[13px] py-2.5 text-xs text-accent-deep">
-            <CheckIcon className="h-3 w-3 flex-none" />
-            Revision applied.
-          </div>
-        ) : null}
-        {outcome === "rerun_started" ? (
-          <div className="flex items-center gap-2 rounded-lg border border-accent-border bg-accent-subtle px-[13px] py-2.5 text-xs text-accent-deep">
-            <CheckIcon className="h-3 w-3 flex-none" />
-            Approved. A pipeline re-run has started.
-          </div>
-        ) : null}
-        {outcome === "rejected" ? (
-          <div className="rounded-lg border border-border bg-surface-subtle px-[13px] py-2.5 text-xs text-text-secondary">
-            Revision rejected.
-          </div>
-        ) : null}
-
-        {result ? <AgentRunNotices result={result} /> : null}
-        {error ? (
-          <div className="flex items-start gap-2 rounded-lg border border-error-border bg-error-surface px-[13px] py-2.5 text-xs leading-[1.5] text-error" role="alert">
-            <span className="min-w-0 flex-1">{error}</span>
-            <button
-              className="-mr-1 grid h-5 w-5 flex-none place-items-center rounded-[5px] border-0 bg-transparent p-0 hover:bg-[#f0dcdc]"
-              type="button"
-              onClick={session.dismissError}
-              aria-label="Dismiss assistant error"
-            >
-              <CloseIcon className="h-2.5 w-2.5" />
-            </button>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </div>
 
-      <div className="flex-none px-7 pt-2.5 pb-3.5">
+      <div className="flex-none px-6 pt-1 pb-5">
         <form
-          className="rounded-xl border border-border bg-surface pt-2.5 pr-2.5 pb-2 pl-3.5 transition-[border-color,box-shadow] duration-150 focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-subtle)]"
+          className="mx-auto w-full max-w-[760px] rounded-[20px] border border-border bg-surface shadow-composer transition-[border-color] duration-150 focus-within:border-border-strong"
           onSubmit={(event) => {
             event.preventDefault();
             submit();
           }}
         >
           <textarea
-            className="max-h-[168px] min-h-[20px] w-full resize-none border-0 bg-transparent p-0 text-[13px] leading-[1.5] text-text-primary outline-0 placeholder:text-text-muted"
+            className="block max-h-[200px] min-h-[24px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[14px] leading-[1.55] text-text-primary outline-0 placeholder:text-text-muted"
             ref={composerRef}
             value={message}
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={onComposerKeyDown}
-            placeholder="Ask about this workspace…"
+            placeholder={tree ? `Ask about ${tree.title}` : "Ask about this workspace"}
             rows={1}
             aria-label="Message the assistant"
           />
-          <div className="mt-2 flex items-center">
-            <div className="relative" ref={modelPickerRef}>
-              <button
-                className="flex items-center gap-1 rounded-[6px] border-0 bg-transparent px-2 py-[3px] text-[11px] text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary"
-                type="button"
-                aria-haspopup="listbox"
-                aria-expanded={modelMenuOpen}
-                onClick={() => setModelMenuOpen((open) => !open)}
-                title="Switch model"
-              >
-                {activeModel.label}
-                <ChevronDownIcon className={cx("h-3 w-3 transition-transform duration-150", modelMenuOpen && "rotate-180")} />
-              </button>
-              {modelMenu.present ? (
-                <div
-                  className={cx(
-                    "absolute bottom-[calc(100%+7px)] left-0 z-dropdown grid w-56 origin-bottom-left rounded-lg border border-border bg-surface p-1 shadow-popover",
-                    modelMenu.closing ? "animate-dropdown-exit" : "animate-dropdown-enter",
-                  )}
-                  role="listbox"
-                  aria-label="Assistant model"
-                >
-                  {MODELS.map((option) => (
-                    <button
-                      className="grid gap-0.5 rounded-[5px] border-0 bg-transparent px-2.5 py-2 text-left transition-[background-color] duration-150 hover:bg-surface-subtle aria-selected:bg-surface-subtle"
-                      key={option.id}
-                      type="button"
-                      role="option"
-                      aria-selected={session.model === option.id}
-                      onClick={() => {
-                        session.setModel(option.id);
-                        setModelMenuOpen(false);
-                      }}
-                    >
-                      <span className="text-xs font-semibold text-text-primary">{option.label}</span>
-                      <span className="text-[11px] text-text-muted">{option.detail}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
+          <div className="flex items-center gap-2 px-2.5 pt-1 pb-2.5">
             <button
-              className="ml-auto grid h-8 w-8 flex-none place-items-center rounded-lg border-0 bg-accent p-0 text-white transition-[background-color,transform] duration-150 enabled:hover:bg-accent-deep enabled:active:scale-95 disabled:cursor-not-allowed disabled:bg-border-strong"
+              className="flex h-8 items-center gap-1 rounded-full border-0 bg-transparent px-2.5 text-[12.5px] font-medium text-text-secondary transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={modelAnchor !== null}
+              onClick={(event) =>
+                setModelAnchor((current) =>
+                  current ? null : anchorFromEvent(event.currentTarget, "left", true),
+                )
+              }
+              title="Switch model"
+            >
+              {session.model}
+              <ChevronDownIcon className="h-3.5 w-3.5" />
+            </button>
+            <button
+              className="ml-auto grid h-8 w-8 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-white transition-[background-color] duration-150 enabled:hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-border-strong"
               type="submit"
               disabled={!message.trim() || busy}
               aria-label="Send message"
@@ -264,6 +193,28 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
           </div>
         </form>
       </div>
+
+      {modelAnchor ? (
+        <PopoverMenu
+          anchor={modelAnchor}
+          onClose={() => setModelAnchor(null)}
+          label="Assistant model"
+          width={220}
+        >
+          <MenuSection>
+            {MODELS.map((option) => (
+              <MenuItem
+                key={option.id}
+                checked={session.model === option.id}
+                description={option.detail}
+                onClick={() => session.setModel(option.id)}
+              >
+                {option.id}
+              </MenuItem>
+            ))}
+          </MenuSection>
+        </PopoverMenu>
+      ) : null}
     </>
   );
 }
@@ -282,35 +233,27 @@ function AgentIntro({
 }) {
   const openers = introPrompts(tree);
   return (
-    <section className="px-0.5">
+    <section className="my-auto py-6">
+      <h3 className="m-0 text-center text-[22px] leading-[1.3] font-semibold tracking-[-0.02em] text-text-primary [overflow-wrap:anywhere]">
+        {tree ? `Ask about ${tree.title}` : "Ask about this workspace"}
+      </h3>
       {tree ? (
-        <p className="m-0 text-[13px] leading-[1.5] text-text-muted">
-          {tree.title} · {pluralize(tree.branchCount, "branch", "branches")} ·{" "}
-          {pluralize(tree.paperCount, "paper")}
+        <p className="mt-1.5 mb-0 text-center text-[13px] text-text-muted">
+          {pluralize(tree.branchCount, "branch", "branches")} · {pluralize(tree.paperCount, "paper")}
         </p>
       ) : null}
-      <h3 className="mt-[3px] mb-0 text-[19px] font-bold tracking-[-0.015em] text-text-primary">
-        Ask about this tree
-      </h3>
-      <div className="mt-3.5 border-t border-hairline">
+      <div className="mx-auto mt-7 grid max-w-[520px] gap-2">
         {openers.map((opener) => (
           <button
-            className="group flex w-full items-center gap-3 rounded-[7px] border-0 border-b border-hairline bg-transparent px-1.5 py-[13px] text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
+            className="rounded-xl border border-border bg-surface px-4 py-3 text-left transition-[background-color,border-color] duration-150 hover:border-border-strong hover:bg-surface-subtle"
             key={opener.title}
             type="button"
             onClick={() => onUse(opener.prompt)}
           >
-            <span className="min-w-0 flex-1">
-              <span className="block text-[13.5px] font-bold text-text-primary">
-                {opener.title}
-              </span>
-              <span className="mt-[3px] block text-[12.5px] leading-[1.5] text-text-secondary">
-                {opener.detail}
-              </span>
+            <span className="block text-[13.5px] font-medium text-text-primary">{opener.title}</span>
+            <span className="mt-0.5 block text-[12.5px] leading-[1.5] text-text-muted">
+              {opener.detail}
             </span>
-            <ArrowRightIcon
-              className="h-3.5 w-3.5 flex-none text-text-muted transition-[color,transform] duration-150 group-hover:translate-x-0.5 group-hover:text-accent-deep"
-            />
           </button>
         ))}
       </div>
@@ -371,21 +314,16 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
 function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: AgentActivity | null }) {
   const current = activity ?? { kind: "thinking" as const };
   return (
-    <div className="grid gap-1.5 text-xs text-text-muted" role="status">
+    <div className="grid gap-1.5" role="status">
       {steps.map((step, index) => (
-        <div className="flex items-baseline gap-2" key={`${index}:${stepKey(step)}`}>
-          <span className="relative top-[-2px] h-1 w-1 flex-none rounded-full bg-border-strong" aria-hidden="true" />
+        <div className="flex items-baseline gap-2 text-[13px] text-text-muted" key={`${index}:${stepKey(step)}`}>
+          <CheckIcon className="relative top-[1px] h-3 w-3 flex-none" />
           <span className="min-w-0 [overflow-wrap:anywhere]">{describe(step, "done")}</span>
         </div>
       ))}
-      <div className="flex w-fit items-center gap-2 font-medium">
-        <span className="flex items-center gap-[3px]" aria-hidden="true">
-          <i className={thinkingDotClass} />
-          <i className={cx(thinkingDotClass, "[animation-delay:140ms]")} />
-          <i className={cx(thinkingDotClass, "[animation-delay:280ms]")} />
-        </span>
+      <span className="w-fit text-[13.5px] font-medium text-shimmer [overflow-wrap:anywhere]">
         {describe(current, "doing")}
-      </div>
+      </span>
     </div>
   );
 }
@@ -393,18 +331,18 @@ function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: Agen
 /** What a finished reply was built from, folded to one line until opened. */
 function StepsTaken({ steps }: { steps: AgentStep[] }) {
   return (
-    <details className="group mb-2.5 text-xs text-text-muted">
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden">
-        <ChevronDownIcon className="h-3 w-3 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
-        <span className="min-w-0 [overflow-wrap:anywhere]">{summarizeSteps(steps)}</span>
+    <details className="group mb-3">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[13px] text-text-muted transition-[color] duration-150 hover:text-text-secondary [&::-webkit-details-marker]:hidden">
+        <span className="[overflow-wrap:anywhere]">{summarizeSteps(steps)}</span>
+        <ChevronDownIcon className="h-3.5 w-3.5 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
       </summary>
-      <div className="mt-1.5 grid gap-1 pl-[18px]">
+      <ol className="m-0 mt-2 ml-1 grid list-none gap-1 border-l border-hairline p-0 pl-3">
         {steps.map((step, index) => (
-          <span className="[overflow-wrap:anywhere]" key={`${index}:${stepKey(step)}`}>
+          <li className="text-[12.5px] leading-[1.5] text-text-muted [overflow-wrap:anywhere]" key={`${index}:${stepKey(step)}`}>
             {describe(step, "done")}
-          </span>
+          </li>
         ))}
-      </div>
+      </ol>
     </details>
   );
 }
@@ -501,6 +439,19 @@ function humanize(identifier: string): string {
 
 /* -------------------------------------------------------------- notices --- */
 
+/** How the reader's decision on the last proposal landed. */
+function ReviewOutcomeLine({ outcome }: { outcome: NonNullable<AgentSession["outcome"]> }) {
+  if (outcome === "rejected") {
+    return <p className="m-0 text-[13px] text-text-muted">Revision rejected.</p>;
+  }
+  return (
+    <p className="m-0 flex items-center gap-2 text-[13px] font-medium text-accent-deep" role="status">
+      <CheckIcon className="h-3.5 w-3.5 flex-none" />
+      {outcome === "applied" ? "Revision applied." : "Approved. The workspace is being rebuilt."}
+    </p>
+  );
+}
+
 /**
  * A run that failed, or finished with warnings, states so. The backend reports
  * both in `errors`/`warnings`, and a failed run's `final_response` is a failure
@@ -516,23 +467,18 @@ function AgentRunNotices({ result }: { result: AgentRunResult }) {
   return (
     <div className="grid gap-2">
       {failed ? (
-        <div className="grid gap-1 rounded-lg border border-error-border bg-error-surface px-[13px] py-2.5 text-xs leading-[1.5] text-error" role="alert">
-          <span>
-            {result.final_response?.trim() ||
-              "The assistant could not complete that request."}
-          </span>
+        <div className={cx(errorNoticeClass, "grid gap-1")} role="alert">
+          <span>{result.final_response?.trim() || "The assistant could not complete that request."}</span>
           {errors.map((detail, index) => (
-            <span className="text-[11px] leading-[1.45] opacity-80 [overflow-wrap:anywhere]" key={`${index}:${detail}`}>
+            <span className="text-[12px] opacity-80 [overflow-wrap:anywhere]" key={`${index}:${detail}`}>
               {detail}
             </span>
           ))}
         </div>
       ) : null}
       {warnings.length > 0 ? (
-        <div className="grid gap-1 rounded-lg border border-warning-border bg-warning-surface px-[13px] py-2.5 text-xs leading-[1.5] text-warning" role="status">
-          <strong className="text-[11px] font-semibold">
-            {warnings.length === 1 ? "Warning" : "Warnings"}
-          </strong>
+        <div className={cx(warningNoticeClass, "grid gap-1")} role="status">
+          <strong className="font-semibold">{warnings.length === 1 ? "Warning" : "Warnings"}</strong>
           {warnings.map((warning, index) => (
             <span className="[overflow-wrap:anywhere]" key={`${index}:${warning}`}>
               {warning}
@@ -556,33 +502,33 @@ type MarkdownComponentProps<T extends keyof JSX.IntrinsicElements> = ComponentPr
 
 const markdownComponents = {
   p({ node: _node, className, ...props }: MarkdownComponentProps<"p">) {
-    return <p className={cx("mb-3 whitespace-pre-wrap last:mb-0", className)} {...props} />;
+    return <p className={cx("mb-3.5 whitespace-pre-wrap last:mb-0", className)} {...props} />;
   },
   h1({ node: _node, className, ...props }: MarkdownComponentProps<"h1">) {
-    return <h1 className={cx(markdownHeadingClass, "text-[15px]", className)} {...props} />;
+    return <h1 className={cx(markdownHeadingClass, "text-[17px]", className)} {...props} />;
   },
   h2({ node: _node, className, ...props }: MarkdownComponentProps<"h2">) {
-    return <h2 className={cx(markdownHeadingClass, "text-[14px]", className)} {...props} />;
+    return <h2 className={cx(markdownHeadingClass, "text-[15.5px]", className)} {...props} />;
   },
   h3({ node: _node, className, ...props }: MarkdownComponentProps<"h3">) {
-    return <h3 className={cx(markdownHeadingClass, "text-[13px]", className)} {...props} />;
+    return <h3 className={cx(markdownHeadingClass, "text-[14.5px]", className)} {...props} />;
   },
   h4({ node: _node, className, ...props }: MarkdownComponentProps<"h4">) {
-    return <h4 className={cx(markdownHeadingClass, "text-[13px]", className)} {...props} />;
+    return <h4 className={cx(markdownHeadingClass, "text-[14px]", className)} {...props} />;
   },
   ul({ node: _node, className, ...props }: MarkdownComponentProps<"ul">) {
-    return <ul className={cx("mt-[-2px] mb-3 list-disc pl-5 last:mb-0", className)} {...props} />;
+    return <ul className={cx("mb-3.5 list-disc pl-5 last:mb-0", className)} {...props} />;
   },
   ol({ node: _node, className, ...props }: MarkdownComponentProps<"ol">) {
-    return <ol className={cx("mt-[-2px] mb-3 list-decimal pl-5 last:mb-0", className)} {...props} />;
+    return <ol className={cx("mb-3.5 list-decimal pl-5 last:mb-0", className)} {...props} />;
   },
   li({ node: _node, className, ...props }: MarkdownComponentProps<"li">) {
-    return <li className={cx("mb-[7px] pl-0.5 last:mb-0", className)} {...props} />;
+    return <li className={cx("mb-1.5 pl-1 last:mb-0 marker:text-text-muted", className)} {...props} />;
   },
   a({ node: _node, className, ...props }: MarkdownComponentProps<"a">) {
     return (
       <a
-        className={cx("text-accent no-underline hover:text-accent-deep hover:underline", className)}
+        className={cx("text-accent-deep underline decoration-accent-border underline-offset-2 hover:decoration-accent-deep", className)}
         target="_blank"
         rel="noreferrer"
         {...props}
@@ -592,16 +538,49 @@ const markdownComponents = {
   blockquote({ node: _node, className, ...props }: MarkdownComponentProps<"blockquote">) {
     return (
       <blockquote
-        className={cx("mb-3 border-l-2 border-border pl-2.5 text-text-secondary last:mb-0", className)}
+        className={cx("mb-3.5 border-l-2 border-border pl-3 text-text-secondary last:mb-0", className)}
         {...props}
       />
     );
   },
+  hr({ node: _node, className, ...props }: MarkdownComponentProps<"hr">) {
+    return <hr className={cx("my-5 border-0 border-t border-hairline", className)} {...props} />;
+  },
   pre({ node: _node, className, ...props }: MarkdownComponentProps<"pre">) {
-    return <pre className={cx("mb-3 overflow-x-auto rounded-md bg-surface-subtle p-2.5 last:mb-0", className)} {...props} />;
+    return (
+      <pre
+        className={cx(
+          "mb-3.5 overflow-x-auto rounded-lg border border-hairline bg-surface-subtle p-3.5 text-[13px] leading-[1.55] last:mb-0 [&_code]:bg-transparent [&_code]:p-0",
+          className,
+        )}
+        {...props}
+      />
+    );
   },
   code({ node: _node, className, ...props }: MarkdownComponentProps<"code">) {
-    return <code className={cx("rounded-sm bg-surface-subtle px-1 py-px font-mono text-[0.92em]", className)} {...props} />;
+    return (
+      <code className={cx("rounded-[5px] bg-surface-subtle px-1.5 py-0.5 font-mono text-[0.9em]", className)} {...props} />
+    );
+  },
+  // Replies compare papers and branches in tables often enough that a bare
+  // browser table, with no rules or padding, was unreadable.
+  table({ node: _node, className, ...props }: MarkdownComponentProps<"table">) {
+    return (
+      <div className="mb-3.5 overflow-x-auto last:mb-0">
+        <table className={cx("w-full border-collapse text-[13px] leading-[1.5]", className)} {...props} />
+      </div>
+    );
+  },
+  th({ node: _node, className, ...props }: MarkdownComponentProps<"th">) {
+    return (
+      <th
+        className={cx("border-b border-border py-2 pr-4 text-left align-bottom font-semibold", className)}
+        {...props}
+      />
+    );
+  },
+  td({ node: _node, className, ...props }: MarkdownComponentProps<"td">) {
+    return <td className={cx("border-b border-hairline py-2 pr-4 align-top", className)} {...props} />;
   },
   // An image in a reply would make the browser fetch whatever address the
   // model wrote, from the reader's machine. The reference is kept as a link
@@ -610,15 +589,14 @@ const markdownComponents = {
     const href = typeof src === "string" ? src : "";
     if (!href) return null;
     return (
-      <a className="text-accent no-underline hover:text-accent-deep hover:underline" href={href} target="_blank" rel="noreferrer">
+      <a className="text-accent-deep underline underline-offset-2" href={href} target="_blank" rel="noreferrer">
         {alt || href}
       </a>
     );
   },
 };
 
-const markdownHeadingClass = "mt-5 mb-2 font-bold leading-[1.35] text-text-primary first:mt-0";
-const thinkingDotClass = "h-1 w-1 animate-agent-thinking-pulse rounded-full bg-text-muted";
+const markdownHeadingClass = "mt-6 mb-2 font-semibold leading-[1.35] text-text-primary first:mt-0";
 
 function displayMarkdown(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");

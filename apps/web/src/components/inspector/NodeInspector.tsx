@@ -1,19 +1,17 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { cx } from "../../lib/cx";
-import { longDateLabel } from "../../lib/format";
-import { compactActionClass, compactPrimaryActionClass } from "../../lib/controlClasses";
+import { longDateLabel, pluralize } from "../../lib/format";
+import {
+  chipClass,
+  compactActionClass,
+  compactPrimaryActionClass,
+  iconButtonClass,
+  kickerClass,
+  secondaryActionClass,
+} from "../../lib/controlClasses";
 import { authorLine, publicationDate } from "../tree/TreeNode";
-import { PanelClose } from "../panel/RightPanel";
-import { EllipsisIcon } from "../ui/icons";
-import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
-
-// The reader carries a PDF engine, which is most of what the app would ship.
-// Loading it when a paper is opened keeps it out of the first page load.
-const AnnotatedPaperReader = lazy(() =>
-  import("../reader/AnnotatedPaperReader").then((module) => ({
-    default: module.AnnotatedPaperReader,
-  })),
-);
+import { PanelHeader } from "../panel/RightPanel";
+import { BookIcon, DownloadIcon, EllipsisIcon, ExternalIcon } from "../ui/icons";
 import type {
   BranchTreeNode,
   PaperDetails,
@@ -23,6 +21,14 @@ import type {
   TreeNodeViewModel,
   TreeViewModel,
 } from "../../lib/types";
+
+// The reader carries a PDF engine, which is most of what the app would ship.
+// Loading it when a paper is opened keeps it out of the first page load.
+const AnnotatedPaperReader = lazy(() =>
+  import("../reader/AnnotatedPaperReader").then((module) => ({
+    default: module.AnnotatedPaperReader,
+  })),
+);
 
 type NodeInspectorProps = {
   node: TreeNodeViewModel;
@@ -40,6 +46,7 @@ type NodeInspectorProps = {
   onRenameCancel?: () => void;
 };
 
+/** The details of the selected card: the topic, a branch, or a paper. */
 export function NodeInspector({
   node,
   tree,
@@ -53,36 +60,27 @@ export function NodeInspector({
   onRenameCancel,
 }: NodeInspectorProps) {
   return (
-    // Node details carry their own heading, so there is no panel title to show.
-    // Rather than keep a bar that would sit empty, the close control rests over
-    // the top-right of the content — pinned to the panel, so it survives the
-    // scroll, and on the panel's own surface so text passing under it stays
-    // legible.
     <>
-      <PanelClose
-        className="absolute top-3.5 right-3.5 z-[2] bg-surface"
+      <PanelHeader
+        title={<span className={kickerClass}>{KIND_LABEL[node.kind]}</span>}
         onClose={onClose}
-        label="Close details"
+        closeLabel="Close details"
+        actions={
+          node.kind !== "root" && onOpenActions ? (
+            <button
+              className={iconButtonClass}
+              type="button"
+              onClick={(event) => onOpenActions(event.currentTarget)}
+              aria-label={node.kind === "branch" ? "Branch actions" : "Paper actions"}
+              aria-haspopup="menu"
+              title="Actions"
+            >
+              <EllipsisIcon className="h-4 w-4" />
+            </button>
+          ) : null
+        }
       />
-      {node.kind !== "root" && onOpenActions ? (
-        <button
-          className="absolute top-3.5 right-[46px] z-[2] grid h-[26px] w-[26px] place-items-center rounded-[6px] border-0 bg-surface p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
-          type="button"
-          onClick={(event) => onOpenActions(event.currentTarget)}
-          aria-label={node.kind === "branch" ? "Branch actions" : "Paper actions"}
-          aria-haspopup="menu"
-          title="Actions"
-        >
-          <EllipsisIcon className="h-3.5 w-3.5" />
-        </button>
-      ) : null}
-      <div
-        className={cx(
-          "scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pb-7",
-          node.kind !== "root" && onOpenActions ? "pr-[76px]" : "pr-11",
-        )}
-        key={node.id}
-      >
+      <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-5 pb-10" key={node.id}>
         {node.kind === "root" ? <RootView node={node} tree={tree} updatedAt={updatedAt} /> : null}
         {node.kind === "branch" ? (
           <BranchView
@@ -102,6 +100,12 @@ export function NodeInspector({
   );
 }
 
+const KIND_LABEL = { root: "Research topic", branch: "Research branch", paper: "Paper" } as const;
+
+export function inspectorLabel(node: TreeNodeViewModel): string {
+  return `${KIND_LABEL[node.kind]} details`;
+}
+
 /* ---------------------------------------------------------------- paper --- */
 
 function PaperView({
@@ -113,83 +117,68 @@ function PaperView({
   workspaceId: string;
   onOpenAssistant?: () => void;
 }) {
+  const [readerOpen, setReaderOpen] = useState(false);
+  const pdfUrl = paperPdfUrl(node);
+  const hasLinks = Boolean(pdfUrl || node.arxivLink || node.semanticScholarLink);
+
   return (
     <>
-      <h2 className="m-0 max-w-[40ch] text-[17px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]">
-        {node.title}
-      </h2>
-      <p className="mt-[7px] mb-0 text-xs text-text-secondary">{paperMeta(node)}</p>
-      <SourceLinks paper={node} workspaceId={workspaceId} onOpenAssistant={onOpenAssistant} />
-      <Section title="TLDR" body={node.tldr || "Unavailable"} />
-      {node.importance ? <Section title="Why it matters" body={node.importance} /> : null}
-      {node.abstract ? <Section title="Abstract" body={node.abstract} /> : null}
+      <Title>{node.title}</Title>
+      <AuthorList authors={node.authors} />
+      <p className="mt-1 mb-0 text-[12.5px] leading-[1.5] text-text-muted">{paperFacts(node)}</p>
+
+      {hasLinks ? (
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          {pdfUrl ? (
+            <button className={compactPrimaryActionClass} type="button" onClick={() => setReaderOpen(true)}>
+              <BookIcon className="h-3.5 w-3.5" />
+              Read with annotations
+            </button>
+          ) : null}
+          {pdfUrl ? (
+            <LinkButton href={pdfUrl} icon={<DownloadIcon className="h-3.5 w-3.5" />}>
+              PDF
+            </LinkButton>
+          ) : null}
+          {node.arxivLink ? (
+            <LinkButton href={node.arxivLink} icon={<ExternalIcon className="h-3 w-3" />}>
+              arXiv
+            </LinkButton>
+          ) : null}
+          {node.semanticScholarLink ? (
+            <LinkButton href={node.semanticScholarLink} icon={<ExternalIcon className="h-3 w-3" />}>
+              Semantic Scholar
+            </LinkButton>
+          ) : null}
+        </div>
+      ) : null}
+
+      <Section label="TLDR">
+        <Prose>{node.tldr || "Unavailable"}</Prose>
+      </Section>
+      {node.importance ? (
+        <Section label="Why it matters">
+          <Prose>{node.importance}</Prose>
+        </Section>
+      ) : null}
+      {node.abstract ? (
+        <Section label="Abstract">
+          <Abstract text={node.abstract} />
+        </Section>
+      ) : null}
       {node.similarPapers.length > 0 ? <SimilarPapers papers={node.similarPapers} /> : null}
-    </>
-  );
-}
 
-function SourceLinks({
-  paper,
-  workspaceId,
-  onOpenAssistant,
-}: {
-  paper: PaperDetails;
-  workspaceId: string;
-  onOpenAssistant?: () => void;
-}) {
-  const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
-  const [readerOpen, setReaderOpen] = useState(false);
-  const pdfUrl = paperPdfUrl(paper);
-
-  if (!paper.arxivLink && !paper.semanticScholarLink && !pdfUrl) {
-    return null;
-  }
-  return (
-    <div className="mt-3 flex flex-wrap gap-1.5">
-      {paper.arxivLink ? <SourceLink href={paper.arxivLink}>arXiv ↗</SourceLink> : null}
-      {paper.semanticScholarLink ? (
-        <SourceLink href={paper.semanticScholarLink}>Semantic Scholar ↗</SourceLink>
-      ) : null}
-      {pdfUrl ? (
-        <button
-          className={cx(
-            "rounded-[6px] border px-2.5 py-[5px] text-[11.5px] font-medium text-text-secondary transition-[background-color,border-color,color] duration-150 hover:border-accent hover:text-accent-deep",
-            menuAnchor ? "border-border-strong bg-surface-subtle" : "border-border bg-surface",
-          )}
-          type="button"
-          onClick={(event) => setMenuAnchor(anchorFromEvent(event.currentTarget, "right"))}
-          aria-expanded={menuAnchor !== null}
-          aria-haspopup="menu"
-        >
-          PDF
-        </button>
-      ) : null}
-      {menuAnchor && pdfUrl ? (
-        <PopoverMenu
-          anchor={menuAnchor}
-          onClose={() => setMenuAnchor(null)}
-          label="PDF options"
-          width={230}
-        >
-          <MenuSection>
-            <MenuItem href={pdfUrl}>Download PDF</MenuItem>
-            <MenuItem onClick={() => setReaderOpen(true)}>
-              Open PDF <span className="text-text-muted">· inline annotations</span>
-            </MenuItem>
-          </MenuSection>
-        </PopoverMenu>
-      ) : null}
       {readerOpen ? (
         <Suspense fallback={null}>
           <AnnotatedPaperReader
             workspaceId={workspaceId}
-            paper={paper}
+            paper={node}
             onClose={() => setReaderOpen(false)}
             onOpenAssistant={onOpenAssistant}
           />
         </Suspense>
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -206,48 +195,71 @@ export function paperPdfUrl(paper: PaperDetails): string | null {
   return null;
 }
 
-function SourceLink({ href, children }: { href: string; children: string }) {
+const SHOWN_AUTHORS = 5;
+
+/** Every author up to a handful, then how many more, as a reader scans a byline. */
+function AuthorList({ authors }: { authors: string[] }) {
+  const names = authors.map((author) => author.trim()).filter(Boolean);
+  if (names.length === 0) return null;
+  const shown = names.slice(0, SHOWN_AUTHORS);
+  const more = names.length - shown.length;
   return (
-    <a
-      className="rounded-[6px] border border-border bg-surface px-2.5 py-[5px] text-[11.5px] font-medium text-text-secondary no-underline transition-[border-color,color] duration-150 hover:border-accent hover:text-accent-deep hover:no-underline"
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-    >
-      {children}
-    </a>
+    <p className="mt-2 mb-0 text-[13px] leading-[1.5] text-text-secondary">
+      {shown.join(", ")}
+      {more > 0 ? `, and ${more} more` : null}
+    </p>
   );
 }
 
+/** Abstracts run long; the first lines say whether the rest is worth reading. */
+function Abstract({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = text.length > ABSTRACT_PREVIEW_CHARACTERS;
+  return (
+    <>
+      <Prose className={cx(long && !expanded && "line-clamp-6")}>{text}</Prose>
+      {long ? (
+        <button
+          className="mt-1.5 border-0 bg-transparent p-0 text-[12.5px] font-medium text-accent-deep hover:underline"
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+/** About six lines of the panel's default width. */
+const ABSTRACT_PREVIEW_CHARACTERS = 480;
+
+const SIMILAR_PREVIEW = 3;
+
 function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   const [showAll, setShowAll] = useState(false);
-  const visible = showAll ? papers : papers.slice(0, 3);
+  const visible = showAll ? papers : papers.slice(0, SIMILAR_PREVIEW);
   return (
-    <SectionShell title="Similar papers">
-      <div className="mt-0.5 flex flex-col">
+    <Section label="Similar papers">
+      <ul className="m-0 grid list-none gap-2 p-0">
         {visible.map((paper) => (
-          <article className="border-b border-hairline-soft py-[11px]" key={paper.paper_id}>
-            <p className="m-0 text-[12.5px] font-semibold leading-[1.45] text-text-primary [overflow-wrap:anywhere]">
-              {paper.title}
-            </p>
-            <p className="mt-[3px] mb-0 text-[11px] text-text-muted">
-              {authorLine(paper.authors ?? [])} ·{" "}
-              {publicationDate({ publicationDate: paper.publication_date ?? null, year: paper.year })}
-            </p>
-            {paper.arxiv_link || paper.s2_link ? (
-              <div className="mt-[5px] flex flex-wrap gap-3">
-                {paper.arxiv_link ? <InlineLink href={paper.arxiv_link}>arXiv ↗</InlineLink> : null}
-                {paper.s2_link ? (
-                  <InlineLink href={paper.s2_link}>Semantic Scholar ↗</InlineLink>
-                ) : null}
-              </div>
-            ) : null}
-          </article>
+          <li key={paper.paper_id}>
+            <PaperReference
+              title={paper.title}
+              meta={`${authorLine(paper.authors ?? [])} · ${publicationDate({
+                publicationDate: paper.publication_date ?? null,
+                year: paper.year,
+              })}`}
+              arxivLink={paper.arxiv_link ?? null}
+              semanticScholarLink={paper.s2_link ?? null}
+            />
+          </li>
         ))}
-      </div>
-      {papers.length > 3 ? (
+      </ul>
+      {papers.length > SIMILAR_PREVIEW ? (
         <button
-          className="mt-3 w-full rounded-[7px] border border-border bg-surface px-3 py-2 text-center text-[11.5px] font-semibold text-text-primary transition-[background-color,border-color,color] duration-150 hover:border-accent hover:bg-surface-subtle hover:text-accent-deep"
+          className={cx(secondaryActionClass, "mt-2.5 h-8 w-full text-[12.5px]")}
           type="button"
           onClick={() => setShowAll((current) => !current)}
           aria-expanded={showAll}
@@ -255,15 +267,7 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
           {showAll ? "Show fewer" : `Show all ${papers.length}`}
         </button>
       ) : null}
-    </SectionShell>
-  );
-}
-
-function InlineLink({ href, children }: { href: string; children: string }) {
-  return (
-    <a className="text-[11px] text-accent no-underline hover:text-accent-deep hover:underline" href={href} target="_blank" rel="noreferrer">
-      {children}
-    </a>
+    </Section>
   );
 }
 
@@ -290,38 +294,41 @@ function BranchView({
       {renaming && onRenameSubmit && onRenameCancel ? (
         <RenameForm title={node.title} onSubmit={onRenameSubmit} onCancel={onRenameCancel} />
       ) : (
-        <h2 className="m-0 max-w-[40ch] text-[17px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]">
-          {node.title}
-        </h2>
+        <Title>{node.title}</Title>
       )}
-      <p className="mt-1.5 mb-0 text-xs text-text-secondary">
-        <b className="font-semibold text-text-primary">{readingPath.length}</b>{" "}
-        {readingPath.length === 1 ? "paper" : "papers"} in reading path
+      <p className="mt-2 mb-0 text-[12.5px] text-text-muted">
+        {pluralize(readingPath.length, "paper")} in its reading path
       </p>
-      <Section title="Overview" body={node.description} />
-      {node.whyItMatters ? <Section title="Why it matters" body={node.whyItMatters} /> : null}
+      <Section label="Overview">
+        <Prose>{node.description}</Prose>
+      </Section>
+      {node.whyItMatters ? (
+        <Section label="Why it matters">
+          <Prose>{node.whyItMatters}</Prose>
+        </Section>
+      ) : null}
       {node.anchorPaper ? <SurveyAnchor label="Branch survey" paper={node.anchorPaper} /> : null}
       {readingPath.length > 0 ? (
-        <SectionShell title="Reading path">
-          <ol className="m-0 mt-2 flex list-none flex-col p-0">
+        <Section label="Reading path">
+          <ol className="m-0 -mx-2 grid list-none gap-px p-0">
             {readingPath.map((paper, index) => (
               <li key={paper.id}>
                 <button
-                  className="-mx-2.5 flex w-[calc(100%+20px)] gap-[11px] rounded-md border-0 bg-transparent px-2.5 py-[9px] text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
+                  className="flex w-full gap-3 rounded-lg border-0 bg-transparent px-2 py-2 text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
                   type="button"
                   onClick={() => onSelectNode(paper.id)}
                 >
                   <span
-                    className="mt-px grid h-5 w-5 flex-none place-items-center rounded-full bg-accent-subtle text-[10.5px] font-semibold text-accent-deep"
+                    className="mt-px grid h-5 w-5 flex-none place-items-center rounded-full bg-accent-subtle text-[11px] font-semibold text-accent-deep tabular-nums"
                     aria-hidden="true"
                   >
                     {index + 1}
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-[12.5px] font-semibold leading-[1.4] text-text-primary">
+                    <span className="block text-[13.5px] leading-[1.4] font-medium text-text-primary">
                       {paper.title}
                     </span>
-                    <span className="mt-0.5 block text-[11px] text-text-muted">
+                    <span className="mt-0.5 block text-[12px] text-text-muted">
                       {authorLine(paper.authors)} · {publicationDate(paper)}
                     </span>
                   </span>
@@ -329,7 +336,7 @@ function BranchView({
               </li>
             ))}
           </ol>
-        </SectionShell>
+        </Section>
       ) : null}
       <Chips label="Tags" values={node.tags} />
       <Questions questions={node.openQuestions} />
@@ -376,7 +383,7 @@ function RenameForm({
 
   return (
     <form
-      className="flex flex-col gap-2"
+      className="grid gap-2"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -384,7 +391,7 @@ function RenameForm({
     >
       <input
         ref={inputRef}
-        className="w-full rounded-[7px] border-[1.5px] border-accent bg-surface px-2.5 py-1.5 text-[16px] font-semibold leading-[1.35] tracking-[-0.01em] text-text-primary outline-0 shadow-[0_0_0_3px_var(--color-accent-subtle)]"
+        className="w-full rounded-md border border-accent bg-surface px-2.5 py-1.5 text-[17px] leading-[1.35] font-semibold tracking-[-0.01em] text-text-primary shadow-[0_0_0_3px_var(--color-accent-subtle)] outline-0"
         value={label}
         onChange={(event) => setLabel(event.target.value)}
         onKeyDown={(event) => {
@@ -423,27 +430,26 @@ function RootView({
   const updated = longDateLabel(updatedAt);
   return (
     <>
-      <h2 className="m-0 text-[19px] font-bold tracking-[-0.015em] text-text-primary [overflow-wrap:anywhere]">
-        {node.title}
-      </h2>
-      <p className="mt-2.5 mb-0 flex flex-wrap gap-3.5 text-xs text-text-secondary">
-        <span>
-          <b className="font-semibold text-text-primary">{tree.branchCount}</b> branches
-        </span>
-        <span>
-          <b className="font-semibold text-text-primary">{tree.paperCount}</b> papers
-        </span>
-        {updated ? <span>updated {updated}</span> : null}
+      <Title large>{node.title}</Title>
+      <p className="mt-2 mb-0 text-[12.5px] text-text-muted">
+        {pluralize(tree.branchCount, "branch", "branches")} · {pluralize(tree.paperCount, "paper")}
+        {updated ? ` · Updated ${updated}` : null}
       </p>
-      <Section title="Overview" body={node.overview} />
+      <Section label="Overview">
+        <Prose>{node.overview}</Prose>
+      </Section>
       {node.whyItMatters && node.whyItMatters !== node.overview ? (
-        <Section title="Why it matters" body={node.whyItMatters} />
+        <Section label="Why it matters">
+          <Prose>{node.whyItMatters}</Prose>
+        </Section>
       ) : null}
       {/* The branches are the tree itself, a click away on the canvas; listing
           them again here only duplicates what is already on screen. */}
       {node.anchorPaper ? <SurveyAnchor label="Root survey" paper={node.anchorPaper} /> : null}
       {node.suggestedReadingDirection ? (
-        <Section title="Where to start" body={node.suggestedReadingDirection} />
+        <Section label="Where to start">
+          <Prose>{node.suggestedReadingDirection}</Prose>
+        </Section>
       ) : null}
       <Chips label="Key terms" values={node.keyTerms} />
       <Questions questions={node.openQuestions} />
@@ -453,49 +459,104 @@ function RootView({
 
 /* -------------------------------------------------------------- shared --- */
 
-/** Every panel — root, branch and paper — reads as the same run of sections. */
-function Section({ title, body }: { title: string; body: string }) {
+function Title({ children, large = false }: { children: string; large?: boolean }) {
   return (
-    <SectionShell title={title}>
-      <p className="mt-[7px] mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.62] text-text-primary">
-        {body}
-      </p>
-    </SectionShell>
+    <h3
+      className={cx(
+        "m-0 leading-[1.3] font-semibold tracking-[-0.015em] text-text-primary [overflow-wrap:anywhere]",
+        large ? "text-[21px]" : "text-[18px]",
+      )}
+    >
+      {children}
+    </h3>
   );
 }
 
-function SectionShell({ title, children }: { title: string; children: React.ReactNode }) {
+/** Every panel — root, branch and paper — reads as the same run of labelled sections. */
+function Section({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <section className="mt-[18px]">
-      <h3 className="m-0 text-[13px] font-bold text-text-primary">{title}</h3>
+    <section className="mt-6">
+      <h4 className={cx(kickerClass, "m-0 mb-2")}>{label}</h4>
       {children}
     </section>
   );
 }
 
-/**
- * The survey that orients the topic or the branch. It is one more section of the
- * panel, written the same way as the reading path and similar papers, rather
- * than a boxed aside floating in the middle of them.
- */
-function SurveyAnchor({ label, paper }: { label: string; paper: PaperDetails }) {
+function Prose({ children, className }: { children: string; className?: string }) {
   return (
-    <SectionShell title={label}>
-      <p className="mt-[7px] mb-0 w-[min(100%,62ch)] text-[13px] leading-[1.5] font-semibold text-text-primary [overflow-wrap:anywhere]">
-        {paper.title}
+    <p className={cx("m-0 max-w-[68ch] text-[14px] leading-[1.65] text-text-primary", className)}>
+      {children}
+    </p>
+  );
+}
+
+/** A paper named inside a panel: title, byline, and where to find it. */
+function PaperReference({
+  title,
+  meta,
+  arxivLink,
+  semanticScholarLink,
+}: {
+  title: string;
+  meta: string;
+  arxivLink: string | null;
+  semanticScholarLink: string | null;
+}) {
+  return (
+    <div className="rounded-lg border border-hairline px-3.5 py-3">
+      <p className="m-0 text-[13.5px] leading-[1.45] font-medium text-text-primary [overflow-wrap:anywhere]">
+        {title}
       </p>
-      <p className="mt-[3px] mb-0 text-[11.5px] text-text-muted">
-        {authorLine(paper.authors)} · {publicationDate(paper)}
-      </p>
-      {paper.arxivLink || paper.semanticScholarLink ? (
-        <div className="mt-[7px] flex flex-wrap gap-3">
-          {paper.arxivLink ? <InlineLink href={paper.arxivLink}>arXiv ↗</InlineLink> : null}
-          {paper.semanticScholarLink ? (
-            <InlineLink href={paper.semanticScholarLink}>Semantic Scholar ↗</InlineLink>
+      <p className="mt-1 mb-0 text-[12px] text-text-muted">{meta}</p>
+      {arxivLink || semanticScholarLink ? (
+        <div className="mt-2 flex flex-wrap gap-3">
+          {arxivLink ? <InlineLink href={arxivLink}>arXiv</InlineLink> : null}
+          {semanticScholarLink ? (
+            <InlineLink href={semanticScholarLink}>Semantic Scholar</InlineLink>
           ) : null}
         </div>
       ) : null}
-    </SectionShell>
+    </div>
+  );
+}
+
+/**
+ * The survey that orients the topic or the branch, shown the way every other
+ * paper in a panel is: a reference with its byline and links.
+ */
+function SurveyAnchor({ label, paper }: { label: string; paper: PaperDetails }) {
+  return (
+    <Section label={label}>
+      <PaperReference
+        title={paper.title}
+        meta={`${authorLine(paper.authors)} · ${publicationDate(paper)}`}
+        arxivLink={paper.arxivLink}
+        semanticScholarLink={paper.semanticScholarLink}
+      />
+    </Section>
+  );
+}
+
+function LinkButton({ href, icon, children }: { href: string; icon: ReactNode; children: string }) {
+  return (
+    <a className={cx(compactActionClass, "no-underline")} href={href} target="_blank" rel="noreferrer">
+      {icon}
+      {children}
+    </a>
+  );
+}
+
+function InlineLink({ href, children }: { href: string; children: string }) {
+  return (
+    <a
+      className="inline-flex items-center gap-1 text-[12px] font-medium text-accent-deep no-underline hover:underline"
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+    >
+      {children}
+      <ExternalIcon className="h-2.5 w-2.5" />
+    </a>
   );
 }
 
@@ -504,18 +565,15 @@ function Chips({ label, values }: { label: string; values: string[] }) {
     return null;
   }
   return (
-    <SectionShell title={label}>
-      <div className="mt-2 flex flex-wrap gap-1.5">
+    <Section label={label}>
+      <div className="flex flex-wrap gap-1.5">
         {values.map((value) => (
-          <span
-            className="rounded-[20px] bg-surface-subtle px-2.5 py-[3px] text-[11.5px] text-text-secondary"
-            key={value}
-          >
+          <span className={chipClass} key={value}>
             {value}
           </span>
         ))}
       </div>
-    </SectionShell>
+    </Section>
   );
 }
 
@@ -524,20 +582,21 @@ function Questions({ questions }: { questions: string[] }) {
     return null;
   }
   return (
-    <SectionShell title="Open questions">
-      <ul className="m-0 mt-2 w-[min(100%,62ch)] list-disc pl-[18px] text-[13px] leading-[1.62] text-text-secondary marker:text-border-strong">
+    <Section label="Open questions">
+      <ul className="m-0 max-w-[68ch] list-disc pl-[18px] text-[14px] leading-[1.65] text-text-primary marker:text-border-strong">
         {questions.map((question) => (
-          <li className="mb-2 pl-1 last:mb-0" key={question}>
+          <li className="mb-1.5 pl-1 last:mb-0" key={question}>
             {question}
           </li>
         ))}
       </ul>
-    </SectionShell>
+    </Section>
   );
 }
 
-function paperMeta(paper: PaperTreeNode): string {
-  const parts = [authorLine(paper.authors), publicationDate(paper)];
+/** Byline facts after the authors: when, where, and how often it is cited. */
+function paperFacts(paper: PaperTreeNode): string {
+  const parts = [publicationDate(paper)];
   if (paper.venue) {
     parts.push(paper.venue);
   }
@@ -557,10 +616,4 @@ function papersForBranch(tree: TreeViewModel, branchNodeId: string): PaperTreeNo
     .sort(
       (left, right) => left.position.y - right.position.y || left.readingIndex - right.readingIndex,
     );
-}
-
-export function inspectorLabel(node: TreeNodeViewModel): string {
-  if (node.kind === "root") return "Research topic details";
-  if (node.kind === "branch") return "Research branch details";
-  return "Paper details";
 }

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
-/** Width of the sidebar at desktop widths, subtracted from a panel's ceiling. */
-export const DESKTOP_SIDEBAR_WIDTH = 250;
+/** The sidebar's widths open and as a rail (`Sidebar`'s w-[260px] and w-14). */
+const SIDEBAR_WIDTH = 260;
+const SIDEBAR_RAIL_WIDTH = 56;
 
 /** Below this width the panel is docked full-height over the canvas, not resizable. */
 export const RESIZE_DISABLED_BELOW = 900;
@@ -12,7 +13,7 @@ export function resizablePanelMaxWidth(
   sidebarCollapsed: boolean,
   viewportWidth: number = window.innerWidth,
 ): number {
-  return Math.max(0, viewportWidth - (sidebarCollapsed ? 0 : DESKTOP_SIDEBAR_WIDTH));
+  return Math.max(0, viewportWidth - (sidebarCollapsed ? SIDEBAR_RAIL_WIDTH : SIDEBAR_WIDTH));
 }
 
 export function clampResizablePanelWidth(

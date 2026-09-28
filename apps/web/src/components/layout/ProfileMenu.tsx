@@ -35,10 +35,10 @@ export function ProfileMenu({
 
   return (
     <PopoverMenu anchor={anchor} onClose={onClose} label="Account" width={256}>
-      <div className="flex items-center gap-2.5 border-b border-hairline-soft px-3.5 py-3">
-        <Avatar user={user} size={36} />
+      <div className="flex items-center gap-2.5 border-b border-hairline px-3.5 py-3">
+        <Avatar user={user} size={34} />
         <span className="min-w-0">
-          <span className="block truncate text-[13.5px] font-bold text-text-primary">
+          <span className="block truncate text-[13.5px] font-semibold text-text-primary">
             {displayName(user)}
           </span>
           <span className="block truncate text-[12px] text-text-muted">

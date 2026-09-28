@@ -128,6 +128,8 @@ export function isOpenable(run: PipelineRun): boolean {
   return status.startsWith("completed");
 }
 
-export function isRunActive(run: PipelineRun | null | undefined): run is PipelineRun {
+export function isRunActive(
+  run: PipelineRun | null | undefined,
+): run is PipelineRun & { status: "queued" | "running" } {
   return run?.status === "queued" || run?.status === "running";
 }

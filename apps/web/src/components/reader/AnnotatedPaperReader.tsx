@@ -5,7 +5,9 @@ import { cx } from "../../lib/cx";
 import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { useModalDialog } from "../../lib/modalDialog";
 import { paperPdfUrl, repositoryWorkspaceGateway } from "../../data/workspaceApi";
-import { CloseIcon } from "../ui/icons";
+import { compactActionClass, iconButtonClass } from "../../lib/controlClasses";
+import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
+import { ChatIcon, ChevronDownIcon, CloseIcon, HelpIcon } from "../ui/icons";
 import type {
   AnnotationRetrievalMode,
   AnnotationType,
@@ -55,7 +57,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
   const [annotations, setAnnotations] = useState<PaperAnnotation[] | null>(null);
   const [mode, setMode] = useState<AnnotationRetrievalMode | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [modeAnchor, setModeAnchor] = useState<MenuAnchor | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [selected, setSelected] = useState<PaperAnnotation | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,9 +104,9 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
     event.stopPropagation();
     if (event.key !== "Escape") return;
     event.preventDefault();
-    // One Escape closes one layer, innermost first.
-    if (modeMenuOpen) setModeMenuOpen(false);
-    else if (helpOpen) setHelpOpen(false);
+    // One Escape closes one layer, innermost first. The mode menu answers
+    // its own Escape before it reaches here.
+    if (helpOpen) setHelpOpen(false);
     else if (selected) setSelected(null);
     else dismiss();
   }
@@ -133,28 +135,32 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
       }}
       onKeyDown={onKeyDown}
     >
-      <header className="relative flex flex-none items-center gap-2.5 border-b border-hairline bg-surface px-4 py-2">
+      <header className="relative flex h-14 flex-none items-center gap-2 border-b border-hairline bg-surface pr-2 pl-5">
         <div className="min-w-0 flex-1">
-          <h2 className="m-0 truncate text-[12.5px] font-semibold tracking-[-0.01em] text-text-primary">
+          <h2 className="m-0 truncate text-[13.5px] font-semibold tracking-[-0.01em] text-text-primary">
             {paper.title}
           </h2>
-          <p className="mt-px mb-0 truncate text-[10.5px] text-text-muted">
+          <p className="mt-0.5 mb-0 truncate text-[12px] text-text-muted">
             {byline.join(" · ")}
             {byline.length ? " · " : null}
             <ReaderStatus annotations={annotations} error={error} />
           </p>
         </div>
-        <ModeControl
-          mode={mode}
-          disabled={generating}
-          open={modeMenuOpen}
-          onOpenChange={setModeMenuOpen}
-          onSelect={(next) => {
-            if (next !== mode) fetchAnnotations({ mode: next });
-          }}
-        />
         <button
-          className="flex flex-none items-center rounded-[6px] border border-border bg-transparent px-2.5 py-1 text-[11px] font-semibold text-text-primary transition-[background-color] duration-150 hover:bg-surface-subtle disabled:cursor-default disabled:opacity-50"
+          className={compactActionClass}
+          type="button"
+          disabled={generating}
+          onClick={(event) => setModeAnchor(anchorFromEvent(event.currentTarget, "right"))}
+          aria-haspopup="menu"
+          aria-expanded={modeAnchor !== null}
+          title="How thoroughly annotagent reads the paper"
+        >
+          <span className="text-text-secondary">Mode</span>
+          {modeLabel(mode)}
+          <ChevronDownIcon className="h-3.5 w-3.5 text-text-muted" />
+        </button>
+        <button
+          className={compactActionClass}
           type="button"
           disabled={generating}
           onClick={() => fetchAnnotations({ ...(mode ? { mode } : {}), refresh: true })}
@@ -162,18 +168,9 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
         >
           Reprocess
         </button>
-        <button
-          className="grid h-5 w-5 flex-none place-items-center rounded-full border border-border bg-surface-subtle text-[10.5px] font-semibold text-text-secondary transition-[background-color] duration-150 hover:bg-surface aria-expanded:bg-surface"
-          type="button"
-          onClick={() => setHelpOpen((open) => !open)}
-          aria-expanded={helpOpen}
-          aria-label="About this viewer"
-        >
-          ?
-        </button>
         {onOpenAssistant ? (
           <button
-            className="flex flex-none items-center gap-1.5 rounded-[7px] border border-accent-border bg-accent-subtle px-3 py-[5px] text-[11.5px] font-semibold text-accent-deep transition-[filter] duration-150 hover:brightness-95"
+            className={`${compactActionClass} border-accent-border text-accent-deep enabled:hover:bg-accent-wash`}
             type="button"
             onClick={() => {
               dismiss();
@@ -181,32 +178,43 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
             }}
             title="Chat with the workspace assistant, which can read this paper"
           >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 20 20"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M3 4.5 A1.5 1.5 0 0 1 4.5 3 H15.5 A1.5 1.5 0 0 1 17 4.5 V12 A1.5 1.5 0 0 1 15.5 13.5 H8 L4.5 17 V13.5 A1.5 1.5 0 0 1 3 12 Z" />
-            </svg>
+            <ChatIcon className="h-3.5 w-3.5" />
             Assistant
           </button>
         ) : null}
         <button
-          className="grid h-[26px] w-[26px] flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
+          className={iconButtonClass}
           type="button"
-          onClick={dismiss}
-          aria-label="Close reader"
-          title="Close"
+          onClick={() => setHelpOpen((open) => !open)}
+          aria-expanded={helpOpen}
+          aria-label="About this viewer"
+          title="About this viewer"
         >
+          <HelpIcon className="h-4 w-4" />
+        </button>
+        <button className={iconButtonClass} type="button" onClick={dismiss} aria-label="Close reader" title="Close">
           <CloseIcon className="h-3 w-3" />
         </button>
         {helpOpen ? <ViewerHelp /> : null}
       </header>
+      {modeAnchor ? (
+        <PopoverMenu anchor={modeAnchor} onClose={() => setModeAnchor(null)} label="Annotation mode" width={220}>
+          <MenuSection>
+            {MODES.map((option) => (
+              <MenuItem
+                key={option.value}
+                checked={mode === option.value}
+                description={option.detail}
+                onClick={() => {
+                  if (option.value !== mode) fetchAnnotations({ mode: option.value });
+                }}
+              >
+                {option.label}
+              </MenuItem>
+            ))}
+          </MenuSection>
+        </PopoverMenu>
+      ) : null}
 
       <div
         ref={pagesRef}
@@ -333,7 +341,7 @@ function AnnotationNote({
   const below = box.y + box.height < 0.8;
   return (
     <div
-      className="absolute z-dropdown w-[320px] max-w-[80%] rounded-[9px] border border-border bg-surface p-3 shadow-menu"
+      className="absolute z-dropdown w-[320px] max-w-[80%] rounded-xl border border-border bg-surface p-3.5 shadow-popover"
       style={{
         left: `${Math.min(Math.max(box.x, 0.02), 0.62) * 100}%`,
         ...(below
@@ -368,90 +376,28 @@ function AnnotationNote({
   );
 }
 
-function ModeControl({
-  mode,
-  disabled,
-  open,
-  onOpenChange,
-  onSelect,
-}: {
-  mode: AnnotationRetrievalMode | null;
-  disabled: boolean;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onSelect: (mode: AnnotationRetrievalMode) => void;
-}) {
-  return (
-    <div className="relative flex-none">
-      <button
-        className="flex items-center gap-1 rounded-[6px] border border-border bg-transparent px-2.5 py-1 text-[11px] text-text-secondary transition-[background-color] duration-150 hover:bg-surface-subtle disabled:cursor-default disabled:opacity-50 aria-expanded:bg-surface-subtle"
-        type="button"
-        disabled={disabled}
-        onClick={() => onOpenChange(!open)}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        title="How thoroughly annotagent reads the paper"
-      >
-        Mode: <span className="font-semibold text-text-primary">{modeLabel(mode)}</span>
-      </button>
-      {open ? (
-        <div
-          className="fixed inset-0 z-dropdown"
-          role="presentation"
-          onClick={() => onOpenChange(false)}
-        />
-      ) : null}
-      {open ? (
-        <div
-          className="absolute top-[calc(100%+4px)] right-0 z-dropdown w-[210px] rounded-[9px] border border-border bg-surface p-1 shadow-menu"
-          role="menu"
-        >
-          {(
-            [
-              { value: "fast", label: "Fast", detail: "Sections as context" },
-              { value: "dense", label: "Dense", detail: "More annotations, slower" },
-            ] as const
-          ).map((option) => (
-            <button
-              className="grid w-full gap-px rounded-[6px] border-0 bg-transparent px-2.5 py-1.5 text-left transition-[background-color] duration-150 hover:bg-surface-subtle aria-checked:bg-surface-subtle"
-              key={option.value}
-              type="button"
-              role="menuitemradio"
-              aria-checked={mode === option.value}
-              onClick={() => {
-                onOpenChange(false);
-                onSelect(option.value);
-              }}
-            >
-              <span className="text-[12px] font-semibold text-text-primary">{option.label}</span>
-              <span className="text-[10.5px] text-text-muted">{option.detail}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
+const MODES = [
+  { value: "fast", label: "Fast", detail: "Sections as context" },
+  { value: "dense", label: "Dense", detail: "More annotations, slower" },
+] as const;
 
 function modeLabel(mode: AnnotationRetrievalMode | null): string {
-  if (mode === "dense") return "Dense";
-  if (mode === "fast") return "Fast";
-  return "…";
+  return MODES.find((option) => option.value === mode)?.label ?? "…";
 }
 
 /** The design's "About this viewer" popup, describing what each control does. */
 function ViewerHelp() {
   return (
-    <div className="absolute top-[calc(100%+4px)] right-[44px] z-dropdown w-[300px] rounded-[10px] border border-border bg-surface px-4 py-3 shadow-menu">
-      <div className="text-[12px] font-bold text-text-primary">About this viewer</div>
-      <p className="mt-1.5 mb-0 text-[11.5px] leading-[1.6] text-text-secondary">
+    <div className="absolute top-[calc(100%+6px)] right-3 z-dropdown w-[320px] rounded-xl border border-border bg-surface px-4 py-3.5 shadow-popover">
+      <div className="text-[13px] font-semibold text-text-primary">About this viewer</div>
+      <p className="mt-1.5 mb-0 text-[12.5px] leading-[1.6] text-text-secondary">
         Annotations are generated by <b className="font-semibold text-text-primary">annotagent</b>.
         It extracts the PDF text, then writes highlights, notes, and jargon definitions anchored to
         the page layout.
       </p>
       <ul className="mt-2.5 mb-0 flex list-none gap-3 border-t border-hairline p-0 pt-2.5">
         {LEGEND.map(({ type, label }) => (
-          <li className="flex items-center gap-1.5 text-[11px] text-text-secondary" key={type}>
+          <li className="flex items-center gap-1.5 text-[12px] text-text-secondary" key={type}>
             <span className={cx("h-2.5 w-2.5 rounded-[3px] border-b-2", MARK_STYLES[type])} />
             {label}
           </li>

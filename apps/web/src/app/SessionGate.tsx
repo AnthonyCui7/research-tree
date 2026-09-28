@@ -24,11 +24,13 @@ export function SessionGate({ children }: { children: ReactNode }) {
   if (session.status === "unreachable") {
     return (
       <div className="grid min-h-screen place-items-center bg-background p-6">
-        <div className="w-[380px] max-w-full rounded-[14px] border border-border bg-surface px-7 py-6 shadow-dialog">
-          <div className="text-sm font-bold tracking-[-0.01em] text-text-primary">Research Tree</div>
-          <p className="mt-3 mb-0 text-[13px] leading-[1.55] text-text-secondary">{session.message}</p>
+        <div className="w-[400px] max-w-full rounded-2xl border border-border bg-surface px-7 py-6">
+          <h1 className="m-0 text-[15px] font-semibold tracking-[-0.01em] text-text-primary">
+            Research Tree
+          </h1>
+          <p className="mt-2 mb-0 text-[13.5px] leading-[1.6] text-text-secondary">{session.message}</p>
           <button
-            className={`${primaryActionClass} mt-4`}
+            className={`${primaryActionClass} mt-5`}
             type="button"
             onClick={() => void loadSession()}
           >
@@ -40,7 +42,7 @@ export function SessionGate({ children }: { children: ReactNode }) {
   }
   return (
     <div className="grid min-h-screen place-items-center bg-background" aria-busy="true">
-      <span className="text-[12.5px] text-text-muted">Loading…</span>
+      <span className="text-[13px] text-text-muted">Loading…</span>
     </div>
   );
 }

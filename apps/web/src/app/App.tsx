@@ -2,80 +2,44 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell, type UtilityPanel } from "../components/layout/AppShell";
 import { useWorkspaceCollection } from "../data/useWorkspaceCollection";
 import { useActiveWorkspace } from "../data/useActiveWorkspace";
-import { repositoryWorkspaceGateway } from "../data/workspaceApi";
+import { useBuildRun } from "../data/useBuildRun";
 import { normalizeWorkspaceForTree } from "../lib/workspaceAdapter";
-import { isRunActive } from "../lib/pipelineStages";
-import type { PipelineRun, TreeNodeId, TreeViewModel } from "../lib/types";
+import type { TreeNodeId, TreeViewModel } from "../lib/types";
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "research-tree.sidebar-collapsed";
+
+/** Below this width an open sidebar covers the canvas rather than sitting beside it. */
+const NARROW_VIEWPORT = 900;
+
+/** What the main area shows: the page for starting a workspace, or one workspace. */
+export type Route = { kind: "home" } | { kind: "workspace"; workspaceId: string };
 
 /** What a workspace was left showing, so returning to it resumes rather than resets. */
 type WorkspaceView = { panel: UtilityPanel | null; selectedNodeId: TreeNodeId | null };
 
 export function App() {
   const { status, workspaces, error, live, refresh } = useWorkspaceCollection();
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  // Null until the workspace list first arrives and says where to start.
+  const [route, setRoute] = useState<Route | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<TreeNodeId | null>(null);
   const [panel, setPanel] = useState<UtilityPanel | null>(null);
-  const [creatorOpen, setCreatorOpen] = useState(false);
-  const [creatorTopic, setCreatorTopic] = useState("");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
-    } catch {
-      // A browser set to block site data throws here rather than returning
-      // null, and this runs in a state initializer above every error boundary,
-      // so an unguarded read left the whole page blank. The sidebar opens.
-      return false;
-    }
-  });
-  const [buildingRun, setBuildingRun] = useState<PipelineRun | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
 
-  // A build lives on the server; the page only watches it. A page reloaded
-  // mid-build has no other way to find the build again: the workspace is not
-  // listed until its first version lands, so the sidebar would show nothing
-  // and offer a second build. Asked once, when the collection first loads.
-  const recoveredRunsRef = useRef(false);
+  // Arriving opens the most recent workspace, or the new-workspace page when
+  // there is none. After that the route is pinned by id: the list re-sorts on
+  // every change, and a build finishing elsewhere must not switch the
+  // workspace under the reader. Only a workspace that is gone falls through.
   useEffect(() => {
-    if (status !== "ready" || recoveredRunsRef.current) return;
-    recoveredRunsRef.current = true;
-    let cancelled = false;
-    repositoryWorkspaceGateway
-      .listActivePipelineRuns()
-      .then((runs) => {
-        const newest = runs.find(isRunActive) ?? null;
-        if (!cancelled && newest) setBuildingRun((current) => current ?? newest);
-      })
-      // A build that cannot be recovered is a build the sidebar does not
-      // show until it lands; nothing else is lost.
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [status]);
+    if (status !== "ready" || route?.kind === "home") return;
+    if (route && workspaces.some((workspace) => workspace.workspace_id === route.workspaceId)) return;
+    const first = workspaces[0];
+    setRoute(first ? { kind: "workspace", workspaceId: first.workspace_id } : { kind: "home" });
+  }, [route, status, workspaces]);
 
   const activeSummary = useMemo(() => {
-    if (workspaces.length === 0) {
-      return null;
-    }
-    return (
-      workspaces.find((workspace) => workspace.workspace_id === selectedWorkspaceId) ??
-      workspaces[0] ??
-      null
-    );
-  }, [selectedWorkspaceId, workspaces]);
-
-  // The list is re-sorted by recency on every change and the fallback above
-  // reads its head, so what is shown is pinned by id as soon as it is shown:
-  // a build finishing elsewhere, or an edit in another tab, must not switch
-  // the workspace under the reader. Only a workspace that is gone falls through.
-  useEffect(() => {
-    const first = workspaces[0];
-    if (!first || workspaces.some((workspace) => workspace.workspace_id === selectedWorkspaceId)) {
-      return;
-    }
-    setSelectedWorkspaceId(first.workspace_id);
-  }, [selectedWorkspaceId, workspaces]);
+    if (route?.kind !== "workspace") return null;
+    return workspaces.find((workspace) => workspace.workspace_id === route.workspaceId) ?? null;
+  }, [route, workspaces]);
 
   const {
     workspace: activeWorkspace,
@@ -84,9 +48,9 @@ export function App() {
   } = useActiveWorkspace(activeSummary);
 
   // A document the canvas cannot lay out must not take the rest of the app with
-  // it. This runs during render, and the sidebar, the top bar and every way out
-  // to another workspace live above it, so a throw here used to leave a blank
-  // page that a reload reproduced.
+  // it. This runs during render, and the sidebar and every way out to another
+  // workspace live above it, so a throw here used to leave a blank page that a
+  // reload reproduced.
   const [tree, treeError] = useMemo<[TreeViewModel | null, string | null]>(() => {
     if (!activeWorkspace) {
       return [null, null];
@@ -117,19 +81,40 @@ export function App() {
     }
   }, [activeWorkspaceId, panel, selectedNodeId]);
 
-  function selectWorkspace(workspaceId: string) {
+  const openWorkspace = useCallback((workspaceId: string) => {
     const view = viewsRef.current.get(workspaceId);
-    setSelectedWorkspaceId(workspaceId);
+    setRoute({ kind: "workspace", workspaceId });
     setPanel(view?.panel ?? null);
     setSelectedNodeId(view?.selectedNodeId ?? null);
-  }
+  }, []);
+
+  const openHome = useCallback(() => {
+    setRoute({ kind: "home" });
+    setPanel(null);
+    setSelectedNodeId(null);
+  }, []);
+
+  // A build that becomes openable takes the reader into it only when they are
+  // on the page watching it; anyone who has moved on finds it in the sidebar.
+  const routeRef = useRef(route);
+  useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
+  const handleBuildReady = useCallback(
+    async (workspaceId: string) => {
+      await refresh();
+      if (routeRef.current?.kind === "home") openWorkspace(workspaceId);
+    },
+    [openWorkspace, refresh],
+  );
+  const build = useBuildRun(handleBuildReady);
 
   // Selecting a node is what opens the inspector; the selection outlives the
   // panel, so the card stays marked after the panel is dismissed.
-  function selectNode(nodeId: TreeNodeId) {
+  const selectNode = useCallback((nodeId: TreeNodeId) => {
     setSelectedNodeId(nodeId);
     setPanel("inspector");
-  }
+  }, []);
 
   // Persisting outside the updater keeps it pure under StrictMode's double
   // invocation, and storage that refuses writes (private browsing) costs the
@@ -138,32 +123,9 @@ export function App() {
     try {
       window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(sidebarCollapsed));
     } catch {
-      // The sidebar simply reopens expanded next session.
+      // The sidebar simply opens in its default state next session.
     }
   }, [sidebarCollapsed]);
-
-  const openCreator = useCallback((topic = "") => {
-    setCreatorTopic(topic);
-    setCreatorOpen(true);
-  }, []);
-
-  const handleCreated = useCallback(
-    async (workspaceId: string, run: PipelineRun) => {
-      await refresh();
-      // Called once when the workspace becomes openable and again when the
-      // build finishes. A reader already inside it keeps their panel and
-      // selection the second time; only arriving resets the view.
-      if (shownWorkspaceRef.current !== workspaceId) {
-        setPanel(null);
-        setSelectedNodeId(null);
-      }
-      setSelectedWorkspaceId(workspaceId);
-      setCreatorOpen(false);
-      setCreatorTopic("");
-      setBuildingRun(isRunActive(run) ? run : null);
-    },
-    [refresh],
-  );
 
   // Any workspace can be deleted from the sidebar, not only the one on screen:
   // its remembered view goes, and the reader's place is disturbed only when it
@@ -182,16 +144,13 @@ export function App() {
     [activeWorkspaceId, refresh],
   );
 
-  const handlePipelineFinished = useCallback((runId: string) => {
-    setBuildingRun((current) => (current?.run_id === runId ? null : current));
-  }, []);
-
   return (
     <AppShell
       status={status}
       error={error}
       live={live}
       workspaces={workspaces}
+      route={route}
       activeSummary={activeSummary}
       tree={tree}
       activeWorkspace={activeWorkspace}
@@ -199,23 +158,33 @@ export function App() {
       workspaceError={workspaceError ?? treeError}
       selectedNodeId={selectedNodeId}
       panel={panel}
-      creatorOpen={creatorOpen}
-      creatorTopic={creatorTopic}
       sidebarCollapsed={sidebarCollapsed}
-      buildingRun={buildingRun}
-      onSelectWorkspace={selectWorkspace}
+      build={build}
+      onOpenWorkspace={openWorkspace}
+      onOpenHome={openHome}
       onSelectNode={selectNode}
       onOpenPanel={setPanel}
       onClosePanel={() => setPanel(null)}
-      onOpenCreator={openCreator}
-      onCloseCreator={() => setCreatorOpen(false)}
-      onCreated={handleCreated}
       onWorkspaceChanged={refresh}
       onWorkspaceDeleted={handleDeleted}
       onToggleSidebar={() => setSidebarCollapsed((collapsed) => !collapsed)}
       onRefresh={() => void refresh()}
-      onPipelineStarted={setBuildingRun}
-      onPipelineFinished={handlePipelineFinished}
     />
   );
+}
+
+/**
+ * The stored preference, or collapsed on a narrow screen where an open sidebar
+ * would cover the canvas on arrival.
+ */
+function readSidebarCollapsed(): boolean {
+  try {
+    const stored = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
+    if (stored !== null) return stored === "true";
+  } catch {
+    // A browser set to block site data throws here rather than returning
+    // null, and this runs in a state initializer above every error boundary,
+    // so an unguarded read left the whole page blank.
+  }
+  return window.innerWidth < NARROW_VIEWPORT;
 }

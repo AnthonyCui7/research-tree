@@ -4,7 +4,7 @@ import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { useModalDialog } from "../../lib/modalDialog";
 import { cx } from "../../lib/cx";
-import { dangerActionClass, secondaryActionClass } from "../../lib/controlClasses";
+import { dangerActionClass, errorNoticeClass, secondaryActionClass } from "../../lib/controlClasses";
 import type { WorkspaceSummary } from "../../lib/types";
 
 type DeleteWorkspaceDialogProps = {
@@ -76,39 +76,31 @@ export function DeleteWorkspaceDialog({
     >
       <section
         className={cx(
-          "w-full max-w-[440px] overflow-hidden rounded-[13px] bg-surface shadow-dialog",
+          "w-full max-w-[440px] overflow-hidden rounded-2xl bg-surface shadow-dialog",
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
       >
-        <div className="px-6 pt-[22px] pb-5">
+        <div className="px-6 pt-6 pb-5">
           <h2
-            className="m-0 text-[17px] font-bold tracking-[-0.01em] text-text-primary"
+            className="m-0 text-[17px] leading-[1.3] font-semibold tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]"
             id="delete-workspace-title"
           >
             Delete “{workspace.title}”?
           </h2>
           <p
-            className="mt-2 mb-0 text-[13px] leading-[1.62] text-text-secondary"
+            className="mt-2 mb-0 text-[13.5px] leading-[1.6] text-text-secondary"
             id="delete-workspace-detail"
           >
             This removes the workspace and its version history from Research Tree.
           </p>
           {error ? (
-            <p
-              className="mt-3.5 mb-0 rounded-lg border border-error-border bg-error-surface px-3.5 py-3 text-xs leading-[1.5] text-error"
-              role="alert"
-            >
+            <p className={cx(errorNoticeClass, "mt-4 mb-0")} role="alert">
               {error}
             </p>
           ) : null}
         </div>
-        <div className="flex items-center gap-2 border-t border-hairline bg-surface-muted px-6 py-3.5">
-          <button
-            className={`${secondaryActionClass} ml-auto`}
-            type="button"
-            onClick={dismiss}
-            disabled={busy}
-          >
+        <div className="flex items-center justify-end gap-2 px-6 pb-5">
+          <button className={secondaryActionClass} type="button" onClick={dismiss} disabled={busy}>
             Cancel
           </button>
           <button className={dangerActionClass} type="button" onClick={() => void remove()} disabled={busy}>

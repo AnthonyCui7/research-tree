@@ -4,6 +4,7 @@ import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { useModalDialog } from "../../lib/modalDialog";
 import { branchTint } from "../../lib/familyTint";
 import { pluralize } from "../../lib/format";
+import { kickerClass } from "../../lib/controlClasses";
 import { SearchIcon } from "../ui/icons";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import type { BranchTreeNode, PaperTreeNode, TreeNodeId, TreeViewModel } from "../../lib/types";
@@ -116,15 +117,15 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
     >
       <div
         className={cx(
-          "flex max-h-[60vh] w-[620px] max-w-full flex-col overflow-hidden rounded-[13px] bg-surface shadow-dialog",
+          "flex max-h-[60vh] w-[640px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog",
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
       >
-        <div className="flex flex-none items-center gap-[11px] border-b border-hairline px-[18px] py-3.5">
-          <SearchIcon className="h-[15px] w-[15px] flex-none text-text-muted" />
+        <div className="flex flex-none items-center gap-3 border-b border-hairline px-5 py-4">
+          <SearchIcon className="h-4 w-4 flex-none text-text-muted" />
           <input
             ref={inputRef}
-            className="min-w-0 flex-1 border-0 bg-transparent text-[14.5px] text-text-primary outline-0 placeholder:text-text-muted"
+            className="min-w-0 flex-1 border-0 bg-transparent text-[15px] text-text-primary outline-0 placeholder:text-text-muted"
             type="text"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -136,7 +137,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
             aria-controls="search-results"
             aria-activedescendant={results.length > 0 ? optionId(activeIndex) : undefined}
           />
-          <kbd className="flex-none rounded-sm border border-border px-1.5 py-px font-sans text-[10.5px] text-text-muted">
+          <kbd className="flex-none rounded-[5px] border border-border bg-surface-subtle px-1.5 py-px font-sans text-[11px] text-text-muted">
             esc
           </kbd>
         </div>
@@ -190,13 +191,13 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
             ) : null}
           </div>
           {results.length === 0 ? (
-            <p className="m-0 p-7 text-center text-[13px] text-text-muted">
+            <p className="m-0 p-8 text-center text-[13.5px] text-text-muted">
               No branches or papers match “{query.trim()}”.
             </p>
           ) : null}
         </div>
 
-        <div className="flex flex-none items-center gap-3.5 border-t border-hairline bg-surface-muted px-[18px] py-[9px] text-[10.5px] text-text-muted">
+        <div className="flex flex-none items-center gap-4 border-t border-hairline px-5 py-2.5 text-[11.5px] text-text-muted">
           <span className="flex items-center gap-1.5 max-[520px]:hidden">
             <FooterKey>↑↓</FooterKey> navigate
           </span>
@@ -216,11 +217,7 @@ function optionId(index: number): string {
 
 function GroupLabel({ id, children }: { id: string; children: string }) {
   return (
-    <div
-      className="px-3 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.06em] text-text-muted uppercase"
-      id={id}
-      role="presentation"
-    >
+    <div className={cx(kickerClass, "px-3 pt-2.5 pb-1.5")} id={id} role="presentation">
       {children}
     </div>
   );
@@ -228,7 +225,7 @@ function GroupLabel({ id, children }: { id: string; children: string }) {
 
 function FooterKey({ children }: { children: string }) {
   return (
-    <kbd className="rounded-sm border border-border bg-surface px-1 font-sans text-[10.5px]">
+    <kbd className="rounded-[4px] border border-border bg-surface-subtle px-1 font-sans text-[11px]">
       {children}
     </kbd>
   );
@@ -258,7 +255,7 @@ function ResultRow({
   return (
     <div
       className={cx(
-        "flex w-full cursor-default items-center gap-[11px] rounded-md px-3 py-2 text-left transition-[background-color] duration-100",
+        "flex w-full cursor-default items-center gap-3 rounded-lg px-3 py-2 text-left transition-[background-color] duration-100",
         active ? "bg-surface-subtle" : "bg-transparent",
       )}
       id={id}
@@ -275,12 +272,12 @@ function ResultRow({
         {badge}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium text-text-primary">{title}</span>
+        <span className="block truncate text-[13.5px] font-medium text-text-primary">{title}</span>
         {subtitle ? (
-          <span className="mt-px block truncate text-[11px] text-text-muted">{subtitle}</span>
+          <span className="mt-px block truncate text-[12px] text-text-muted">{subtitle}</span>
         ) : null}
       </span>
-      {trailing ? <span className="flex-none text-[11px] text-text-muted">{trailing}</span> : null}
+      {trailing ? <span className="flex-none text-[12px] text-text-muted">{trailing}</span> : null}
     </div>
   );
 }
