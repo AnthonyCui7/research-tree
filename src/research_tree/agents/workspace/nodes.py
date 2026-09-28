@@ -57,12 +57,8 @@ from research_tree.workspace.context import (
     workspace_version_hash,
 )
 from research_tree.workspace.diff import derive_operations_and_diff_summary
-from research_tree.workspace.enrichment import (
-    load_paper_content_context,
-)
 from research_tree.workspace.operations import (
     WorkspacePatchError,
-    operation_target_ids as _operation_target_ids,
     apply_structured_workspace_patch,
     remove_visible_paper_operation,
 )
@@ -195,7 +191,6 @@ class WorkspaceAgentNodes:
             "semantic_scholar_calls": 0,
             "chat_context": None,
             "similar_papers_context": {},
-            "off_path_papers": [],
             "retrieval_request": None,
             "retrieval_guardrail_result": None,
             "proposed_workspace": None,
@@ -391,9 +386,8 @@ class WorkspaceAgentNodes:
         """Assemble the heavy context the editing and critique nodes need.
 
         This runs only on the paths that use it. It downloads nothing, but it
-        does read every relevant paper's stored full text and rank similar
-        papers, which is wasted work for a question the model can answer by
-        calling a read tool.
+        does rank similar papers, which is wasted work for a question the
+        model can answer by calling a read tool.
 
         The node is cached (see `graph.py`), so it returns only the context
         it built. Which node reads it is decided by the edge after it: a
@@ -427,26 +421,10 @@ class WorkspaceAgentNodes:
             target_paper_ids=target_paper_ids,
             similar_papers_context=similar_papers_context,
         )
-        content_warnings: list[str] = []
-        if self.workspace_repository is not None:
-            content_paper_ids = _paper_ids_for_explanation(
-                workspace,
-                target_branch_id=str(target_branch_id) if target_branch_id else None,
-                target_paper_ids=target_paper_ids,
-            )
-            paper_contents, content_warnings = load_paper_content_context(
-                self.workspace_repository,
-                workspace_id=_workspace_id(state),
-                paper_ids=content_paper_ids,
-            )
-            context["paper_full_text"] = _bounded_full_text_context(paper_contents)
-            context["requested_full_text_paper_ids"] = content_paper_ids
         return {
             "chat_context": context,
             "similar_papers_context": similar_papers_context,
-            "off_path_papers": context.get("off_path_papers") or [],
             "workspace_summary": build_workspace_summary(workspace),
-            "warnings": content_warnings,
             "node_trace": [_trace("build_workspace_context")],
         }
 
@@ -1037,35 +1015,6 @@ class WorkspaceAgentNodes:
             "node_trace": [_trace("finalize_response")],
         }
 
-    def _append_event(
-        self,
-        state: WorkspaceAgentState,
-        *,
-        event_type: str,
-        before_hash: str | None,
-        after_hash: str | None,
-        payload: dict[str, Any],
-        actor_type: str = "agent",
-        actor_id: str | None = None,
-    ) -> str | None:
-        if self.workspace_repository is None:
-            return None
-        return self.workspace_repository.append_workspace_event(
-            _workspace_id(state),
-            actor=actor_type,
-            actor_type=actor_type,
-            actor_id=actor_id,
-            event_type=event_type,
-            target_ids=_operation_target_ids(state.get("proposed_operations") or []),
-            before_hash=before_hash,
-            after_hash=after_hash,
-            payload={
-                **payload,
-                "agent_run_id": state.get("agent_run_id"),
-                "thread_id": state.get("thread_id"),
-            },
-        )
-
     def _append_agent_run_event(
         self,
         state: WorkspaceAgentState,
@@ -1280,42 +1229,6 @@ def _workspace_id(state: WorkspaceAgentState) -> str:
     raise ValueError("workspace_id is required for persistence.")
 
 
-def _paper_ids_for_explanation(
-    workspace: Mapping[str, Any],
-    *,
-    target_branch_id: str | None,
-    target_paper_ids: list[str],
-) -> list[str]:
-    cards = workspace.get("paper_cards")
-    visible_ids = set(cards) if isinstance(cards, Mapping) else set()
-    selected = {paper_id for paper_id in target_paper_ids if paper_id in visible_ids}
-    if not target_branch_id:
-        return sorted(selected)
-
-    tree = workspace.get("tree")
-    nodes = tree.get("nodes") if isinstance(tree, Mapping) else []
-    nodes_by_id = {
-        str(node.get("node_id")): node
-        for node in nodes or []
-        if isinstance(node, Mapping) and node.get("node_id")
-    }
-    pending = [target_branch_id]
-    visited: set[str] = set()
-    while pending:
-        node_id = pending.pop()
-        if node_id in visited:
-            continue
-        visited.add(node_id)
-        node = nodes_by_id.get(node_id)
-        if not isinstance(node, Mapping):
-            continue
-        selected.update(str(item) for item in node.get("primary_paper_ids") or [])
-        selected.update(str(item) for item in node.get("secondary_paper_ids") or [])
-        pending.extend(str(item) for item in node.get("child_node_ids") or [])
-    for path in workspace.get("paper_paths") or []:
-        if isinstance(path, Mapping) and str(path.get("branch_node_id")) in visited:
-            selected.update(str(item) for item in path.get("paper_ids") or [])
-    return sorted(paper_id for paper_id in selected if paper_id in visible_ids)
 
 
 def _similar_papers_context_for_scope(
@@ -1748,35 +1661,6 @@ def _existing_artifact_path(value: Any, repo_root: Path) -> Path | None:
     return path if path.is_file() else None
 
 
-def _bounded_full_text_context(
-    contents: Mapping[str, Mapping[str, Any]],
-    *,
-    max_characters: int = 180_000,
-) -> dict[str, dict[str, Any]]:
-    """Bound a model request without ever disguising truncation as full text."""
-
-    total = 0
-    result: dict[str, dict[str, Any]] = {}
-    for paper_id, content in contents.items():
-        text = str(content.get("full_text") or "")
-        if total + len(text) > max_characters:
-            result[paper_id] = {
-                "status": "omitted_context_limit",
-                "source_status": content.get("status"),
-                "source_url": content.get("source_url"),
-                "full_text": "",
-                "error": "Full text was not sent because this branch exceeds the agent context safety limit.",
-            }
-            continue
-        total += len(text)
-        result[paper_id] = {
-            "status": content.get("status"),
-            "source_url": content.get("source_url"),
-            "page_count": content.get("page_count"),
-            "truncated": bool(content.get("truncated")),
-            "full_text": text,
-        }
-    return result
 
 
 def _required_mapping(value: Any, name: str) -> dict[str, Any]:

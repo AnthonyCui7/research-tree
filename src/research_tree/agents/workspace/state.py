@@ -52,7 +52,6 @@ class WorkspaceAgentState(TypedDict, total=False):
     candidate_artifact_path: str | None
     candidate_pool: list[dict[str, Any]]
     similar_papers_context: dict[str, Any]
-    off_path_papers: list[dict[str, Any]]
 
     next_action: dict[str, Any] | None
 

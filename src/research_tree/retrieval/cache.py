@@ -398,16 +398,6 @@ class CachedJsonClient:
         )
         return hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
 
-    def _cache_path(
-        self,
-        method: str,
-        url: str,
-        body: dict[str, Any] | None = None,
-    ) -> Path:
-        # The file the on-disk cache uses for this request; kept for callers
-        # that inspect the cache directly.
-        return self.cache_dir / f"{self._cache_key(method, url, body)}.json"
-
 
 def _write_atomic(path: Path, text: str) -> None:
     # A process can die mid-write (daemon threads exit with the interpreter);

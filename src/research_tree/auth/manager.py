@@ -52,10 +52,6 @@ NOT_ALLOWED_MESSAGE = (
     "Research Tree is in a private preview. Ask the person who invited you to add "
     "your email, then sign in again."
 )
-UNVERIFIED_EMAIL_MESSAGE = (
-    "Google has not verified the email address on that account, so it cannot be used "
-    "to sign in here."
-)
 
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
@@ -110,10 +106,6 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         associate_by_email: bool = False,
         is_verified_by_default: bool = False,
     ) -> User:
-        if not account_email:
-            # The provider did not vouch for the address; nothing to match an
-            # account or the allowlist against.
-            raise ForbiddenError(UNVERIFIED_EMAIL_MESSAGE)
         ensure_email_allowed(account_email)
         try:
             await self.get_by_oauth_account(oauth_name, account_id)

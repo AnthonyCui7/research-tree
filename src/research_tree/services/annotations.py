@@ -54,7 +54,6 @@ JOB_KEY_PREFIX = "annotations:job:"
 ACTIVE_KEY_PREFIX = "annotations:active:"
 JOB_TTL_SECONDS = 24 * 60 * 60
 ACTIVE_TTL_SECONDS = 60 * 60
-JOB_STATUSES = ("queued", "running", "completed", "failed")
 PDF_SHA256 = re.compile(r"[0-9a-f]{64}")
 # A running job is heartbeaten by its worker; one that stops being touched
 # was killed (the time limit, memory, a rollout) and is failed on the next

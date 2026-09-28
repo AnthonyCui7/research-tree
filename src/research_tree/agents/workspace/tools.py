@@ -671,6 +671,11 @@ def _paper_full_text_window(context: ToolContext, paper_id: str, offset: Any) ->
     except (TypeError, ValueError):
         start = 0
     end = min(len(text), start + FULL_TEXT_WINDOW_CHARACTERS)
+    # The window is measured the way the result cap measures it, escaped:
+    # accented and mathematical text grows up to sixfold in JSON, and a
+    # window over the cap came back as a stub the model could not read on from.
+    while end > start and len(json.dumps(text[start:end], ensure_ascii=True)) > FULL_TEXT_WINDOW_CHARACTERS:
+        end = start + (end - start) * 9 // 10
     return {
         "full_text": text[start:end],
         "offset": start,

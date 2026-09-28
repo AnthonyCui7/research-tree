@@ -93,36 +93,6 @@ def remove_visible_paper_operation(
     return operation
 
 
-def rename_branch_operation(*, branch_id: str, label: str) -> dict[str, Any]:
-    return {
-        "op": "set",
-        "entity_type": "branch",
-        "branch_id": branch_id,
-        "field": "label",
-        "value": label,
-    }
-
-
-def move_visible_paper_operation(
-    *,
-    paper_id: str,
-    to_branch_id: str,
-    path_id: str | None = None,
-    index: int | None = None,
-) -> dict[str, Any]:
-    operation: dict[str, Any] = {
-        "op": "move",
-        "entity_type": "paper_placement",
-        "paper_id": paper_id,
-        "to_branch_id": to_branch_id,
-    }
-    if path_id:
-        operation["path_id"] = path_id
-    if index is not None:
-        operation["index"] = index
-    return operation
-
-
 def operation_target_ids(operations: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize which branches, papers, and paths a set of operations touches.
 

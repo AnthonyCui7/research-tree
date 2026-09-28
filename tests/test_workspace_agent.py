@@ -72,7 +72,8 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
             }
         )
 
-        response = client.complete_text(prompt=prompt)
+        turn = client.complete_with_tools(input_items=[{"role": "user", "content": prompt}], tools=[])
+        response = turn.output_text or ""
 
         self.assertIn("local reading route", response)
         self.assertLess(response.index("Foundational Paper"), response.index("Follow-up Paper"))
@@ -1805,6 +1806,33 @@ def _paper_card(paper_id: str, title: str, branch_label: str) -> dict[str, objec
         "user_notes": "",
         "similar_papers": [],
     }
+
+
+class CritiquePromptTest(unittest.TestCase):
+    def test_the_critique_reads_each_paper_card_once(self) -> None:
+        from research_tree.agents.workspace.prompts import (
+            build_workspace_critique_prompt,
+        )
+
+        context = build_workspace_chat_context(workspace=_workspace(), candidate_artifact=_candidate_artifact())
+        prompt = build_workspace_critique_prompt(user_message="Critique this.", workspace_context=context)
+
+        self.assertEqual(prompt.count('"Core Method abstract."'), 1)
+
+
+@unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
+class SweptCacheTest(unittest.TestCase):
+    def test_a_write_drops_entries_past_their_time(self) -> None:
+        from research_tree.agents.workspace.cache import SweptInMemoryCache
+
+        cache = SweptInMemoryCache()
+        old_key = (("context",), "version-1")
+        new_key = (("context",), "version-2")
+        cache.set({old_key: ({"built": 1}, 0)})  # expires as it is written
+        cache.set({new_key: ({"built": 2}, 3600)})
+        # The old entry is gone without its key ever being read again.
+        self.assertEqual(list(cache._cache[("context",)]), ["version-2"])
+        self.assertEqual(cache.get([new_key]), {new_key: {"built": 2}})
 
 
 if __name__ == "__main__":

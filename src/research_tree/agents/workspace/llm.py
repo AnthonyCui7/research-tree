@@ -94,14 +94,6 @@ class WorkspaceAgentLlmClient(Protocol):
     ) -> StructuredModelT:
         ...
 
-    def complete_text(
-        self,
-        *,
-        prompt: str,
-        model_name: str | None = None,
-    ) -> str:
-        ...
-
     def complete_with_tools(
         self,
         *,
@@ -193,16 +185,6 @@ class DeterministicWorkspaceAgentLlmClient:
             return response_model.model_validate(payload)
         return _heuristic_structured_output(prompt, response_model)
 
-    def complete_text(
-        self,
-        *,
-        prompt: str,
-        model_name: str | None = None,
-    ) -> str:
-        if self.text_outputs:
-            return self.text_outputs.popleft()
-        return _offline_workspace_answer(_prompt_payload(prompt))
-
 
 class OpenAIResponsesAgentClient:
     def __init__(
@@ -256,22 +238,6 @@ class OpenAIResponsesAgentClient:
                 f"OpenAI structured output was not valid JSON: {error}"
             ) from error
         return response_model.model_validate(payload)
-
-    def complete_text(
-        self,
-        *,
-        prompt: str,
-        model_name: str | None = None,
-        request_profile: AgentRequestProfile | None = None,
-    ) -> str:
-        raw_response = self._call_responses_api(
-            call_name="workspace_chat",
-            prompt=prompt,
-            model=model_name or self.default_model,
-            text_format={"type": "text"},
-            request_profile=request_profile,
-        )
-        return extract_response_output_text(raw_response)
 
     def complete_with_tools(
         self,

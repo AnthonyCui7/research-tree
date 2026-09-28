@@ -150,25 +150,6 @@ def _details_from_cards(cards: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return details
 
 
-def load_paper_content_context(
-    repository: WorkspaceRepository,
-    *,
-    workspace_id: str,
-    paper_ids: list[str],
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    contents: dict[str, dict[str, Any]] = {}
-    warnings: list[str] = []
-    for paper_id in dict.fromkeys(paper_ids):
-        try:
-            content = repository.get_paper_content(workspace_id, paper_id)
-        except (FileNotFoundError, OSError, ValueError):
-            # The reason is a storage path or key, which belongs in the log,
-            # not in a review payload the browser renders.
-            logger.info("full text unavailable workspace_id=%s paper_id=%s", workspace_id, paper_id)
-            warnings.append(f"Full text is not available for {paper_id}.")
-            continue
-        contents[paper_id] = content
-    return contents, warnings
 
 
 def _pdf_sources(details: Mapping[str, Any], arxiv_id: Any) -> list[str]:

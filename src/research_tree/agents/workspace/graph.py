@@ -3,12 +3,11 @@ from __future__ import annotations
 from functools import partial
 from typing import Any
 
-from langgraph.cache.memory import InMemoryCache
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import CachePolicy
 
-from research_tree.agents.workspace.cache import workspace_context_cache_key
+from research_tree.agents.workspace.cache import SweptInMemoryCache, workspace_context_cache_key
 from research_tree.agents.workspace.llm import WorkspaceAgentLlmClient
 from research_tree.agents.workspace.nodes import WorkspaceAgentNodes
 from research_tree.agents.workspace.routing import (
@@ -146,6 +145,6 @@ def build_workspace_agent_graph(
 
     return builder.compile(
         checkpointer=checkpointer if checkpointer is not None else InMemorySaver(),
-        cache=cache if cache is not None else InMemoryCache(),
+        cache=cache if cache is not None else SweptInMemoryCache(),
         name="WorkspaceAgentGraph",
     )

@@ -98,7 +98,10 @@ def build_workspace_critique_prompt(
         {
             "user_message": user_message,
             "conversation_history": _conversation_history_for_prompt(conversation_history),
-            "workspace_context": workspace_context,
+            # The context carries the workspace and copies of its cards, paths
+            # and reading order; the model reads the workspace once.
+            "workspace": workspace_context.get("workspace") or {},
+            "workspace_context": _context_beyond_the_workspace(workspace_context),
             "look_for": [
                 "weak branches",
                 "misplaced papers",
