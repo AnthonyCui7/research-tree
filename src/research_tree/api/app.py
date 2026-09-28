@@ -15,9 +15,9 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from langgraph.cache.memory import InMemoryCache
 from langgraph.checkpoint.memory import InMemorySaver
 
+from research_tree.agents.workspace.cache import SweptInMemoryCache
 from research_tree.api.auth import auth_dependency
 from research_tree.api.middleware import (
     BodyLimitMiddleware,
@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
     app.state.repository = build_workspace_repository()
     checkpointer, checkpoint_pool = _checkpointer()
     app.state.agent_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
-    app.state.agent_cache = InMemoryCache()
+    app.state.agent_cache = SweptInMemoryCache()
     try:
         yield
     finally:

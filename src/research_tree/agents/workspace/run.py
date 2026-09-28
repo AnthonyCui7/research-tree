@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -15,7 +15,6 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 class WorkspaceAgentRunResult:
     thread_id: str
     final_output: dict[str, Any] | None
-    state_updates: list[dict[str, Any]] = field(default_factory=list)
 
 
 def run_workspace_agent(
@@ -61,7 +60,6 @@ def _run_graph(
     thread_id: str,
     on_progress: ProgressCallback | None = None,
 ) -> WorkspaceAgentRunResult:
-    updates: list[dict[str, Any]] = []
     final_output: dict[str, Any] | None = None
     # With a listener the stream carries the nodes' progress events alongside
     # the state snapshots, as (mode, chunk) pairs.
@@ -80,15 +78,9 @@ def _run_graph(
                 continue
         else:
             snapshot = chunk
-        if not isinstance(snapshot, dict):
-            continue
-        updates.append(snapshot)
-        final_output = snapshot
-    return WorkspaceAgentRunResult(
-        thread_id=thread_id,
-        final_output=final_output,
-        state_updates=updates,
-    )
+        if isinstance(snapshot, dict):
+            final_output = snapshot
+    return WorkspaceAgentRunResult(thread_id=thread_id, final_output=final_output)
 
 
 def _thread_id_for_input(

@@ -2,7 +2,35 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping as MappingABC
+from datetime import UTC, datetime
 from typing import Any, Mapping
+
+from langgraph.cache.base import FullKey
+from langgraph.cache.memory import InMemoryCache
+
+
+class SweptInMemoryCache(InMemoryCache):
+    """LangGraph's in-memory cache, with expired entries dropped on every write.
+
+    The base class drops an expired entry only when its own key is read again.
+    A workspace's context key changes with every version, so a context built
+    for an old version is never read again, and in a long-lived API process
+    those entries, each a copy of a workspace, would only accumulate.
+    """
+
+    def set(self, keys: MappingABC[FullKey, tuple[Any, int | None]]) -> None:
+        now = datetime.now(UTC).timestamp()
+        with self._lock:
+            for namespace in self._cache.values():
+                expired = [
+                    key
+                    for key, (_encoding, _value, expiry) in namespace.items()
+                    if expiry is not None and expiry <= now
+                ]
+                for key in expired:
+                    del namespace[key]
+        super().set(keys)
 
 
 def workspace_context_cache_key(state: Mapping[str, Any], *, owner_id: str = "") -> str:

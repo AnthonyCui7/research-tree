@@ -34,8 +34,6 @@ class ArtifactStore(Protocol):
 
     def get(self, key: str) -> bytes | None: ...
 
-    def exists(self, key: str) -> bool: ...
-
 
 class FilesystemArtifactStore:
     def __init__(self, root: Path | str | None = None) -> None:
@@ -61,9 +59,6 @@ class FilesystemArtifactStore:
         if not path.is_file():
             return None
         return path.read_bytes()
-
-    def exists(self, key: str) -> bool:
-        return self._path(key).is_file()
 
     def _path(self, key: str) -> Path:
         path = (self.root / _safe_key(key)).resolve()
@@ -96,9 +91,6 @@ class AzureBlobArtifactStore:
             return self._client.download_blob(_safe_key(key)).readall()
         except ResourceNotFoundError:
             return None
-
-    def exists(self, key: str) -> bool:
-        return self._client.get_blob_client(_safe_key(key)).exists()
 
 
 def blob_account_url() -> str | None:

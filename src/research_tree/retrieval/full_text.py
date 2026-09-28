@@ -5,7 +5,6 @@ import io
 import ipaddress
 import logging
 import socket
-import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass

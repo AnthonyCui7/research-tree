@@ -66,6 +66,19 @@ def _context(**overrides: Any) -> ToolContext:
 
 
 class TestReadTools:
+    def test_full_text_that_grows_when_escaped_still_reads_on(self) -> None:
+        class Contents:
+            def get_paper_content(self, workspace_id: str, paper_id: str) -> dict[str, Any]:
+                # Every character escapes to six: "\u00e9".
+                return {"full_text": "é" * 20_000}
+
+        raw = run_tool("get_paper_full_text", _context(repository=Contents()), {"paper_id": "p1"})
+        result = json.loads(raw)
+
+        assert len(raw) <= MAX_TOOL_RESULT_CHARACTERS
+        assert "truncated" not in result
+        assert result["next_offset"] == len(result["full_text"])
+
     def test_get_branch_returns_its_paths_and_papers(self) -> None:
         result = json.loads(run_tool("get_branch", _context(), {"branch_id": "branch-main"}))
 
