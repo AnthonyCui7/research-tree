@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, messageFrom } from "../../lib/apiError";
+import { ApiError, errorNotice, type ErrorNotice } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
 import { isOpenable, isRunActive, useBuildProgress } from "../../lib/pipelineStages";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import type { BuildRun } from "../../data/useBuildRun";
 import {
   chipClass,
+  compactActionClass,
   errorNoticeClass,
   ghostActionClass,
   kickerClass,
@@ -20,6 +21,8 @@ import type { PipelineRun, TopicReview } from "../../lib/types";
 type NewWorkspacePageProps = {
   build: BuildRun;
   onOpenWorkspace: (workspaceId: string) => void;
+  /** Opens the API keys screen, offered when a step was refused for want of a key. */
+  onOpenApiKeys: () => void;
 };
 
 const EXAMPLE_TOPICS = ["Speculative decoding", "Protein language models", "Mechanistic interpretability"];
@@ -29,13 +32,13 @@ const EXAMPLE_TOPICS = ["Speculative decoding", "Protein language models", "Mech
  * it was understood, then watch the build. While a build is being watched the
  * page shows it, since only one runs at a time from here.
  */
-export function NewWorkspacePage({ build, onOpenWorkspace }: NewWorkspacePageProps) {
+export function NewWorkspacePage({ build, onOpenWorkspace, onOpenApiKeys }: NewWorkspacePageProps) {
   const [topic, setTopic] = useState("");
   /** The reader's optional steer, carried into the construction prompt. */
   const [instructions, setInstructions] = useState<string | null>(null);
   const [review, setReview] = useState<TopicReview | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorNotice | null>(null);
 
   async function checkTopic() {
     if (!topic.trim() || busy) return;
@@ -44,7 +47,7 @@ export function NewWorkspacePage({ build, onOpenWorkspace }: NewWorkspacePagePro
     try {
       setReview(await repositoryWorkspaceGateway.reviewTopic(topic));
     } catch (requestError) {
-      setError(messageFrom(requestError));
+      setError(errorNotice(requestError));
     } finally {
       setBusy(false);
     }
@@ -60,7 +63,7 @@ export function NewWorkspacePage({ build, onOpenWorkspace }: NewWorkspacePagePro
       setTopic("");
       setInstructions(null);
     } catch (requestError) {
-      setError(messageFrom(requestError));
+      setError(errorNotice(requestError));
       // The approval lasts fifteen minutes. Past that, the only way forward
       // is to review the topic again, so the page goes back to that step
       // with the reason rather than leaving a dead "Build workspace" button.
@@ -94,6 +97,7 @@ export function NewWorkspacePage({ build, onOpenWorkspace }: NewWorkspacePagePro
         instructions={instructions?.trim() ?? ""}
         busy={busy}
         error={error}
+        onOpenApiKeys={onOpenApiKeys}
         onBack={() => {
           setError(null);
           setReview(null);
@@ -111,6 +115,7 @@ export function NewWorkspacePage({ build, onOpenWorkspace }: NewWorkspacePagePro
         onInstructions={setInstructions}
         busy={busy}
         error={error}
+        onOpenApiKeys={onOpenApiKeys}
         onSubmit={() => void checkTopic()}
       />
     );
@@ -134,6 +139,7 @@ function TopicStep({
   onInstructions,
   busy,
   error,
+  onOpenApiKeys,
   onSubmit,
 }: {
   topic: string;
@@ -141,7 +147,8 @@ function TopicStep({
   instructions: string | null;
   onInstructions: (instructions: string | null) => void;
   busy: boolean;
-  error: string | null;
+  error: ErrorNotice | null;
+  onOpenApiKeys: () => void;
   onSubmit: () => void;
 }) {
   const topicRef = useRef<HTMLInputElement>(null);
@@ -247,10 +254,20 @@ function TopicStep({
         ))}
       </div>
 
-      {error ? (
-        <p className={cx(errorNoticeClass, "mt-6 mb-0")} role="alert">
-          {error}
-        </p>
+      {error ? <StepError error={error} onOpenApiKeys={onOpenApiKeys} /> : null}
+    </div>
+  );
+}
+
+/** A refused step, with the way past it when that is an API key. */
+function StepError({ error, onOpenApiKeys }: { error: ErrorNotice; onOpenApiKeys: () => void }) {
+  return (
+    <div className={cx(errorNoticeClass, "mt-6 flex items-center gap-3")} role="alert">
+      <span className="min-w-0 flex-1">{error.message}</span>
+      {error.needsKey ? (
+        <button className={cx(compactActionClass, "flex-none")} type="button" onClick={onOpenApiKeys}>
+          Add API key
+        </button>
       ) : null}
     </div>
   );
@@ -263,6 +280,7 @@ function ReviewStep({
   instructions,
   busy,
   error,
+  onOpenApiKeys,
   onBack,
   onBuild,
   onOpenExisting,
@@ -270,7 +288,8 @@ function ReviewStep({
   review: TopicReview;
   instructions: string;
   busy: boolean;
-  error: string | null;
+  error: ErrorNotice | null;
+  onOpenApiKeys: () => void;
   onBack: () => void;
   onBuild: () => void;
   onOpenExisting: (workspaceId: string) => void;
@@ -320,11 +339,7 @@ function ReviewStep({
           You already have a “{existing.title}” workspace for this topic.
         </p>
       ) : null}
-      {error ? (
-        <p className={cx(errorNoticeClass, "mt-6 mb-0")} role="alert">
-          {error}
-        </p>
-      ) : null}
+      {error ? <StepError error={error} onOpenApiKeys={onOpenApiKeys} /> : null}
 
       <div className="mt-8 flex items-center gap-2">
         <button className={secondaryActionClass} type="button" onClick={onBack} disabled={busy}>

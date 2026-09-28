@@ -594,10 +594,13 @@ function Questions({ questions }: { questions: string[] }) {
   );
 }
 
+/** What retrieval records as the venue of an arXiv preprint, which has none. */
+const PREPRINT_VENUE = "N/A";
+
 /** Byline facts after the authors: when, where, and how often it is cited. */
 function paperFacts(paper: PaperTreeNode): string {
   const parts = [publicationDate(paper)];
-  if (paper.venue) {
+  if (paper.venue && paper.venue !== PREPRINT_VENUE) {
     parts.push(paper.venue);
   }
   if (paper.citationCount !== null) {
