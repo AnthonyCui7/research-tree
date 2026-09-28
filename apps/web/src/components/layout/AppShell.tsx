@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { ProfileMenu, type AccountScreen } from "./ProfileMenu";
@@ -11,7 +11,6 @@ import { RightPanel, RIGHT_PANEL_DEFAULT_WIDTH } from "../panel/RightPanel";
 import { NewWorkspacePage } from "../workspace/NewWorkspacePage";
 import { WorkspaceNotice } from "../workspace/WorkspaceNotice";
 import { WorkspaceHistory } from "../workspace/WorkspaceHistory";
-import { WorkspaceAgent } from "../workspace/WorkspaceAgent";
 import { DeleteWorkspaceDialog } from "../workspace/DeleteWorkspaceDialog";
 import { NodeActionsMenu } from "../workspace/NodeActionsMenu";
 import { Toast, ToastStack } from "../ui/Toast";
@@ -35,6 +34,12 @@ import type {
 } from "../../lib/types";
 
 export type UtilityPanel = "inspector" | "agent" | "history";
+
+// The assistant renders replies with a markdown engine about as large as the
+// rest of the app; it loads the first time the panel opens.
+const WorkspaceAgent = lazy(() =>
+  import("../workspace/WorkspaceAgent").then((module) => ({ default: module.WorkspaceAgent })),
+);
 
 // The shell only renders behind the session gate, so this is never shown; it
 // keeps the account row's prop total while the store is mid-update.
@@ -137,9 +142,12 @@ export function AppShell({
   const activeRunning =
     build.run?.workspace_id === activeWorkspaceId && isRunActive(build.run);
   const refreshError = status !== "error" && error && error !== dismissedError ? error : null;
-  // A rebuild of a listed workspace that stopped short is reported here; a new
-  // workspace that did has its own row in the sidebar and its page.
-  const stoppedRebuild =
+  // A build that stopped short is reported on the new-workspace page. Away
+  // from it, one whose workspace is listed (a rebuild, or a build that failed
+  // after its structure landed) is reported here instead; one that never
+  // landed keeps a row in the sidebar that leads back to the page.
+  const stoppedBuild =
+    !home &&
     build.run &&
     !isRunActive(build.run) &&
     workspaces.some((workspace) => workspace.workspace_id === build.run?.workspace_id)
@@ -245,25 +253,29 @@ export function AppShell({
     else onOpenPanel(target);
   }
 
-  const mainContent = (() => {
-    if (status === "error") {
-      return (
-        <WorkspaceNotice
-          title="Workspaces unavailable"
-          detail={error ?? "Your workspaces could not be loaded. Refresh and try again."}
-          tone="error"
-          actionLabel="Retry"
-          onAction={onRefresh}
-        />
-      );
-    }
-    if (home) {
-      return <NewWorkspacePage build={build} onOpenWorkspace={onOpenWorkspace} />;
-    }
-    if (!route || !activeSummary) {
-      return <WorkspaceNotice title="Loading…" />;
-    }
-    return (
+  let mainContent: ReactNode;
+  if (status === "error") {
+    mainContent = (
+      <WorkspaceNotice
+        title="Workspaces unavailable"
+        detail={error ?? "Your workspaces could not be loaded. Refresh and try again."}
+        tone="error"
+        actionLabel="Retry"
+        onAction={onRefresh}
+      />
+    );
+  } else if (home) {
+    mainContent = (
+      <NewWorkspacePage
+        build={build}
+        onOpenWorkspace={onOpenWorkspace}
+        onOpenApiKeys={() => setAccountScreen("api-keys")}
+      />
+    );
+  } else if (!route || !activeSummary) {
+    mainContent = <WorkspaceNotice title="Loading…" />;
+  } else {
+    mainContent = (
       <>
         <TopBar
           workspaceTitle={tree?.title ?? activeSummary.title}
@@ -369,7 +381,14 @@ export function AppShell({
                 />
               ) : null}
               {shownPanel === "agent" && activeWorkspace ? (
-                <WorkspaceAgent session={session} tree={tree} onClose={onClosePanel} />
+                <Suspense fallback={null}>
+                  <WorkspaceAgent
+                    session={session}
+                    tree={tree}
+                    onClose={onClosePanel}
+                    onOpenApiKeys={() => setAccountScreen("api-keys")}
+                  />
+                </Suspense>
               ) : null}
               {shownPanel === "history" && activeWorkspace && tree?.currentVersionHash ? (
                 <WorkspaceHistory
@@ -385,7 +404,7 @@ export function AppShell({
         </div>
       </>
     );
-  })();
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-surface">
@@ -413,7 +432,7 @@ export function AppShell({
       <main className="relative flex min-w-0 flex-1 flex-col" aria-label="Research workspace">
         {mainContent}
 
-        {refreshError || signOutError || stoppedRebuild || editor.notice ? (
+        {refreshError || signOutError || stoppedBuild || editor.notice ? (
           <ToastStack>
             {refreshError ? (
               <Toast
@@ -433,11 +452,11 @@ export function AppShell({
                 {signOutError}
               </Toast>
             ) : null}
-            {stoppedRebuild ? (
-              <Toast tone="error" onDismiss={build.dismiss} dismissLabel="Dismiss rebuild notice">
-                {stoppedRebuild.status === "cancelled"
-                  ? "The rebuild was cancelled."
-                  : `The rebuild failed. ${stoppedRebuild.error ?? ""}`.trim()}
+            {stoppedBuild ? (
+              <Toast tone="error" onDismiss={build.dismiss} dismissLabel="Dismiss build notice">
+                {stoppedBuild.status === "cancelled"
+                  ? `The build of “${stoppedBuild.topic}” was cancelled.`
+                  : `The build of “${stoppedBuild.topic}” failed. ${stoppedBuild.error ?? ""}`.trim()}
               </Toast>
             ) : null}
             {editor.notice ? (

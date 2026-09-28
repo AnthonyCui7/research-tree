@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { WorkspaceList } from "../workspace/WorkspaceList";
 import { Avatar, displayName } from "./Avatar";
 import { cx } from "../../lib/cx";
@@ -70,11 +69,15 @@ export function Sidebar({
         aria-label="Workspace navigation"
       >
         <div className="flex h-[52px] flex-none items-center gap-1.5 px-2.5">
-          <RailButton
-            label={collapsed ? "Show sidebar" : "Hide sidebar"}
+          <button
+            className="grid h-9 w-9 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-[background-color,color] duration-150 hover:bg-sidebar-hover hover:text-text-primary"
+            type="button"
             onClick={onToggle}
-            icon={<SidebarIcon className="h-4 w-4" />}
-          />
+            aria-label={collapsed ? "Show sidebar" : "Hide sidebar"}
+            title={collapsed ? "Show sidebar" : "Hide sidebar"}
+          >
+            <SidebarIcon className="h-4 w-4" />
+          </button>
           {collapsed ? null : (
             <span className="truncate text-[14.5px] font-semibold tracking-[-0.01em] text-text-primary">
               Research Tree
@@ -109,19 +112,21 @@ export function Sidebar({
           <div className="flex-1" />
         ) : (
           <>
-            <div className="flex flex-none items-center gap-2 px-4 pb-1.5">
-              <span className={kickerClass}>Workspaces</span>
-              {live ? null : (
-                <span
-                  className="flex items-center gap-1 text-[11px] text-text-muted"
-                  role="status"
-                  title="The workspace event stream dropped. Reconnecting…"
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-text-muted" aria-hidden="true" />
-                  Live updates paused
-                </span>
-              )}
-            </div>
+            {workspaces.length > 0 || buildingRun || !live ? (
+              <div className="flex flex-none items-center gap-2 px-4 pb-1.5">
+                <span className={kickerClass}>Workspaces</span>
+                {live ? null : (
+                  <span
+                    className="flex items-center gap-1 text-[11px] text-text-muted"
+                    role="status"
+                    title="The workspace event stream dropped. Reconnecting…"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-text-muted" aria-hidden="true" />
+                    Live updates paused
+                  </span>
+                )}
+              </div>
+            ) : null}
             <WorkspaceList
               workspaces={workspaces}
               activeWorkspaceId={activeWorkspaceId}
@@ -161,19 +166,5 @@ export function Sidebar({
         </div>
       </aside>
     </div>
-  );
-}
-
-function RailButton({ label, onClick, icon }: { label: string; onClick: () => void; icon: ReactNode }) {
-  return (
-    <button
-      className="grid h-9 w-9 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-[background-color,color] duration-150 hover:bg-sidebar-hover hover:text-text-primary"
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-    >
-      {icon}
-    </button>
   );
 }

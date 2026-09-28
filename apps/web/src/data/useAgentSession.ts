@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { repositoryWorkspaceGateway } from "./workspaceApi";
-import { ApiError, isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../lib/apiError";
+import {
+  ApiError,
+  errorNotice,
+  isVersionConflict,
+  VERSION_CONFLICT_MESSAGE,
+  type ErrorNotice,
+} from "../lib/apiError";
 import type {
   AgentActivity,
   AgentRunResult,
@@ -35,7 +41,7 @@ export type AgentSession = {
   activity: AgentActivity | null;
   /** What the running turn has done so far. */
   steps: AgentStep[];
-  error: string | null;
+  error: ErrorNotice | null;
   model: string;
   setModel: (model: string) => void;
   /** The unsent message, kept here so closing the panel does not discard it. */
@@ -57,7 +63,7 @@ type SessionState = {
   busy: boolean;
   activity: AgentActivity | null;
   steps: AgentStep[];
-  error: string | null;
+  error: ErrorNotice | null;
   model: string;
   draft: string;
   threadId: string | null;
@@ -201,7 +207,7 @@ export function useAgentSession(
               ],
         }));
       } catch (requestError) {
-        update(id, (state) => ({ ...state, error: messageFrom(requestError) }));
+        update(id, (state) => ({ ...state, error: errorNotice(requestError) }));
       } finally {
         update(id, (state) => ({ ...state, busy: false, activity: null, steps: [] }));
       }
@@ -247,13 +253,13 @@ export function useAgentSession(
         if (isVersionConflict(requestError) || gone) {
           update(id, (state) => ({
             ...state,
-            error: gone ? REVIEW_GONE_MESSAGE : VERSION_CONFLICT_MESSAGE,
+            error: { message: gone ? REVIEW_GONE_MESSAGE : VERSION_CONFLICT_MESSAGE, needsKey: false },
             pendingReview: null,
             restoredUserMessage: null,
           }));
           await onWorkspaceChanged();
         } else {
-          update(id, (state) => ({ ...state, error: messageFrom(requestError) }));
+          update(id, (state) => ({ ...state, error: errorNotice(requestError) }));
         }
       } finally {
         update(id, (state) => ({ ...state, busy: false }));

@@ -67,6 +67,17 @@ export function messageFrom(error: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
+/** What an error strip shows: the sentence, and whether an API key is the way past it. */
+export type ErrorNotice = { message: string; needsKey: boolean };
+
+/**
+ * A 402 means the account has no key of its own and no sponsored allowance
+ * left, so the strip that reports it can offer the screen that fixes it.
+ */
+export function errorNotice(error: unknown): ErrorNotice {
+  return { message: messageFrom(error), needsKey: error instanceof ApiError && error.status === 402 };
+}
+
 async function readDetail(response: Response): Promise<{ detail: string; code: string }> {
   try {
     const payload = (await response.json()) as { detail?: unknown; error_code?: unknown };

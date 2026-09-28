@@ -10,7 +10,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cx } from "../../lib/cx";
 import { pluralize } from "../../lib/format";
-import { errorNoticeClass, warningNoticeClass } from "../../lib/controlClasses";
+import { compactActionClass, errorNoticeClass, warningNoticeClass } from "../../lib/controlClasses";
 import { agentRunFailed, type AgentSession } from "../../data/useAgentSession";
 import { PanelHeader } from "../panel/RightPanel";
 import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
@@ -29,6 +29,8 @@ type WorkspaceAgentProps = {
   /** Null only while a workspace is still loading; the intro reads from it. */
   tree: TreeViewModel | null;
   onClose: () => void;
+  /** Opens the API keys screen, offered when a turn was refused for want of a key. */
+  onOpenApiKeys: () => void;
 };
 
 const MODELS = [
@@ -40,7 +42,7 @@ const MODELS = [
 /** Tallest the composer grows before it scrolls. */
 const COMPOSER_MAX_HEIGHT = 200;
 
-export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) {
+export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: WorkspaceAgentProps) {
   const [modelAnchor, setModelAnchor] = useState<MenuAnchor | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -133,7 +135,14 @@ export function WorkspaceAgent({ session, tree, onClose }: WorkspaceAgentProps) 
           {result ? <AgentRunNotices result={result} /> : null}
           {error ? (
             <div className={cx(errorNoticeClass, "flex items-start gap-2")} role="alert">
-              <span className="min-w-0 flex-1">{error}</span>
+              <span className="min-w-0 flex-1">
+                {error.message}
+                {error.needsKey ? (
+                  <button className={cx(compactActionClass, "mt-2 flex")} type="button" onClick={onOpenApiKeys}>
+                    Add API key
+                  </button>
+                ) : null}
+              </span>
               <button
                 className="-mr-1 grid h-5 w-5 flex-none place-items-center rounded-[5px] border-0 bg-transparent p-0 hover:bg-error-border/40"
                 type="button"
@@ -332,8 +341,8 @@ function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: Agen
 function StepsTaken({ steps }: { steps: AgentStep[] }) {
   return (
     <details className="group mb-3">
-      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[13px] text-text-muted transition-[color] duration-150 hover:text-text-secondary [&::-webkit-details-marker]:hidden">
-        <span className="[overflow-wrap:anywhere]">{summarizeSteps(steps)}</span>
+      <summary className="flex w-fit max-w-full cursor-pointer list-none items-center gap-1 text-[13px] text-text-muted transition-[color] duration-150 hover:text-text-secondary [&::-webkit-details-marker]:hidden">
+        <span className="min-w-0 truncate">{summarizeSteps(steps)}</span>
         <ChevronDownIcon className="h-3.5 w-3.5 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
       </summary>
       <ol className="m-0 mt-2 ml-1 grid list-none gap-1 border-l border-hairline p-0 pl-3">
