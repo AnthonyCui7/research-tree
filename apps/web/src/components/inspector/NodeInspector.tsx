@@ -7,11 +7,24 @@ import {
   compactPrimaryActionClass,
   iconButtonClass,
   kickerClass,
-  secondaryActionClass,
+  kickerTypeClass,
+  primaryActionClass,
 } from "../../lib/controlClasses";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import { PanelHeader } from "../panel/RightPanel";
-import { BookIcon, DownloadIcon, EllipsisIcon, ExternalIcon } from "../ui/icons";
+import {
+  BookIcon,
+  CalendarIcon,
+  ChevronDownIcon,
+  ClockIcon,
+  DownloadIcon,
+  EllipsisIcon,
+  ExternalIcon,
+  PaperIcon,
+  QuoteIcon,
+  TreeIcon,
+  VenueIcon,
+} from "../ui/icons";
 import type {
   BranchTreeNode,
   PaperDetails,
@@ -80,7 +93,10 @@ export function NodeInspector({
           ) : null
         }
       />
-      <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-5 pb-10" key={node.id}>
+      <div
+        className="scrollbar-rt min-h-0 flex-1 animate-settle overflow-y-auto px-6 pt-6 pb-12"
+        key={node.id}
+      >
         {node.kind === "root" ? <RootView node={node} tree={tree} updatedAt={updatedAt} /> : null}
         {node.kind === "branch" ? (
           <BranchView
@@ -119,43 +135,56 @@ function PaperView({
 }) {
   const [readerOpen, setReaderOpen] = useState(false);
   const pdfUrl = paperPdfUrl(node);
+  const venue = node.venue && node.venue !== PREPRINT_VENUE ? node.venue : null;
   const hasLinks = Boolean(pdfUrl || node.arxivLink || node.semanticScholarLink);
 
   return (
     <>
       <Title>{node.title}</Title>
       <AuthorList authors={node.authors} />
-      <p className="mt-1 mb-0 text-[12.5px] leading-[1.5] text-text-muted">{paperFacts(node)}</p>
+      <Facts>
+        {venue ? (
+          <Fact icon={<VenueIcon className="h-3.5 w-3.5" />} wide>
+            {venue}
+          </Fact>
+        ) : null}
+        <Fact icon={<CalendarIcon className="h-3.5 w-3.5" />}>{publicationDate(node)}</Fact>
+        {node.citationCount !== null ? (
+          <Fact icon={<QuoteIcon className="h-3.5 w-3.5" />}>
+            {compactCount(node.citationCount)} {node.citationCount === 1 ? "citation" : "citations"}
+          </Fact>
+        ) : null}
+      </Facts>
 
       {hasLinks ? (
-        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+        <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-3">
           {pdfUrl ? (
-            <button className={compactPrimaryActionClass} type="button" onClick={() => setReaderOpen(true)}>
+            <button className={primaryActionClass} type="button" onClick={() => setReaderOpen(true)}>
               <BookIcon className="h-3.5 w-3.5" />
               Read with annotations
             </button>
           ) : null}
-          {pdfUrl ? (
-            <LinkButton href={pdfUrl} icon={<DownloadIcon className="h-3.5 w-3.5" />}>
-              PDF
-            </LinkButton>
-          ) : null}
-          {node.arxivLink ? (
-            <LinkButton href={node.arxivLink} icon={<ExternalIcon className="h-3 w-3" />}>
-              arXiv
-            </LinkButton>
-          ) : null}
-          {node.semanticScholarLink ? (
-            <LinkButton href={node.semanticScholarLink} icon={<ExternalIcon className="h-3 w-3" />}>
-              Semantic Scholar
-            </LinkButton>
-          ) : null}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            {pdfUrl ? (
+              <SourceLink href={pdfUrl} icon={<DownloadIcon className="h-3.5 w-3.5" />}>
+                PDF
+              </SourceLink>
+            ) : null}
+            {node.arxivLink ? (
+              <SourceLink href={node.arxivLink} icon={<ExternalIcon className="h-3.5 w-3.5" />}>
+                arXiv
+              </SourceLink>
+            ) : null}
+            {node.semanticScholarLink ? (
+              <SourceLink href={node.semanticScholarLink} icon={<ExternalIcon className="h-3.5 w-3.5" />}>
+                Semantic Scholar
+              </SourceLink>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
-      <Section label="TLDR">
-        <Prose>{node.tldr || "Unavailable"}</Prose>
-      </Section>
+      <Callout label="TLDR">{node.tldr || "Unavailable"}</Callout>
       {node.importance ? (
         <Section label="Why it matters">
           <Prose>{node.importance}</Prose>
@@ -195,6 +224,9 @@ export function paperPdfUrl(paper: PaperDetails): string | null {
   return null;
 }
 
+/** What retrieval records as the venue of an arXiv preprint, which has none. */
+const PREPRINT_VENUE = "N/A";
+
 const SHOWN_AUTHORS = 5;
 
 /** Every author up to a handful, then how many more, as a reader scans a byline. */
@@ -204,9 +236,9 @@ function AuthorList({ authors }: { authors: string[] }) {
   const shown = names.slice(0, SHOWN_AUTHORS);
   const more = names.length - shown.length;
   return (
-    <p className="mt-2 mb-0 text-[13px] leading-[1.5] text-text-secondary">
+    <p className="mt-2.5 mb-0 text-[13.5px] leading-[1.55] text-text-secondary">
       {shown.join(", ")}
-      {more > 0 ? `, and ${more} more` : null}
+      {more > 0 ? <span className="text-text-muted">, and {more} more</span> : null}
     </p>
   );
 }
@@ -215,17 +247,26 @@ function AuthorList({ authors }: { authors: string[] }) {
 function Abstract({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   const long = text.length > ABSTRACT_PREVIEW_CHARACTERS;
+  const folded = long && !expanded;
   return (
     <>
-      <Prose className={cx(long && !expanded && "line-clamp-6")}>{text}</Prose>
+      <p
+        className={cx(
+          "m-0 max-w-[68ch] text-[14px] leading-[1.7] text-text-primary",
+          folded && "line-clamp-6 [mask-image:linear-gradient(to_bottom,black_60%,transparent)]",
+        )}
+      >
+        {text}
+      </p>
       {long ? (
         <button
-          className="mt-1.5 border-0 bg-transparent p-0 text-[12.5px] font-medium text-accent-deep hover:underline"
+          className="mt-2 flex items-center gap-1 border-0 bg-transparent p-0 text-[12.5px] font-medium text-accent-deep hover:text-accent"
           type="button"
           onClick={() => setExpanded((current) => !current)}
           aria-expanded={expanded}
         >
-          {expanded ? "Show less" : "Show more"}
+          {expanded ? "Show less" : "Show the full abstract"}
+          <ChevronDownIcon className={cx("h-3.5 w-3.5 transition-transform duration-200", expanded && "rotate-180")} />
         </button>
       ) : null}
     </>
@@ -241,30 +282,33 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? papers : papers.slice(0, SIMILAR_PREVIEW);
   return (
-    <Section label="Similar papers">
-      <ul className="m-0 grid list-none gap-2 p-0">
+    <Section label="Similar papers" count={papers.length}>
+      <ul className="m-0 grid list-none divide-y divide-hairline-soft p-0">
         {visible.map((paper) => (
-          <li key={paper.paper_id}>
-            <PaperReference
-              title={paper.title}
-              meta={`${authorLine(paper.authors ?? [])} · ${publicationDate({
-                publicationDate: paper.publication_date ?? null,
-                year: paper.year,
-              })}`}
-              arxivLink={paper.arxiv_link ?? null}
-              semanticScholarLink={paper.s2_link ?? null}
-            />
+          <li className="py-3 first:pt-1" key={paper.paper_id}>
+            <p className="m-0 text-[13.5px] leading-[1.45] font-medium text-text-primary [overflow-wrap:anywhere]">
+              {paper.title}
+            </p>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-text-muted">
+              <span>
+                {authorLine(paper.authors ?? [])} ·{" "}
+                {publicationDate({ publicationDate: paper.publication_date ?? null, year: paper.year })}
+              </span>
+              {paper.arxiv_link ? <InlineLink href={paper.arxiv_link}>arXiv</InlineLink> : null}
+              {paper.s2_link ? <InlineLink href={paper.s2_link}>Semantic Scholar</InlineLink> : null}
+            </div>
           </li>
         ))}
       </ul>
       {papers.length > SIMILAR_PREVIEW ? (
         <button
-          className={cx(secondaryActionClass, "mt-2.5 h-8 w-full text-[12.5px]")}
+          className="mt-2 flex items-center gap-1 border-0 bg-transparent p-0 text-[12.5px] font-medium text-accent-deep hover:text-accent"
           type="button"
           onClick={() => setShowAll((current) => !current)}
           aria-expanded={showAll}
         >
           {showAll ? "Show fewer" : `Show all ${papers.length}`}
+          <ChevronDownIcon className={cx("h-3.5 w-3.5 transition-transform duration-200", showAll && "rotate-180")} />
         </button>
       ) : null}
     </Section>
@@ -296,9 +340,14 @@ function BranchView({
       ) : (
         <Title>{node.title}</Title>
       )}
-      <p className="mt-2 mb-0 text-[12.5px] text-text-muted">
-        {pluralize(readingPath.length, "paper")} in its reading path
-      </p>
+      {/* A branch that groups other branches has no path of its own to count. */}
+      {readingPath.length > 0 ? (
+        <Facts>
+          <Fact icon={<PaperIcon className="h-3.5 w-3.5" />}>
+            {pluralize(readingPath.length, "paper")} in its reading path
+          </Fact>
+        </Facts>
+      ) : null}
       <Section label="Overview">
         <Prose>{node.description}</Prose>
       </Section>
@@ -309,23 +358,29 @@ function BranchView({
       ) : null}
       {node.anchorPaper ? <SurveyAnchor label="Branch survey" paper={node.anchorPaper} /> : null}
       {readingPath.length > 0 ? (
-        <Section label="Reading path">
-          <ol className="m-0 -mx-2 grid list-none gap-px p-0">
+        <Section label="Reading path" count={readingPath.length}>
+          <ol className="m-0 -mx-2 grid list-none p-0">
             {readingPath.map((paper, index) => (
-              <li key={paper.id}>
+              <li className="relative" key={paper.id}>
+                {index < readingPath.length - 1 ? (
+                  <span
+                    className="absolute top-[34px] bottom-[-6px] left-[19.5px] w-px bg-accent-border"
+                    aria-hidden="true"
+                  />
+                ) : null}
                 <button
-                  className="flex w-full gap-3 rounded-lg border-0 bg-transparent px-2 py-2 text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
+                  className="group relative flex w-full gap-3 rounded-lg border-0 bg-transparent px-2 py-2.5 text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
                   type="button"
                   onClick={() => onSelectNode(paper.id)}
                 >
                   <span
-                    className="mt-px grid h-5 w-5 flex-none place-items-center rounded-full bg-accent-subtle text-[11px] font-semibold text-accent-deep tabular-nums"
+                    className="mt-px grid h-[23px] w-[23px] flex-none place-items-center rounded-full border border-accent-border bg-accent-subtle text-[11.5px] font-semibold text-accent-deep tabular-nums transition-[background-color,color] duration-150 group-hover:bg-accent group-hover:text-white"
                     aria-hidden="true"
                   >
                     {index + 1}
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-[13.5px] leading-[1.4] font-medium text-text-primary">
+                    <span className="block text-[13.5px] leading-[1.45] font-medium text-text-primary">
                       {paper.title}
                     </span>
                     <span className="mt-0.5 block text-[12px] text-text-muted">
@@ -383,7 +438,7 @@ function RenameForm({
 
   return (
     <form
-      className="grid gap-2"
+      className="grid gap-2.5"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -391,7 +446,7 @@ function RenameForm({
     >
       <input
         ref={inputRef}
-        className="w-full rounded-md border border-accent bg-surface px-2.5 py-1.5 text-[17px] leading-[1.35] font-semibold tracking-[-0.01em] text-text-primary shadow-[0_0_0_3px_var(--color-accent-subtle)] outline-0"
+        className="w-full rounded-lg border border-accent bg-surface px-3 py-2 text-[18px] leading-[1.3] font-semibold tracking-[-0.015em] text-text-primary shadow-[0_0_0_4px_var(--color-accent-subtle)] outline-0"
         value={label}
         onChange={(event) => setLabel(event.target.value)}
         onKeyDown={(event) => {
@@ -431,13 +486,19 @@ function RootView({
   return (
     <>
       <Title large>{node.title}</Title>
-      <p className="mt-2 mb-0 text-[12.5px] text-text-muted">
-        {pluralize(tree.branchCount, "branch", "branches")} · {pluralize(tree.paperCount, "paper")}
-        {updated ? ` · Updated ${updated}` : null}
-      </p>
+      <Facts>
+        <Fact icon={<TreeIcon className="h-3.5 w-3.5" />}>
+          {pluralize(tree.branchCount, "branch", "branches")}
+        </Fact>
+        <Fact icon={<PaperIcon className="h-3.5 w-3.5" />}>{pluralize(tree.paperCount, "paper")}</Fact>
+        {updated ? <Fact icon={<ClockIcon className="h-3.5 w-3.5" />}>Updated {updated}</Fact> : null}
+      </Facts>
       <Section label="Overview">
         <Prose>{node.overview}</Prose>
       </Section>
+      {node.suggestedReadingDirection ? (
+        <Callout label="Where to start">{node.suggestedReadingDirection}</Callout>
+      ) : null}
       {node.whyItMatters && node.whyItMatters !== node.overview ? (
         <Section label="Why it matters">
           <Prose>{node.whyItMatters}</Prose>
@@ -446,11 +507,6 @@ function RootView({
       {/* The branches are the tree itself, a click away on the canvas; listing
           them again here only duplicates what is already on screen. */}
       {node.anchorPaper ? <SurveyAnchor label="Root survey" paper={node.anchorPaper} /> : null}
-      {node.suggestedReadingDirection ? (
-        <Section label="Where to start">
-          <Prose>{node.suggestedReadingDirection}</Prose>
-        </Section>
-      ) : null}
       <Chips label="Key terms" values={node.keyTerms} />
       <Questions questions={node.openQuestions} />
     </>
@@ -464,7 +520,7 @@ function Title({ children, large = false }: { children: string; large?: boolean 
     <h3
       className={cx(
         "m-0 leading-[1.3] font-semibold tracking-[-0.015em] text-text-primary [overflow-wrap:anywhere]",
-        large ? "text-[21px]" : "text-[18px]",
+        large ? "text-[22px]" : "text-[19px]",
       )}
     >
       {children}
@@ -472,52 +528,56 @@ function Title({ children, large = false }: { children: string; large?: boolean 
   );
 }
 
-/** Every panel — root, branch and paper — reads as the same run of labelled sections. */
-function Section({ label, children }: { label: string; children: ReactNode }) {
+/** The short facts under a title, each with the icon that says what it is. */
+function Facts({ children }: { children: ReactNode }) {
   return (
-    <section className="mt-6">
-      <h4 className={cx(kickerClass, "m-0 mb-2")}>{label}</h4>
+    <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12.5px] text-text-muted">
+      {children}
+    </div>
+  );
+}
+
+function Fact({ icon, wide = false, children }: { icon: ReactNode; wide?: boolean; children: ReactNode }) {
+  return (
+    <span className={cx("inline-flex min-w-0 items-start gap-1.5", wide && "basis-full")}>
+      <span className="mt-px flex-none text-text-muted/80">{icon}</span>
+      <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
+    </span>
+  );
+}
+
+/** Every panel — root, branch and paper — reads as the same run of labelled sections. */
+function Section({ label, count, children }: { label: string; count?: number; children: ReactNode }) {
+  return (
+    <section className="mt-8">
+      <h4 className={cx(kickerClass, "m-0 mb-2.5 flex items-center gap-2")}>
+        {label}
+        {count !== undefined ? (
+          <span className="rounded-full bg-surface-subtle px-1.5 py-px text-[10.5px] font-semibold tracking-normal text-text-secondary tabular-nums">
+            {count}
+          </span>
+        ) : null}
+      </h4>
       {children}
     </section>
   );
 }
 
-function Prose({ children, className }: { children: string; className?: string }) {
+/**
+ * The one passage a panel leads with: a paper's TLDR, or where to start in a
+ * topic. Set apart the way the canvas sets the root apart, with the accent wash.
+ */
+function Callout({ label, children }: { label: string; children: string }) {
   return (
-    <p className={cx("m-0 max-w-[68ch] text-[14px] leading-[1.65] text-text-primary", className)}>
-      {children}
-    </p>
+    <section className="mt-7 rounded-xl border border-accent-border/70 bg-accent-wash px-4 py-3.5">
+      <h4 className={cx(kickerTypeClass, "m-0 mb-1.5 text-accent-deep")}>{label}</h4>
+      <p className="m-0 max-w-[68ch] text-[14px] leading-[1.65] text-text-primary">{children}</p>
+    </section>
   );
 }
 
-/** A paper named inside a panel: title, byline, and where to find it. */
-function PaperReference({
-  title,
-  meta,
-  arxivLink,
-  semanticScholarLink,
-}: {
-  title: string;
-  meta: string;
-  arxivLink: string | null;
-  semanticScholarLink: string | null;
-}) {
-  return (
-    <div className="rounded-lg border border-hairline px-3.5 py-3">
-      <p className="m-0 text-[13.5px] leading-[1.45] font-medium text-text-primary [overflow-wrap:anywhere]">
-        {title}
-      </p>
-      <p className="mt-1 mb-0 text-[12px] text-text-muted">{meta}</p>
-      {arxivLink || semanticScholarLink ? (
-        <div className="mt-2 flex flex-wrap gap-3">
-          {arxivLink ? <InlineLink href={arxivLink}>arXiv</InlineLink> : null}
-          {semanticScholarLink ? (
-            <InlineLink href={semanticScholarLink}>Semantic Scholar</InlineLink>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
+function Prose({ children }: { children: string }) {
+  return <p className="m-0 max-w-[68ch] text-[14px] leading-[1.7] text-text-primary">{children}</p>;
 }
 
 /**
@@ -527,19 +587,33 @@ function PaperReference({
 function SurveyAnchor({ label, paper }: { label: string; paper: PaperDetails }) {
   return (
     <Section label={label}>
-      <PaperReference
-        title={paper.title}
-        meta={`${authorLine(paper.authors)} · ${publicationDate(paper)}`}
-        arxivLink={paper.arxivLink}
-        semanticScholarLink={paper.semanticScholarLink}
-      />
+      <div className="rounded-xl border border-hairline px-4 py-3.5">
+        <p className="m-0 text-[13.5px] leading-[1.45] font-medium text-text-primary [overflow-wrap:anywhere]">
+          {paper.title}
+        </p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-text-muted">
+          <span>
+            {authorLine(paper.authors)} · {publicationDate(paper)}
+          </span>
+          {paper.arxivLink ? <InlineLink href={paper.arxivLink}>arXiv</InlineLink> : null}
+          {paper.semanticScholarLink ? (
+            <InlineLink href={paper.semanticScholarLink}>Semantic Scholar</InlineLink>
+          ) : null}
+        </div>
+      </div>
     </Section>
   );
 }
 
-function LinkButton({ href, icon, children }: { href: string; icon: ReactNode; children: string }) {
+/** Where else the paper lives: quiet next to the one action the panel offers. */
+function SourceLink({ href, icon, children }: { href: string; icon: ReactNode; children: string }) {
   return (
-    <a className={cx(compactActionClass, "no-underline")} href={href} target="_blank" rel="noreferrer">
+    <a
+      className="inline-flex items-center gap-1 text-[12.5px] font-medium text-text-secondary no-underline transition-[color] duration-150 hover:text-accent-deep"
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+    >
       {icon}
       {children}
     </a>
@@ -549,13 +623,13 @@ function LinkButton({ href, icon, children }: { href: string; icon: ReactNode; c
 function InlineLink({ href, children }: { href: string; children: string }) {
   return (
     <a
-      className="inline-flex items-center gap-1 text-[12px] font-medium text-accent-deep no-underline hover:underline"
+      className="inline-flex items-center gap-0.5 font-medium text-accent-deep no-underline hover:text-accent hover:underline"
       href={href}
       target="_blank"
       rel="noreferrer"
     >
       {children}
-      <ExternalIcon className="h-2.5 w-2.5" />
+      <ExternalIcon className="h-3 w-3" />
     </a>
   );
 }
@@ -582,31 +656,17 @@ function Questions({ questions }: { questions: string[] }) {
     return null;
   }
   return (
-    <Section label="Open questions">
-      <ul className="m-0 max-w-[68ch] list-disc pl-[18px] text-[14px] leading-[1.65] text-text-primary marker:text-border-strong">
+    <Section label="Open questions" count={questions.length}>
+      <ul className="m-0 grid max-w-[68ch] list-none gap-2.5 p-0">
         {questions.map((question) => (
-          <li className="mb-1.5 pl-1 last:mb-0" key={question}>
-            {question}
+          <li className="flex gap-3 text-[14px] leading-[1.65] text-text-primary" key={question}>
+            <span className="mt-[9px] h-1.5 w-1.5 flex-none rounded-full bg-accent-border" aria-hidden="true" />
+            <span className="min-w-0">{question}</span>
           </li>
         ))}
       </ul>
     </Section>
   );
-}
-
-/** What retrieval records as the venue of an arXiv preprint, which has none. */
-const PREPRINT_VENUE = "N/A";
-
-/** Byline facts after the authors: when, where, and how often it is cited. */
-function paperFacts(paper: PaperTreeNode): string {
-  const parts = [publicationDate(paper)];
-  if (paper.venue && paper.venue !== PREPRINT_VENUE) {
-    parts.push(paper.venue);
-  }
-  if (paper.citationCount !== null) {
-    parts.push(`${compactCount(paper.citationCount)} citations`);
-  }
-  return parts.join(" · ");
 }
 
 function compactCount(value: number): string {

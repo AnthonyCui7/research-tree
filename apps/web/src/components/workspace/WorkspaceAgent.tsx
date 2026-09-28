@@ -5,6 +5,7 @@ import {
   type ComponentProps,
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -14,7 +15,21 @@ import { compactActionClass, errorNoticeClass, warningNoticeClass } from "../../
 import { agentRunFailed, type AgentSession } from "../../data/useAgentSession";
 import { PanelHeader } from "../panel/RightPanel";
 import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
-import { CheckIcon, ChevronDownIcon, CloseIcon, SendIcon } from "../ui/icons";
+import {
+  ArrowRightIcon,
+  ChatIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ClockIcon,
+  CloseIcon,
+  GlobeIcon,
+  PaperIcon,
+  PlusIcon,
+  SearchIcon,
+  SendIcon,
+  StepIcon,
+  TreeIcon,
+} from "../ui/icons";
 import { ProposedRevision } from "./ProposedRevision";
 import type {
   AgentActivity,
@@ -138,9 +153,11 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
               <span className="min-w-0 flex-1">
                 {error.message}
                 {error.needsKey ? (
-                  <button className={cx(compactActionClass, "mt-2 flex")} type="button" onClick={onOpenApiKeys}>
-                    Add API key
-                  </button>
+                  <span className="mt-2 block">
+                    <button className={compactActionClass} type="button" onClick={onOpenApiKeys}>
+                      Add API key
+                    </button>
+                  </span>
                 ) : null}
               </span>
               <button
@@ -243,6 +260,12 @@ function AgentIntro({
   const openers = introPrompts(tree);
   return (
     <section className="my-auto py-6">
+      <span
+        className="mx-auto mb-5 grid h-10 w-10 place-items-center rounded-[13px] bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
+        aria-hidden="true"
+      >
+        <ChatIcon className="h-5 w-5" />
+      </span>
       <h3 className="m-0 text-center text-[22px] leading-[1.3] font-semibold tracking-[-0.02em] text-text-primary [overflow-wrap:anywhere]">
         {tree ? `Ask about ${tree.title}` : "Ask about this workspace"}
       </h3>
@@ -254,15 +277,24 @@ function AgentIntro({
       <div className="mx-auto mt-7 grid max-w-[520px] gap-2">
         {openers.map((opener) => (
           <button
-            className="rounded-xl border border-border bg-surface px-4 py-3 text-left transition-[background-color,border-color] duration-150 hover:border-border-strong hover:bg-surface-subtle"
+            className="group flex items-center gap-3.5 rounded-xl border border-border bg-surface px-3.5 py-3 text-left transition-[background-color,border-color] duration-150 hover:border-border-strong hover:bg-surface-subtle"
             key={opener.title}
             type="button"
             onClick={() => onUse(opener.prompt)}
           >
-            <span className="block text-[13.5px] font-medium text-text-primary">{opener.title}</span>
-            <span className="mt-0.5 block text-[12.5px] leading-[1.5] text-text-muted">
-              {opener.detail}
+            <span
+              className="grid h-8 w-8 flex-none place-items-center rounded-lg bg-surface-subtle text-text-secondary transition-[background-color,color] duration-150 group-hover:bg-accent-subtle group-hover:text-accent-deep"
+              aria-hidden="true"
+            >
+              {opener.icon}
             </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13.5px] font-medium text-text-primary">{opener.title}</span>
+              <span className="mt-0.5 block text-[12.5px] leading-[1.5] text-text-muted">
+                {opener.detail}
+              </span>
+            </span>
+            <ArrowRightIcon className="h-3.5 w-3.5 flex-none text-text-muted opacity-0 transition-[opacity,transform] duration-150 group-hover:translate-x-0.5 group-hover:opacity-100" />
           </button>
         ))}
       </div>
@@ -270,7 +302,7 @@ function AgentIntro({
   );
 }
 
-type IntroPrompt = { title: string; detail: string; prompt: string };
+type IntroPrompt = { title: string; detail: string; prompt: string; icon: ReactNode };
 
 /**
  * The openers describe the tree in front of the reader rather than research in
@@ -286,9 +318,11 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
       title: "Critique coverage",
       detail: "Where this tree is thin and what would fill it",
       prompt: "Critique the coverage of this workspace. Where is it thin, and what would fill it?",
+      icon: <SearchIcon className="h-4 w-4" />,
     },
     {
       title: "Plan a reading path",
+      icon: <StepIcon className="h-4 w-4" />,
       detail: papers
         ? `All ${papers} papers in one order, tuned to your background`
         : "Every paper in one order, tuned to your background",
@@ -300,12 +334,14 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
   if (first && second) {
     openers.push({
       title: "Compare two branches",
+      icon: <TreeIcon className="h-4 w-4" />,
       detail: `${first.title} vs. ${second.title}, and where they meet`,
       prompt: `Compare the “${first.title}” and “${second.title}” branches of this workspace, and explain where they meet.`,
     });
   } else {
     openers.push({
       title: "What's missing?",
+      icon: <PlusIcon className="h-4 w-4" />,
       detail: "Recent work this tree does not account for",
       prompt: "What important recent work is missing from this workspace?",
     });
@@ -323,16 +359,22 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
 function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: AgentActivity | null }) {
   const current = activity ?? { kind: "thinking" as const };
   return (
-    <div className="grid gap-1.5" role="status">
+    <div className="grid gap-2" role="status">
       {steps.map((step, index) => (
-        <div className="flex items-baseline gap-2 text-[13px] text-text-muted" key={`${index}:${stepKey(step)}`}>
-          <CheckIcon className="relative top-[1px] h-3 w-3 flex-none" />
+        <div className="flex items-start gap-2.5 text-[13px] leading-[1.45] text-text-muted" key={`${index}:${stepKey(step)}`}>
+          <StepGlyph step={step} />
           <span className="min-w-0 [overflow-wrap:anywhere]">{describe(step, "done")}</span>
         </div>
       ))}
-      <span className="w-fit text-[13.5px] font-medium text-shimmer [overflow-wrap:anywhere]">
-        {describe(current, "doing")}
-      </span>
+      <div className="flex items-start gap-2.5">
+        <span
+          className="mt-[3px] h-3.5 w-3.5 flex-none animate-progress-spin rounded-full border-[1.5px] border-accent-subtle border-t-accent"
+          aria-hidden="true"
+        />
+        <span className="min-w-0 text-[13.5px] leading-[1.45] font-medium text-shimmer [overflow-wrap:anywhere]">
+          {describe(current, "doing")}
+        </span>
+      </div>
     </div>
   );
 }
@@ -345,16 +387,43 @@ function StepsTaken({ steps }: { steps: AgentStep[] }) {
         <span className="min-w-0 truncate">{summarizeSteps(steps)}</span>
         <ChevronDownIcon className="h-3.5 w-3.5 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
       </summary>
-      <ol className="m-0 mt-2 ml-1 grid list-none gap-1 border-l border-hairline p-0 pl-3">
+      <ol className="m-0 mt-2.5 grid list-none gap-2 p-0">
         {steps.map((step, index) => (
-          <li className="text-[12.5px] leading-[1.5] text-text-muted [overflow-wrap:anywhere]" key={`${index}:${stepKey(step)}`}>
-            {describe(step, "done")}
+          <li
+            className="flex items-start gap-2.5 text-[12.5px] leading-[1.5] text-text-muted"
+            key={`${index}:${stepKey(step)}`}
+          >
+            <StepGlyph step={step} />
+            <span className="min-w-0 [overflow-wrap:anywhere]">{describe(step, "done")}</span>
           </li>
         ))}
       </ol>
     </details>
   );
 }
+
+/** What kind of step it was, at a glance: a search, a paper, a branch, the web. */
+function StepGlyph({ step }: { step: AgentStep }) {
+  const glyph = step.kind === "tool" ? TOOL_GLYPH[step.name] : null;
+  return (
+    <span className="mt-[2px] flex h-3.5 w-3.5 flex-none items-center justify-center text-text-muted/80" aria-hidden="true">
+      {glyph ?? <StepIcon className="h-3.5 w-3.5" />}
+    </span>
+  );
+}
+
+const TOOL_GLYPH: Record<string, ReactNode> = {
+  search_workspace: <SearchIcon className="h-3.5 w-3.5" />,
+  search_semantic_scholar: <SearchIcon className="h-3.5 w-3.5" />,
+  web_search: <GlobeIcon className="h-3.5 w-3.5" />,
+  get_paper: <PaperIcon className="h-3.5 w-3.5" />,
+  get_paper_full_text: <PaperIcon className="h-3.5 w-3.5" />,
+  get_semantic_scholar_paper: <PaperIcon className="h-3.5 w-3.5" />,
+  get_branch: <TreeIcon className="h-3.5 w-3.5" />,
+  get_workspace_overview: <TreeIcon className="h-3.5 w-3.5" />,
+  list_reading_order: <StepIcon className="h-3.5 w-3.5" />,
+  list_workspace_history: <ClockIcon className="h-3.5 w-3.5" />,
+};
 
 type Tense = "doing" | "done";
 

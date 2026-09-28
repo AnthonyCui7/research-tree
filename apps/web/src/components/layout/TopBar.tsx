@@ -53,7 +53,7 @@ export function TopBar({
       </div>
 
       <button
-        className="flex h-8 w-[min(260px,32vw)] min-w-0 flex-none items-center gap-2 rounded-md border border-transparent bg-surface-subtle px-2.5 text-[12.5px] text-text-muted transition-[background-color,border-color] duration-150 enabled:hover:border-border disabled:cursor-not-allowed disabled:opacity-60 max-[640px]:w-8 max-[640px]:justify-center max-[640px]:px-0"
+        className="flex h-8 w-[min(260px,32vw)] min-w-0 flex-none items-center gap-2 rounded-md border border-transparent bg-surface-subtle px-2.5 text-[12.5px] text-text-muted transition-[background-color,border-color] duration-150 enabled:hover:border-border disabled:cursor-not-allowed disabled:opacity-60 max-[640px]:w-8 max-[640px]:justify-center max-[640px]:border-border max-[640px]:bg-surface max-[640px]:px-0"
         type="button"
         onClick={onOpenSearch}
         disabled={searchDisabled}

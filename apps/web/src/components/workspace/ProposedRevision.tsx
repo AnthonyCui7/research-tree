@@ -12,6 +12,7 @@ import {
   type OperationChip,
 } from "../../lib/proposedOperations";
 import { RevisionDiffDialog } from "./RevisionDiffDialog";
+import { TreeIcon } from "../ui/icons";
 import type { AgentRunResult, TreeViewModel } from "../../lib/types";
 
 const MAX_CHIP_ROWS = 8;
@@ -55,7 +56,13 @@ export function ProposedRevision({
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-surface">
-      <div className="flex items-baseline gap-2 px-4 pt-3.5 pb-2">
+      <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5">
+        <span
+          className="grid h-6 w-6 flex-none place-items-center rounded-md bg-accent-subtle text-accent-deep"
+          aria-hidden="true"
+        >
+          <TreeIcon className="h-3.5 w-3.5" />
+        </span>
         <span className="text-[13.5px] font-semibold text-text-primary">Proposed revision</span>
         {count !== null ? (
           <span className="text-[12px] text-text-muted">{pluralize(count, "change")}</span>

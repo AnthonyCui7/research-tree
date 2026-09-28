@@ -41,8 +41,12 @@ export function SessionGate({ children }: { children: ReactNode }) {
     );
   }
   return (
-    <div className="grid min-h-screen place-items-center bg-background" aria-busy="true">
-      <span className="text-[13px] text-text-muted">Loading…</span>
+    <div className="grid min-h-screen place-items-center bg-surface" aria-busy="true">
+      <span
+        className="h-5 w-5 animate-progress-spin rounded-full border-2 border-accent-subtle border-t-accent"
+        role="status"
+        aria-label="Loading"
+      />
     </div>
   );
 }

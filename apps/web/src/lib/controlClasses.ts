@@ -31,9 +31,16 @@ export const textInputClass =
 export const chipClass =
   "inline-flex items-center rounded-full bg-surface-subtle px-2.5 py-[3px] text-[12px] leading-[1.4] text-text-secondary";
 
-/** The canvas cards' kicker, reused wherever a section needs a label. */
-export const kickerClass =
-  "text-[11px] font-semibold uppercase leading-[1.3] tracking-[0.06em] text-text-muted";
+/**
+ * The canvas cards' kicker, reused wherever a section needs a label. The type
+ * alone is exported for labels in another colour: `cx` joins classes without
+ * resolving conflicts, so a colour appended to `kickerClass` would compete
+ * with its own rather than replace it.
+ */
+export const kickerTypeClass =
+  "text-[11px] font-semibold uppercase leading-[1.3] tracking-[0.06em]";
+
+export const kickerClass = `${kickerTypeClass} text-text-muted`;
 
 /** Inline notice strips: an error, a warning, or a plain note. */
 export const errorNoticeClass =

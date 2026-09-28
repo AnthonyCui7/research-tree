@@ -57,6 +57,12 @@
 
   --animate-progress-spin: progress-spin 800ms linear infinite;
   --animate-shimmer: shimmer 2.2s linear infinite;
+  /* The build illustration: edges drawn along their length (`pathLength="1"`),
+     marks that breathe while their stage runs, cards that settle in. */
+  --animate-draw: draw 1100ms var(--ease-research) both;
+  --animate-breathe: breathe 1.8s ease-in-out infinite;
+  --animate-settle: settle 520ms var(--ease-research) both;
+  --animate-march: march 1.4s linear infinite;
   /* Four families, each with a matching exit: edge panels slide from the side
      they are docked to, centred surfaces rise and settle, anchored menus scale
      from their trigger, and toasts rise from the stack. Exit durations are
@@ -138,6 +144,10 @@
     background: rgb(31 35 40 / 28%);
   }
 
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -197,6 +207,42 @@
 @keyframes progress-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes march {
+  to {
+    stroke-dashoffset: -10;
   }
 }
 

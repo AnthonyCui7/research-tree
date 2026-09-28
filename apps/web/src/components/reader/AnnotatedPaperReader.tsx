@@ -170,7 +170,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
         </button>
         {onOpenAssistant ? (
           <button
-            className={`${compactActionClass} border-accent-border text-accent-deep enabled:hover:bg-accent-wash`}
+            className="inline-flex h-7 items-center gap-1.5 rounded-[7px] border border-accent-border bg-surface px-2.5 text-[12px] font-medium whitespace-nowrap text-accent-deep transition-[background-color] duration-150 hover:bg-accent-wash"
             type="button"
             onClick={() => {
               dismiss();
