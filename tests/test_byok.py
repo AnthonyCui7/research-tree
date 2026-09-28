@@ -22,7 +22,12 @@ from research_tree.billing.keywrap import (
     key_wrapper_from_env,
 )
 from research_tree.billing.pricing import cost_usd, price_for
-from research_tree.billing.usage import TokenUsage, record_llm_usage, usage_from_response
+from research_tree.billing.usage import (
+    TokenUsage,
+    record_llm_usage,
+    usage_from_response,
+    web_searches,
+)
 from research_tree.billing.user_keys import open_secret, seal_secret
 from research_tree.llm import call_responses_api
 from research_tree.principal import LOCAL_PRINCIPAL, Principal, bind_principal, current_binding
@@ -59,6 +64,12 @@ def _openai_refusal(status: int, code: str, message: str = "no"):
         (429, "insufficient_quota", "You exceeded your current quota", "out of credit"),
         (429, "rate_limit_exceeded", "Request too large for the model on tokens per min", "rate limit"),
         (403, "model_not_found", "Project does not have access to model", "cannot use the model"),
+        (
+            403,
+            "",
+            "You have insufficient permissions for this operation. Missing scopes: api.responses.write.",
+            "restricted",
+        ),
     ],
 )
 def test_a_refusal_only_the_key_owner_can_fix_says_so_and_is_not_retried(
@@ -80,6 +91,32 @@ def test_a_refusal_only_the_key_owner_can_fix_says_so_and_is_not_retried(
     assert said in raised.value.message
     assert "sk-" not in raised.value.message
     assert attempts == [1]
+
+
+def test_a_key_check_refuses_an_unknown_key_and_accepts_a_restricted_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from research_tree import llm
+    from research_tree.billing.user_keys import validate_openai_key
+    from research_tree.services.errors import ApiKeyInvalidError
+
+    def answer(status: int, message: str):
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise _openai_refusal(status, "", message)
+
+        return refuse
+
+    monkeypatch.setattr(llm, "open_openai_request", answer(401, "Incorrect API key provided"))
+    with pytest.raises(ApiKeyInvalidError):
+        validate_openai_key(SECRET)
+
+    # A key limited to the calls this service makes cannot list models.
+    monkeypatch.setattr(
+        llm,
+        "open_openai_request",
+        answer(403, "You have insufficient permissions for this operation. Missing scopes: api.model.read."),
+    )
+    validate_openai_key(SECRET)
 
 
 def test_a_refused_platform_key_is_the_operators_problem(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -342,6 +379,22 @@ def test_usage_is_read_from_both_response_shapes() -> None:
         input_tokens=55
     )
     assert usage_from_response({}) == TokenUsage()
+
+
+def test_only_a_search_is_charged_the_web_search_fee() -> None:
+    response = {
+        "output": [
+            {"type": "reasoning"},
+            {"type": "web_search_call", "action": {"type": "search", "queries": ["x"]}},
+            {"type": "web_search_call", "action": {"type": "open_page"}},
+            {"type": "web_search_call", "action": {"type": "find_in_page"}},
+            {"type": "web_search_call"},
+            {"type": "web_search_call", "action": "unreadable"},
+            {"type": "message"},
+        ]
+    }
+    assert web_searches(response) == 3
+    assert web_searches({}) == 0
 
 
 def test_metering_ignores_the_local_profile_and_unbound_calls() -> None:

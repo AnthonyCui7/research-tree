@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import text
 
 from research_tree.billing.allowances import charge_allowance
-from research_tree.billing.pricing import cost_usd
+from research_tree.billing.pricing import WEB_SEARCH_USD, cost_usd
 from research_tree.db import database_url, get_engine
 from research_tree.principal import current_binding
 
@@ -61,6 +61,21 @@ def usage_from_response(raw_response: dict[str, Any]) -> TokenUsage:
     )
 
 
+def web_searches(raw_response: dict[str, Any]) -> int:
+    """The searches a response ran; opening or reading a page is not charged."""
+
+    output = raw_response.get("output")
+    count = 0
+    for item in output if isinstance(output, list) else []:
+        if not isinstance(item, dict) or item.get("type") != "web_search_call":
+            continue
+        action = item.get("action")
+        # One that does not say what it did is charged as a search.
+        if not isinstance(action, dict) or action.get("type", "search") == "search":
+            count += 1
+    return count
+
+
 def _int(value: Any) -> int:
     try:
         return max(int(value or 0), 0)
@@ -80,7 +95,7 @@ def record_llm_usage(*, model: str, raw_response: dict[str, Any], label: str) ->
         input_tokens=usage.input_tokens,
         cached_input_tokens=usage.cached_input_tokens,
         output_tokens=usage.output_tokens,
-    )
+    ) + WEB_SEARCH_USD * web_searches(raw_response)
     source = binding.credential_source or "unknown"
     try:
         with get_engine().begin() as conn:

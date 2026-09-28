@@ -41,6 +41,9 @@ DEFAULT_PRICES: dict[str, tuple[str, str, str]] = {
     "text-embedding-3-small": ("0.02", "0.02", "0"),
 }
 UNKNOWN_MODEL_PRICE: tuple[str, str, str] = ("5.00", "0.50", "30.00")
+# The built-in web search's fee per search, for reasoning models ($10 per
+# thousand). What its results add to the input is billed as input tokens.
+WEB_SEARCH_USD = Decimal("0.01")
 
 
 def _price(values: tuple[str, str, str] | list[object]) -> ModelPrice:

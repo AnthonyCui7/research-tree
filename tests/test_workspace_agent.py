@@ -208,6 +208,34 @@ class WorkspaceAgentGraphTest(unittest.TestCase):
         self.assertEqual(command.update["final_response"], "Here is what I found so far.")
         self.assertIn("tool-call limit", command.update["warnings"][0])
 
+    def test_a_loop_past_its_time_answers_from_what_it_has(self) -> None:
+        import time
+
+        offered: list[list[dict[str, object]]] = []
+
+        class Recording(DeterministicWorkspaceAgentLlmClient):
+            def complete_with_tools(self, *, tools, **kwargs):  # type: ignore[override]
+                offered.append(tools)
+                return super().complete_with_tools(tools=tools, **kwargs)
+
+        nodes = WorkspaceAgentNodes(
+            llm_client=Recording(tool_turns=[_text_turn("Here is what I found so far.")])
+        )
+
+        command = nodes.agent_loop(
+            {
+                "user_message": "keep searching",
+                "workspace_summary": {},
+                "workspace": _workspace(),
+                "tool_rounds": 1,
+                "turn_started_at": time.time() - 301,
+            }
+        )
+
+        self.assertEqual(offered, [[]])
+        self.assertEqual(command.update["final_response"], "Here is what I found so far.")
+        self.assertIn("ran out of time", command.update["warnings"][0])
+
     def test_a_turn_with_no_words_is_a_failure_and_a_refusal_is_an_answer(self) -> None:
         from research_tree.agents.workspace.llm import AgentTurn, _agent_turn_from_response
 

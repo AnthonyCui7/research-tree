@@ -61,6 +61,7 @@ class WorkspaceAgentState(TypedDict, total=False):
     transcript_items: list[dict[str, Any]]
     tool_rounds: int
     max_tool_rounds: int
+    turn_started_at: float
     # Survives across turns on a thread: papers found in an earlier message
     # stay proposable in later ones.
     session_discovered_papers: dict[str, dict[str, Any]]

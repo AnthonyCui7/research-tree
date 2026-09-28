@@ -49,8 +49,8 @@ export function App() {
 
   // A document the canvas cannot lay out must not take the rest of the app with
   // it. This runs during render, and the sidebar and every way out to another
-  // workspace live above it, so a throw here used to leave a blank page that a
-  // reload reproduced.
+  // workspace live above it, so a throw here would leave a blank page that a
+  // reload reproduces.
   const [tree, treeError] = useMemo<[TreeViewModel | null, string | null]>(() => {
     if (!activeWorkspace) {
       return [null, null];

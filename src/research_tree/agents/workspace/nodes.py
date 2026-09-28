@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
@@ -83,6 +84,10 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 # bounds both cost and latency for a single user message. Twelve rounds fit a
 # realistic search -> resolve -> read -> propose sequence; eight did not.
 MAX_TOOL_ROUNDS = 12
+# And the time they may take. The browser stops waiting at ten minutes; a loop
+# still looking things up at five answers from what it has, which leaves a
+# proposal's construction and checks the rest.
+TOOL_LOOP_SECONDS = 300.0
 
 # Editing and critique both need the heavy workspace context, so they route
 # through the node that builds it; a rerun does not.
@@ -187,6 +192,7 @@ class WorkspaceAgentNodes:
             "validation_round": 0,
             "transcript_items": [],
             "tool_rounds": 0,
+            "turn_started_at": time.time(),
             "next_action": None,
             "semantic_scholar_calls": 0,
             "chat_context": None,
@@ -245,7 +251,9 @@ class WorkspaceAgentNodes:
 
         # On the last round, offer no tools. Running out of budget should end in
         # an answer built from what was already gathered, not an error.
-        out_of_budget = rounds >= max_rounds
+        started_at = float(state.get("turn_started_at") or time.time())
+        out_of_time = time.time() - started_at >= TOOL_LOOP_SECONDS
+        out_of_budget = rounds >= max_rounds or out_of_time
         if out_of_budget:
             transcript = [
                 *transcript,
@@ -333,7 +341,9 @@ class WorkspaceAgentNodes:
         update["status"] = "completed"
         if out_of_budget:
             update["warnings"] = [
-                "The assistant reached its tool-call limit for this message."
+                "The assistant ran out of time to look things up for this message."
+                if out_of_time
+                else "The assistant reached its tool-call limit for this message."
             ]
         return Command(update=update, goto="finalize_response")
 
@@ -412,19 +422,25 @@ class WorkspaceAgentNodes:
             if needs_similar_paper_context(state)
             else {}
         )
-        context = build_workspace_chat_context(
-            workspace=workspace,
-            candidate_artifact=state.get("candidate_artifact"),
-            include_similar_papers=False,
-            max_similar_per_paper=5,
-            target_branch_id=target_branch_id,
-            target_paper_ids=target_paper_ids,
-            similar_papers_context=similar_papers_context,
+        # Only the critique reads this; an edit's prompt is built from the
+        # document it changes (see `workspace/construction.py`). The action is
+        # in the cache key, so neither is ever replayed for the other.
+        chat_context = (
+            build_workspace_chat_context(
+                workspace=workspace,
+                candidate_artifact=state.get("candidate_artifact"),
+                include_similar_papers=False,
+                max_similar_per_paper=5,
+                target_branch_id=target_branch_id,
+                target_paper_ids=target_paper_ids,
+                similar_papers_context=similar_papers_context,
+            )
+            if next_action.get("action_type") == "critique_workspace"
+            else None
         )
         return {
-            "chat_context": context,
+            "chat_context": chat_context,
             "similar_papers_context": similar_papers_context,
-            "workspace_summary": build_workspace_summary(workspace),
             "node_trace": [_trace("build_workspace_context")],
         }
 
