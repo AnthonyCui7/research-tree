@@ -582,14 +582,8 @@ class WorkspaceRepositoryBase:
                 current_hash: str | None = workspace_version_hash(current_workspace)
             except FileNotFoundError:
                 current_hash = None
-            # Checked here, under the workspace's lock, so an edit landing
-            # between the caller's read and this write is not overwritten.
-            if expected_version_hash is not None and current_hash != expected_version_hash:
-                raise StaleVersionError(
-                    "workspace current version changed before restore: "
-                    f"expected {expected_version_hash}, found {current_hash}."
-                )
-
+            # Already there is an answer, not a conflict: a retried restore
+            # whose first response was lost finds its own result here.
             if current_hash == target_hash:
                 return {
                     "workspace_id": workspace_id,
@@ -598,6 +592,13 @@ class WorkspaceRepositoryBase:
                     "event_id": None,
                     "restored": False,
                 }
+            # Checked here, under the workspace's lock, so an edit landing
+            # between the caller's read and this write is not overwritten.
+            if expected_version_hash is not None and current_hash != expected_version_hash:
+                raise StaleVersionError(
+                    "workspace current version changed before restore: "
+                    f"expected {expected_version_hash}, found {current_hash}."
+                )
 
             self._set_current_version(ctx, workspace_id, target_hash, target_workspace)
             event_id = self._append_workspace_event(

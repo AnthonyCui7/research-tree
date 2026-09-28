@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 
 from research_tree.billing.keywrap import KeyWrapper, key_wrapper_from_env
 from research_tree.db import get_engine
@@ -230,9 +230,13 @@ def load_user_key(user_id: str, *, wrapper: KeyWrapper | None = None) -> str | N
 
 def delete_user_key(user_id: str) -> bool:
     with get_engine().begin() as conn:
-        result = conn.execute(
-            text(_RETIRE_ACTIVE_KEY), {"user_id": user_id, "provider": PROVIDER}
-        )
+        return retire_user_key(conn, user_id)
+
+
+def retire_user_key(conn: Connection, user_id: str) -> bool:
+    """Retire the account's saved key inside the caller's transaction."""
+
+    result = conn.execute(text(_RETIRE_ACTIVE_KEY), {"user_id": user_id, "provider": PROVIDER})
     return result.rowcount > 0
 
 

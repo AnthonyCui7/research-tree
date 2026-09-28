@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 
+import anyio
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -225,11 +226,16 @@ class _ChangeSignal:
         return self
 
     async def __aexit__(self, *exc_info) -> None:
-        if self._pubsub is not None:
+        if self._pubsub is None:
+            return
+        # A client that goes away cancels the stream, and a cancelled task is
+        # cancelled again at its next await, so the cleanup is shielded or it
+        # stops before the connection goes back to the pool. Closing ends the
+        # subscription with the connection.
+        with anyio.CancelScope(shield=True):
             try:
-                await self._pubsub.unsubscribe(self._channel)
                 await self._pubsub.aclose()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - the stream is over either way
                 pass
 
     async def wait(self) -> float:

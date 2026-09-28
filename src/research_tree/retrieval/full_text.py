@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import ipaddress
+import logging
 import socket
 import urllib.error
 import urllib.parse
@@ -15,6 +16,11 @@ from typing import Any
 MAX_PDF_BYTES = 40 * 1024 * 1024
 MAX_PDF_PAGES = 500
 MAX_EXTRACTED_CHARACTERS = 2_000_000
+
+# pypdf reports each font it cannot fully decode as a warning that carries the
+# whole font dictionary, hundreds per build. The text it could read comes back
+# either way, so only its errors reach the logs.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 
 @dataclass(frozen=True)

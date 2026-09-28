@@ -151,6 +151,16 @@ def grant_allowance(
         raise ValueError("the amount cannot be zero")
     allowance_id = str(uuid.uuid4())
     with get_engine().begin() as conn:
+        # One past its date still holds the address's one active slot, and a
+        # top-up would land on it and never be spendable: it is closed first,
+        # so the grant starts a fresh allowance.
+        conn.execute(
+            text(
+                "UPDATE allowances SET status = 'expired' "
+                "WHERE email = lower(:email) AND status = 'active' AND expires_at <= now()"
+            ),
+            {"email": email.strip()},
+        )
         if limit_usd < 0 and not conn.execute(
             text("SELECT 1 FROM allowances WHERE email = lower(:email) AND status = 'active'"),
             {"email": email.strip()},

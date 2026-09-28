@@ -202,12 +202,12 @@ class PaperAnnotationService:
         job_id = str(job["job_id"])
         if job.get("owner_id") != self.repository.owner_id:
             raise ValueError(f"annotation job {job_id} belongs to another account.")
-        # Claimed with a compare-and-set: a job the broker delivered twice is
-        # started by exactly one of the deliveries.
+        # A job the broker delivered twice is started by exactly one delivery.
         if not _claim_queued_job(redis, job):
             logger.info("annotation job %s not started: status=%s", job_id, job.get("status"))
             return
         job = {**job, "status": "running", "heartbeat_at": _now()}
+        _save_job(redis, job)
         heartbeat = _JobHeartbeat.start(redis, job)
         # Resolving the job's account is inside the try: an account that has
         # gone away is a reason to fail the job, not to run it as somebody else.
@@ -564,28 +564,18 @@ def _active_job(redis: Any, active_key: str) -> dict[str, Any] | None:
     return None
 
 
-# Replaces the stored job only if it is still the one the worker was handed,
-# so of two deliveries of one job exactly one starts it.
-_CLAIM_JOB_LUA = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
-    return 1
-end
-return 0
-"""
-
-
 def _claim_queued_job(redis: Any, job: dict[str, Any]) -> bool:
+    """Whether this delivery of a queued job is the one that runs it.
+
+    Two deliveries of one job can both load it while it is still queued, so
+    the claim is a key of its own that only the first can set.
+    """
+
     if job.get("status") != "queued":
         return False
-    current = redis.get(f"{JOB_KEY_PREFIX}{job['job_id']}")
-    if not current:
-        return False
-    running = json.dumps({**job, "status": "running", "heartbeat_at": _now()})
-    claimed = redis.eval(
-        _CLAIM_JOB_LUA, 1, f"{JOB_KEY_PREFIX}{job['job_id']}", current, running, JOB_TTL_SECONDS
+    return bool(
+        redis.set(f"{JOB_KEY_PREFIX}{job['job_id']}:claimed", "1", nx=True, ex=JOB_TTL_SECONDS)
     )
-    return bool(claimed)
 
 
 class _JobHeartbeat:

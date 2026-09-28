@@ -837,6 +837,36 @@ class CandidatePreparationTest(unittest.TestCase):
                     client.get_json("https://s2/y")
             slept.assert_not_called()
 
+    def test_a_connection_dropped_mid_answer_is_retried_like_any_network_failure(self) -> None:
+        import http.client
+
+        from research_tree.retrieval.cache import CachedJsonClient, JsonRequestError
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = CachedJsonClient(
+                cache_dir=Path(directory), request_delay_seconds=0.0, max_retries=2
+            )
+            drops = [
+                http.client.RemoteDisconnected("Remote end closed connection without response"),
+                http.client.IncompleteRead(b"{", 10),
+            ]
+
+            def dropping(*_args: object, **_kwargs: object) -> object:
+                if drops:
+                    raise drops.pop(0)
+                return _FakeHttpResponse(b'{"ok": true}')
+
+            with patch("urllib.request.urlopen", side_effect=dropping), patch("time.sleep"):
+                self.assertEqual(client.get_json("https://s2/x"), {"ok": True})
+
+            with (
+                patch("urllib.request.urlopen", side_effect=ConnectionResetError(54, "reset")),
+                patch("time.sleep"),
+            ):
+                with self.assertRaises(JsonRequestError) as refused:
+                    client.get_json("https://s2/y")
+            self.assertTrue(refused.exception.transient)
+
     def test_an_absurd_retry_after_is_capped_at_the_ladder(self) -> None:
         """Honouring the header without a bound parks the stage, and its thread, for hours."""
 

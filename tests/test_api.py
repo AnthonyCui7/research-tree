@@ -990,6 +990,48 @@ def test_failed_partial_rerun_keeps_source_artifacts_unchanged(repository) -> No
     assert candidate_json.read_text(encoding="utf-8") == "{}"
 
 
+@patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-never-sent"})
+def test_hydration_reads_done_only_once_its_version_is_current(repository) -> None:
+    # A reader watching a build opens the workspace the moment hydration reads
+    # as done, so by then the version it produced has to be the current one.
+    seed_hash = _seed_current(repository)
+    repository.save_pipeline_run(
+        {
+            "run_id": "pipeline_source",
+            "workspace_id": "workspace-1",
+            "status": "completed",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "artifacts": {},
+        }
+    )
+    service = WorkspacePipelineService(
+        repository,
+        repo_root=_temp_dir(),
+        dispatch=lambda owner_id, run_id, execute: execute(run_id),
+    )
+    current_when_done: list[str] = []
+    save_run = repository.save_pipeline_run
+
+    def record_current_version(run: dict[str, Any]) -> None:
+        hydrate = run["stages"].get("hydrate") or {}
+        if str(hydrate.get("status", "")).startswith("completed"):
+            current = repository.get_current_workspace("workspace-1")
+            current_when_done.append(workspace_version_hash(current))
+        save_run(run)
+
+    with (
+        patch.object(repository, "save_pipeline_run", side_effect=record_current_version),
+        patch(
+            "research_tree.services.pipeline.hydrate_workspace_papers",
+            side_effect=lambda *, workspace, **_: (workspace, []),
+        ),
+    ):
+        service.rerun("workspace-1", start_stage="hydrate", expected_version_hash=seed_hash)
+
+    assert current_when_done, "hydration never read as done"
+    assert current_when_done[0] != seed_hash
+
+
 def test_unpublished_paper_content_does_not_block_workspace_retry_id(repository) -> None:
     # Failed hydration can leave cached paper content without ever publishing
     # a workspace. Only a claimed name reserves it.
