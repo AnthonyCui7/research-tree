@@ -108,6 +108,39 @@ export function ChevronDownIcon({ className }: IconProps) {
   );
 }
 
+export function ChevronUpDownIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <path d="m5 6 3-3 3 3M5 10l3 3 3-3" />
+    </svg>
+  );
+}
+
+/** Leaves the app: a link that opens in a new tab. */
+export function ExternalIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 14 14" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <path d="M8.5 2.5h3v3M11.5 2.5 6.5 7.5M10 8.5v2.2a.8.8 0 0 1-.8.8H3.3a.8.8 0 0 1-.8-.8V4.8a.8.8 0 0 1 .8-.8h2.2" />
+    </svg>
+  );
+}
+
+export function DownloadIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 14 14" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <path d="M7 2v7M4 6.5 7 9.5l3-3M2.5 11.5h9" />
+    </svg>
+  );
+}
+
+export function BookIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>
+      <path d="M8 4.2C6.8 3.3 5.1 3 2.5 3v9.2c2.6 0 4.3.3 5.5 1.3 1.2-1 2.9-1.3 5.5-1.3V3c-2.6 0-4.3.3-5.5 1.2ZM8 4.2v9.3" />
+    </svg>
+  );
+}
+
 export function SendIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 12 12" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" {...stroke(className)}>

@@ -1,132 +1,179 @@
+import type { ReactNode } from "react";
 import { WorkspaceList } from "../workspace/WorkspaceList";
+import { Avatar, displayName } from "./Avatar";
 import { cx } from "../../lib/cx";
-import { pluralize } from "../../lib/format";
-import { isRunActive } from "../../lib/pipelineStages";
-import { ChatIcon, PlusIcon, SidebarIcon } from "../ui/icons";
-import type { PipelineRun, WorkspaceSummary } from "../../lib/types";
+import { kickerClass } from "../../lib/controlClasses";
+import { ChevronUpDownIcon, PlusIcon, SidebarIcon } from "../ui/icons";
+import type { PipelineRun, SessionUser, WorkspaceSummary } from "../../lib/types";
 
 type SidebarProps = {
+  collapsed: boolean;
   workspaces: WorkspaceSummary[];
+  /** Null while the new-workspace page is showing. */
   activeWorkspaceId: string | null;
-  onSelectWorkspace: (workspaceId: string) => void;
-  onOpenOptions: (workspace: WorkspaceSummary, trigger: HTMLElement) => void;
-  onNewWorkspace: () => void;
-  onToggleSidebar: () => void;
-  onOpenAgent: () => void;
-  agentActive: boolean;
-  agentDisabled: boolean;
+  homeActive: boolean;
   buildingRun: PipelineRun | null;
-  onResumeBuild: () => void;
-  /** True while the sidebar plays its exit animation on the way out. */
-  closing?: boolean;
   /** False once the workspace event stream drops; the list stops self-updating. */
   live: boolean;
+  user: SessionUser;
+  /** The line under the account name: its email, or how the local build runs. */
+  accountDetail: string;
+  accountMenuOpen: boolean;
+  onToggle: () => void;
+  onNewWorkspace: () => void;
+  onSelectWorkspace: (workspaceId: string) => void;
+  onOpenOptions: (workspace: WorkspaceSummary, trigger: HTMLElement) => void;
+  onOpenAccount: (trigger: HTMLElement) => void;
 };
 
+/**
+ * Navigation: a new workspace, the workspace list, and the account. Collapsed,
+ * it keeps a rail of the same controls in the same places, so the account and
+ * a new workspace stay one click away. On a narrow screen the open sidebar
+ * covers the canvas instead of pushing it aside.
+ */
 export function Sidebar({
+  collapsed,
   workspaces,
   activeWorkspaceId,
+  homeActive,
+  buildingRun,
+  live,
+  user,
+  accountDetail,
+  accountMenuOpen,
+  onToggle,
+  onNewWorkspace,
   onSelectWorkspace,
   onOpenOptions,
-  onNewWorkspace,
-  onToggleSidebar,
-  onOpenAgent,
-  agentActive,
-  agentDisabled,
-  buildingRun,
-  onResumeBuild,
-  closing = false,
-  live,
+  onOpenAccount,
 }: SidebarProps) {
-  const building = isRunActive(buildingRun);
-
   return (
-    <aside
+    <div
       className={cx(
-        "flex w-[250px] flex-none flex-col border-r border-border bg-sidebar min-h-0 max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 max-[900px]:z-overlay max-[900px]:shadow-popover",
-        closing ? "animate-interface-left-exit" : "animate-interface-left-enter",
+        "relative h-full flex-none transition-[width] duration-200 ease-research",
+        collapsed ? "w-14" : "w-[260px] max-[900px]:w-14",
       )}
-      aria-label="Workspace navigation"
     >
-      <div className="flex items-center gap-[9px] pt-3.5 pr-3 pb-3 pl-4">
-        <h1 className="m-0 flex-1 text-sm font-bold tracking-[-0.01em] text-text-primary">
-          Research Tree
-        </h1>
-        <button
-          className="grid h-[26px] w-[26px] flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-[#e4e7e9] hover:text-text-primary"
-          type="button"
-          onClick={onToggleSidebar}
-          aria-label="Hide workspace sidebar"
-          title="Collapse sidebar"
-        >
-          <SidebarIcon className="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      <div className="px-3 pt-0.5 pb-2.5">
-        <button
-          className="flex w-full items-center justify-center gap-[7px] rounded-md border border-border bg-surface px-3 py-[7px] text-[12.5px] font-semibold text-text-primary transition-[background-color,border-color,color] duration-150 enabled:hover:border-border-strong enabled:hover:bg-surface-muted disabled:cursor-not-allowed disabled:border-border disabled:bg-surface-subtle disabled:text-text-muted"
-          type="button"
-          onClick={onNewWorkspace}
-          disabled={building}
-          title={building ? "A workspace is already building" : undefined}
-        >
-          {building ? (
-            "Building workspace…"
-          ) : (
-            <>
-              <PlusIcon className="h-[11px] w-[11px]" />
-              New workspace
-            </>
-          )}
-        </button>
-      </div>
-
-      <div className="px-4 pt-2 pb-1.5 text-[10.5px] font-semibold tracking-[0.06em] text-text-muted uppercase">
-        Workspaces
-      </div>
-
-      <WorkspaceList
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        onSelectWorkspace={onSelectWorkspace}
-        onOpenOptions={onOpenOptions}
-        buildingRun={buildingRun}
-        onResumeBuild={onResumeBuild}
-      />
-
-      <div className="border-t border-border p-2">
-        <button
-          className={cx(
-            "flex w-full items-center gap-[9px] rounded-md border-0 px-2.5 py-2 text-left text-[12.5px] font-semibold text-text-primary transition-[background-color,color] duration-150 disabled:cursor-not-allowed disabled:text-text-muted",
-            agentActive ? "bg-accent-subtle" : "bg-transparent enabled:hover:bg-[#e4e7e9]",
-          )}
-          type="button"
-          onClick={onOpenAgent}
-          disabled={agentDisabled}
-          title={agentDisabled ? "Open a workspace to use the assistant" : "Assistant"}
-        >
-          <ChatIcon
-            className={cx("h-[15px] w-[15px]", agentDisabled ? "text-border-strong" : "text-accent-deep")}
+      {collapsed ? null : (
+        <div
+          className="fixed inset-0 z-backdrop hidden animate-backdrop-enter bg-[rgb(31_35_40_/_28%)] max-[900px]:block"
+          role="presentation"
+          onClick={onToggle}
+        />
+      )}
+      <aside
+        className={cx(
+          "absolute inset-y-0 left-0 z-overlay flex flex-col overflow-hidden border-r border-hairline bg-sidebar transition-[width] duration-200 ease-research",
+          collapsed ? "w-14" : "w-[260px] max-[900px]:shadow-popover",
+        )}
+        aria-label="Workspace navigation"
+      >
+        <div className="flex h-[52px] flex-none items-center gap-1.5 px-2.5">
+          <RailButton
+            label={collapsed ? "Show sidebar" : "Hide sidebar"}
+            onClick={onToggle}
+            icon={<SidebarIcon className="h-4 w-4" />}
           />
-          Assistant
-        </button>
-        <div className="flex items-center gap-2 px-2.5 pt-[7px] pb-0.5">
-          <span className="flex-1 text-[11px] text-text-muted">
-            {pluralize(workspaces.length, "workspace")}
-          </span>
-          {!live ? (
-            <span
-              className="flex items-center gap-1.5 text-[11px] text-text-muted"
-              role="status"
-              title="The workspace event stream dropped. Reconnecting…"
-            >
-              <span className="h-1.5 w-1.5 flex-none rounded-full bg-text-muted" aria-hidden="true" />
-              Live paused
+          {collapsed ? null : (
+            <span className="truncate text-[14.5px] font-semibold tracking-[-0.01em] text-text-primary">
+              Research Tree
             </span>
-          ) : null}
+          )}
         </div>
-      </div>
-    </aside>
+
+        <div className="flex-none px-2.5 pb-3">
+          <button
+            className={cx(
+              "flex h-9 w-full items-center rounded-md border-0 text-left text-[13px] font-medium transition-[background-color,color] duration-150",
+              homeActive
+                ? "bg-accent-subtle text-accent-deep"
+                : "bg-transparent text-text-primary hover:bg-sidebar-hover",
+            )}
+            type="button"
+            onClick={onNewWorkspace}
+            aria-current={homeActive ? "page" : undefined}
+            aria-label={collapsed ? "New workspace" : undefined}
+            title={collapsed ? "New workspace" : undefined}
+          >
+            <span className="grid h-9 w-9 flex-none place-items-center" aria-hidden="true">
+              <span className="grid h-[22px] w-[22px] place-items-center rounded-full bg-accent text-white">
+                <PlusIcon className="h-2.5 w-2.5" />
+              </span>
+            </span>
+            {collapsed ? null : <span className="truncate">New workspace</span>}
+          </button>
+        </div>
+
+        {collapsed ? (
+          <div className="flex-1" />
+        ) : (
+          <>
+            <div className="flex flex-none items-center gap-2 px-4 pb-1.5">
+              <span className={kickerClass}>Workspaces</span>
+              {live ? null : (
+                <span
+                  className="flex items-center gap-1 text-[11px] text-text-muted"
+                  role="status"
+                  title="The workspace event stream dropped. Reconnecting…"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-text-muted" aria-hidden="true" />
+                  Live updates paused
+                </span>
+              )}
+            </div>
+            <WorkspaceList
+              workspaces={workspaces}
+              activeWorkspaceId={activeWorkspaceId}
+              onSelectWorkspace={onSelectWorkspace}
+              onOpenOptions={onOpenOptions}
+              buildingRun={buildingRun}
+              onOpenBuild={onNewWorkspace}
+            />
+          </>
+        )}
+
+        <div className="flex-none border-t border-hairline px-2.5 py-2">
+          <button
+            className="flex h-11 w-full items-center gap-1 rounded-md border-0 bg-transparent pr-2 text-left transition-[background-color] duration-150 hover:bg-sidebar-hover aria-expanded:bg-sidebar-hover"
+            type="button"
+            onClick={(event) => onOpenAccount(event.currentTarget)}
+            aria-haspopup="menu"
+            aria-expanded={accountMenuOpen}
+            aria-label="Account"
+            title={collapsed ? displayName(user) : undefined}
+          >
+            <span className="grid h-9 w-9 flex-none place-items-center">
+              <Avatar user={user} size={28} />
+            </span>
+            {collapsed ? null : (
+              <>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium text-text-primary">
+                    {displayName(user)}
+                  </span>
+                  <span className="block truncate text-[11.5px] text-text-muted">{accountDetail}</span>
+                </span>
+                <ChevronUpDownIcon className="h-3.5 w-3.5 flex-none text-text-muted" />
+              </>
+            )}
+          </button>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function RailButton({ label, onClick, icon }: { label: string; onClick: () => void; icon: ReactNode }) {
+  return (
+    <button
+      className="grid h-9 w-9 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-[background-color,color] duration-150 hover:bg-sidebar-hover hover:text-text-primary"
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+    >
+      {icon}
+    </button>
   );
 }

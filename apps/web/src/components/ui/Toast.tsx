@@ -8,38 +8,44 @@ type ToastProps = {
   children: ReactNode;
   onDismiss?: () => void;
   dismissLabel?: string;
+  /** One follow-up the toast offers, such as undoing what it reports. */
+  action?: { label: string; onClick: () => void; disabled?: boolean };
 };
 
 const NO_DISMISS = () => {};
 
 /**
- * The design's toast: a single line of consequence, tinted by outcome, resting
- * over the canvas rather than displacing it.
+ * A single line of consequence, resting over the canvas rather than
+ * displacing it. The icon carries the outcome; the card stays neutral.
  */
-export function Toast({ tone, children, onDismiss, dismissLabel = "Dismiss" }: ToastProps) {
+export function Toast({ tone, children, onDismiss, dismissLabel = "Dismiss", action }: ToastProps) {
   const success = tone === "success";
   const { closing, dismiss } = useDismissAnimation(onDismiss ?? NO_DISMISS, TOAST_EXIT_MS);
   return (
     <div
       className={cx(
-        "flex items-start gap-2 rounded-lg border px-[13px] py-[9px] text-xs leading-[1.5] shadow-toast",
+        "flex items-start gap-2.5 rounded-xl border border-border bg-surface py-2.5 pr-2.5 pl-3.5 text-[13px] leading-[1.5] text-text-primary shadow-toast",
         closing ? "animate-toast-exit" : "animate-toast-enter",
-        success
-          ? "border-accent-border bg-accent-subtle text-accent-deep"
-          : "border-error-border bg-surface text-error",
       )}
       role={success ? "status" : "alert"}
     >
-      <span className="mt-[3px] flex-none">
-        {success ? <CheckIcon className="h-3 w-3" /> : <WarningIcon className="h-3.5 w-3.5" />}
+      <span className={cx("mt-[3px] flex-none", success ? "text-accent" : "text-error")}>
+        {success ? <CheckIcon className="h-3.5 w-3.5" /> : <WarningIcon className="h-3.5 w-3.5" />}
       </span>
-      <span className="min-w-0 flex-1">{children}</span>
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{children}</span>
+      {action ? (
+        <button
+          className="-my-0.5 h-6 flex-none rounded-md border-0 bg-transparent px-2 text-[12.5px] font-semibold text-accent-deep transition-[background-color] duration-150 enabled:hover:bg-accent-subtle disabled:cursor-not-allowed disabled:text-text-muted"
+          type="button"
+          onClick={action.onClick}
+          disabled={action.disabled}
+        >
+          {action.label}
+        </button>
+      ) : null}
       {onDismiss ? (
         <button
-          className={cx(
-            "-mr-1 grid h-5 w-5 flex-none place-items-center rounded-[5px] border-0 bg-transparent p-0 transition-[background-color] duration-150",
-            success ? "hover:bg-accent-border" : "hover:bg-error-surface",
-          )}
+          className="-my-0.5 grid h-6 w-6 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
           type="button"
           onClick={dismiss}
           aria-label={dismissLabel}
@@ -55,7 +61,7 @@ export function Toast({ tone, children, onDismiss, dismissLabel = "Dismiss" }: T
 /** Bottom-left stack the toasts rise from — the zoom stepper owns the right. */
 export function ToastStack({ children }: { children: ReactNode }) {
   return (
-    <div className="pointer-events-none absolute bottom-10 left-10 z-dropdown flex w-[min(400px,calc(100%-80px))] flex-col gap-2 max-[720px]:bottom-6 max-[720px]:left-6">
+    <div className="pointer-events-none absolute bottom-6 left-6 z-dropdown flex w-[min(420px,calc(100%-48px))] flex-col gap-2">
       <div className="pointer-events-auto flex w-full flex-col gap-2">{children}</div>
     </div>
   );

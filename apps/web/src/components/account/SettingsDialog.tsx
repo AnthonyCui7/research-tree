@@ -27,7 +27,7 @@ export function SettingsDialog({
       <AccountSection title="Sidebar">
         <Toggle
           checked={!sidebarCollapsed}
-          label="Show the workspace sidebar"
+          label="Keep the sidebar open"
           onChange={onToggleSidebar}
         />
       </AccountSection>
@@ -42,7 +42,7 @@ export function SettingsDialog({
           <button className={secondaryActionClass} type="button" onClick={onRefresh}>
             Reload workspaces
           </button>
-          <span className="flex items-center gap-1.5 text-[12px] text-text-muted">
+          <span className="flex items-center gap-1.5 text-[12.5px] text-text-muted">
             <span
               className={cx("h-1.5 w-1.5 rounded-full", live ? "bg-accent" : "bg-text-muted")}
               aria-hidden="true"
@@ -74,7 +74,7 @@ function Toggle({
 }) {
   return (
     <button
-      className="flex w-full items-center gap-3 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-left text-[13px] text-text-primary transition-[border-color] duration-150 hover:border-border-strong"
+      className="flex w-full items-center gap-3 border-0 bg-transparent p-0 text-left text-[13.5px] text-text-primary"
       type="button"
       role="switch"
       aria-checked={checked}
@@ -83,15 +83,15 @@ function Toggle({
       <span className="min-w-0 flex-1">{label}</span>
       <span
         className={cx(
-          "relative h-[18px] w-8 flex-none rounded-full transition-[background-color] duration-150",
+          "relative h-5 w-9 flex-none rounded-full transition-[background-color] duration-150",
           checked ? "bg-accent" : "bg-border-strong",
         )}
         aria-hidden="true"
       >
         <span
           className={cx(
-            "absolute top-0.5 h-3.5 w-3.5 rounded-full bg-surface transition-[left] duration-150 ease-research",
-            checked ? "left-[16px]" : "left-0.5",
+            "absolute top-0.5 h-4 w-4 rounded-full bg-surface shadow-[0_1px_2px_rgb(31_35_40/20%)] transition-[left] duration-150 ease-research",
+            checked ? "left-[18px]" : "left-0.5",
           )}
         />
       </span>
@@ -101,13 +101,13 @@ function Toggle({
 
 function Shortcut({ keys, label }: { keys: string; label: string }) {
   return (
-    <div className="flex items-center gap-2.5 text-[12.5px] text-text-secondary">
-      <dt className="m-0">
-        <kbd className="rounded-sm border border-border bg-surface px-[6px] py-px font-sans text-[11px] text-text-muted">
+    <div className="flex items-center gap-3 text-[13.5px] text-text-secondary">
+      <dt className="order-last m-0 flex-none">
+        <kbd className="rounded-[5px] border border-border bg-surface-subtle px-1.5 py-px font-sans text-[11.5px] text-text-secondary">
           {keys}
         </kbd>
       </dt>
-      <dd className="m-0">{label}</dd>
+      <dd className="m-0 min-w-0 flex-1">{label}</dd>
     </div>
   );
 }

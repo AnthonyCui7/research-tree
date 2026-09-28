@@ -10,7 +10,8 @@ type WorkspaceListProps = {
   onSelectWorkspace: (workspaceId: string) => void;
   onOpenOptions: (workspace: WorkspaceSummary, trigger: HTMLElement) => void;
   buildingRun: PipelineRun | null;
-  onResumeBuild: () => void;
+  /** Shows the build's progress on the new-workspace page. */
+  onOpenBuild: () => void;
 };
 
 export function WorkspaceList({
@@ -19,25 +20,22 @@ export function WorkspaceList({
   onSelectWorkspace,
   onOpenOptions,
   buildingRun,
-  onResumeBuild,
+  onOpenBuild,
 }: WorkspaceListProps) {
   const activeRun = isRunActive(buildingRun) ? buildingRun : null;
   const runHasWorkspace = workspaces.some(
     (workspace) => workspace.workspace_id === buildingRun?.workspace_id,
   );
-  // A failed run whose workspace never landed still needs a way back into the
-  // creator, so it keeps its placeholder row.
-  const placeholderRun =
-    activeRun ?? (buildingRun?.status === "failed" && !runHasWorkspace ? buildingRun : null);
+  // A build whose workspace has not landed yet, or never will, still needs a
+  // row: it is the way back to its progress or its failure.
+  const placeholderRun = buildingRun && !runHasWorkspace ? buildingRun : null;
 
   return (
     <nav
-      className="scrollbar-rt flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2"
+      className="scrollbar-rt flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5 pb-3"
       aria-label="Workspaces"
     >
-      {placeholderRun && !runHasWorkspace ? (
-        <BuildPlaceholderRow run={placeholderRun} onResume={onResumeBuild} />
-      ) : null}
+      {placeholderRun ? <BuildPlaceholderRow run={placeholderRun} onOpen={onOpenBuild} /> : null}
       {workspaces.map((workspace) => {
         const selected = workspace.workspace_id === activeWorkspaceId;
         const building = activeRun?.workspace_id === workspace.workspace_id ? activeRun : null;
@@ -45,43 +43,38 @@ export function WorkspaceList({
           <div
             key={workspace.workspace_id}
             className={cx(
-              "group relative flex items-center gap-2 rounded-md px-2.5 py-2 transition-[background-color] duration-150",
-              selected ? "bg-accent-subtle" : "hover:bg-[#e9ebed]",
+              "group relative flex items-center gap-1 rounded-md transition-[background-color] duration-150",
+              selected ? "bg-accent-subtle" : "hover:bg-sidebar-hover",
             )}
           >
             <button
-              className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left"
+              className="min-w-0 flex-1 border-0 bg-transparent py-[7px] pr-1 pl-2.5 text-left"
               type="button"
-              aria-current={selected ? "true" : undefined}
+              aria-current={selected ? "page" : undefined}
               onClick={() => onSelectWorkspace(workspace.workspace_id)}
             >
               <span
                 className={cx(
-                  "block truncate text-[13px] leading-[1.35]",
+                  "block truncate text-[13px] leading-[1.4]",
                   selected ? "font-semibold text-accent-deep" : "font-medium text-text-primary",
                 )}
               >
                 {workspace.title}
               </span>
               {building ? (
-                <BuildingCaption run={building} selected={selected} />
+                <BuildingCaption run={building} />
               ) : (
-                <span
-                  className={cx(
-                    "mt-0.5 block truncate text-[11px] leading-[1.35]",
-                    selected ? "text-text-secondary" : "text-text-muted",
-                  )}
-                >
+                <span className="block truncate text-[11.5px] leading-[1.4] text-text-muted">
                   {workspaceCaption(workspace)}
                 </span>
               )}
             </button>
             <button
               className={cx(
-                "grid h-[22px] w-[22px] flex-none place-items-center rounded-[5px] border-0 bg-transparent p-0 opacity-0 transition-[background-color,color,opacity] duration-150 group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100",
+                "mr-1.5 grid h-6 w-6 flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 opacity-0 transition-[background-color,color,opacity] duration-150 group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100",
                 selected
                   ? "text-accent-deep hover:bg-accent-border"
-                  : "text-text-muted hover:bg-[#dde0e3] hover:text-text-primary",
+                  : "text-text-muted hover:bg-hairline hover:text-text-primary",
               )}
               type="button"
               onClick={(event) => onOpenOptions(workspace, event.currentTarget)}
@@ -97,16 +90,11 @@ export function WorkspaceList({
   );
 }
 
-function BuildingCaption({ run, selected }: { run: PipelineRun; selected: boolean }) {
+function BuildingCaption({ run }: { run: PipelineRun }) {
   const progress = useBuildProgress(run);
   return (
     <>
-      <span
-        className={cx(
-          "mt-0.5 mb-1.5 block truncate text-[11px] leading-[1.35]",
-          selected ? "text-text-secondary" : "text-text-muted",
-        )}
-      >
+      <span className="mb-1.5 block truncate text-[11.5px] leading-[1.4] text-text-muted">
         {buildingLabel(run, progress.currentLabel)}
       </span>
       <ProgressBar percent={progress.percent} />
@@ -114,27 +102,35 @@ function BuildingCaption({ run, selected }: { run: PipelineRun; selected: boolea
   );
 }
 
-function BuildPlaceholderRow({ run, onResume }: { run: PipelineRun; onResume: () => void }) {
-  const failed = run.status === "failed";
+function BuildPlaceholderRow({ run, onOpen }: { run: PipelineRun; onOpen: () => void }) {
   const progress = useBuildProgress(run);
+  const stopped = !isRunActive(run);
   return (
     <button
-      className="rounded-md px-2.5 py-2 text-left transition-[background-color] duration-150 hover:bg-[#e9ebed]"
+      className="rounded-md border-0 bg-transparent px-2.5 py-[7px] text-left transition-[background-color] duration-150 hover:bg-sidebar-hover"
       type="button"
-      onClick={onResume}
+      onClick={onOpen}
     >
-      <span className="block truncate text-[13px] font-medium leading-[1.35] text-text-primary">
+      <span className="block truncate text-[13px] font-medium leading-[1.4] text-text-primary">
         {run.topic}
       </span>
-      <span
-        className={cx(
-          "mt-0.5 mb-1.5 block truncate text-[11px] leading-[1.35]",
-          failed ? "text-error" : "text-text-muted",
-        )}
-      >
-        {failed ? "Build failed" : buildingLabel(run, progress.currentLabel)}
-      </span>
-      {failed ? null : <ProgressBar percent={progress.percent} />}
+      {stopped ? (
+        <span
+          className={cx(
+            "block truncate text-[11.5px] leading-[1.4]",
+            run.status === "failed" ? "text-error" : "text-text-muted",
+          )}
+        >
+          {run.status === "failed" ? "Build failed" : "Build cancelled"}
+        </span>
+      ) : (
+        <>
+          <span className="mb-1.5 block truncate text-[11.5px] leading-[1.4] text-text-muted">
+            {buildingLabel(run, progress.currentLabel)}
+          </span>
+          <ProgressBar percent={progress.percent} />
+        </>
+      )}
     </button>
   );
 }
@@ -147,9 +143,9 @@ function buildingLabel(run: PipelineRun, currentLabel: string | null): string {
 
 function ProgressBar({ percent }: { percent: number }) {
   return (
-    <span className="block h-[3px] overflow-hidden rounded-[2px] bg-[#dde0e3]" aria-hidden="true">
+    <span className="mb-0.5 block h-[3px] overflow-hidden rounded-full bg-hairline" aria-hidden="true">
       <span
-        className="block h-full rounded-[2px] bg-accent transition-[width] duration-500 ease-linear"
+        className="block h-full rounded-full bg-accent transition-[width] duration-500 ease-linear"
         style={{ width: `${percent}%` }}
       />
     </span>
@@ -159,7 +155,7 @@ function ProgressBar({ percent }: { percent: number }) {
 function workspaceCaption(workspace: WorkspaceSummary): string {
   const updated = relativeTimestamp(workspace.updated_at);
   const papers = pluralize(workspace.paper_count, "paper");
-  return updated ? `${papers} · updated ${updated}` : papers;
+  return updated ? `${papers} · ${updated}` : papers;
 }
 
 function lowerFirst(value: string): string {

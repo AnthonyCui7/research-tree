@@ -8,8 +8,8 @@ import { CanvasErrorBoundary } from "../ui/CanvasErrorBoundary";
 import { SearchOverlay } from "../search/SearchOverlay";
 import { NodeInspector, inspectorLabel } from "../inspector/NodeInspector";
 import { RightPanel, RIGHT_PANEL_DEFAULT_WIDTH } from "../panel/RightPanel";
-import { WorkspaceEmptyState, WorkspaceNotice } from "../workspace/WorkspaceEmptyState";
-import { WorkspaceCreator } from "../workspace/WorkspaceCreator";
+import { NewWorkspacePage } from "../workspace/NewWorkspacePage";
+import { WorkspaceNotice } from "../workspace/WorkspaceNotice";
 import { WorkspaceHistory } from "../workspace/WorkspaceHistory";
 import { WorkspaceAgent } from "../workspace/WorkspaceAgent";
 import { DeleteWorkspaceDialog } from "../workspace/DeleteWorkspaceDialog";
@@ -17,27 +17,16 @@ import { NodeActionsMenu } from "../workspace/NodeActionsMenu";
 import { Toast, ToastStack } from "../ui/Toast";
 import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
 import { ClockIcon, TrashIcon } from "../ui/icons";
-import { cx } from "../../lib/cx";
 import { messageFrom } from "../../lib/apiError";
 import { useAgentSession } from "../../data/useAgentSession";
 import { useWorkspaceEditor } from "../../data/useWorkspaceEditor";
-import { signOut, useSessionInfo } from "../../data/session";
-import type { SessionUser } from "../../lib/types";
-
-// The shell only renders behind the session gate, so this is never shown; it
-// keeps the top bar's prop total when the store is mid-update.
-const LOCAL_USER: SessionUser = {
-  id: "local_user",
-  email: "",
-  name: "Local profile",
-  avatar_url: null,
-  is_admin: true,
-  is_verified: true,
-};
+import type { BuildRun } from "../../data/useBuildRun";
+import { isLocalSession, signOut, useSessionInfo } from "../../data/session";
 import { PANEL_EXIT_MS, useExitAnimation } from "../../lib/animation";
 import { isRunActive } from "../../lib/pipelineStages";
+import type { Route } from "../../app/App";
 import type {
-  PipelineRun,
+  SessionUser,
   TreeNodeId,
   TreeViewModel,
   WorkspaceDocument,
@@ -47,11 +36,24 @@ import type {
 
 export type UtilityPanel = "inspector" | "agent" | "history";
 
+// The shell only renders behind the session gate, so this is never shown; it
+// keeps the account row's prop total while the store is mid-update.
+const LOCAL_USER: SessionUser = {
+  id: "local_user",
+  email: "",
+  name: "Local profile",
+  avatar_url: null,
+  is_admin: true,
+  is_verified: true,
+};
+
 type AppShellProps = {
   status: "loading" | "ready" | "error";
   error: string | null;
   live: boolean;
   workspaces: WorkspaceSummary[];
+  /** Null until the workspace list has arrived. */
+  route: Route | null;
   activeSummary: WorkspaceSummary | null;
   tree: TreeViewModel | null;
   activeWorkspace: WorkspaceDocument | null;
@@ -59,23 +61,17 @@ type AppShellProps = {
   workspaceError: string | null;
   selectedNodeId: TreeNodeId | null;
   panel: UtilityPanel | null;
-  creatorOpen: boolean;
-  creatorTopic: string;
   sidebarCollapsed: boolean;
-  buildingRun: PipelineRun | null;
-  onSelectWorkspace: (workspaceId: string) => void;
+  build: BuildRun;
+  onOpenWorkspace: (workspaceId: string) => void;
+  onOpenHome: () => void;
   onSelectNode: (nodeId: TreeNodeId) => void;
   onOpenPanel: (panel: UtilityPanel) => void;
   onClosePanel: () => void;
-  onOpenCreator: (topic?: string) => void;
-  onCloseCreator: () => void;
-  onCreated: (workspaceId: string, run: PipelineRun) => Promise<void>;
   onWorkspaceChanged: () => Promise<void>;
   onWorkspaceDeleted: (workspaceId: string) => Promise<void>;
   onToggleSidebar: () => void;
   onRefresh: () => void;
-  onPipelineStarted: (run: PipelineRun) => void;
-  onPipelineFinished: (runId: string) => void;
 };
 
 export function AppShell({
@@ -83,6 +79,7 @@ export function AppShell({
   error,
   live,
   workspaces,
+  route,
   activeSummary,
   tree,
   activeWorkspace,
@@ -90,26 +87,20 @@ export function AppShell({
   workspaceError,
   selectedNodeId,
   panel,
-  creatorOpen,
-  creatorTopic,
   sidebarCollapsed,
-  buildingRun,
-  onSelectWorkspace,
+  build,
+  onOpenWorkspace,
+  onOpenHome,
   onSelectNode,
   onOpenPanel,
   onClosePanel,
-  onOpenCreator,
-  onCloseCreator,
-  onCreated,
   onWorkspaceChanged,
   onWorkspaceDeleted,
   onToggleSidebar,
   onRefresh,
-  onPipelineStarted,
-  onPipelineFinished,
 }: AppShellProps) {
   const [searchOpen, setSearchOpen] = useState(false);
-  const [profileAnchor, setProfileAnchor] = useState<MenuAnchor | null>(null);
+  const [accountAnchor, setAccountAnchor] = useState<MenuAnchor | null>(null);
   const [optionsMenu, setOptionsMenu] = useState<
     { workspace: WorkspaceSummary; anchor: MenuAnchor } | null
   >(null);
@@ -140,15 +131,24 @@ export function AppShell({
   // version the move was sent against says when that reload has happened.
   const [followPaper, setFollowPaper] = useState<{ paperId: string; from: string } | null>(null);
 
+  const home = route?.kind === "home";
   const activeWorkspaceId = activeSummary?.workspace_id ?? null;
   const selectedNode = tree && selectedNodeId ? (tree.nodesById[selectedNodeId] ?? null) : null;
   const activeRunning =
-    buildingRun?.workspace_id === activeWorkspaceId && isRunActive(buildingRun);
+    build.run?.workspace_id === activeWorkspaceId && isRunActive(build.run);
   const refreshError = status !== "error" && error && error !== dismissedError ? error : null;
+  // A rebuild of a listed workspace that stopped short is reported here; a new
+  // workspace that did has its own row in the sidebar and its page.
+  const stoppedRebuild =
+    build.run &&
+    !isRunActive(build.run) &&
+    workspaces.some((workspace) => workspace.workspace_id === build.run?.workspace_id)
+      ? build.run
+      : null;
   const session = useAgentSession(
     activeWorkspace?.workspace_id ?? null,
     onWorkspaceChanged,
-    onPipelineStarted,
+    build.watch,
   );
   const editor = useWorkspaceEditor(
     activeWorkspaceId,
@@ -160,6 +160,7 @@ export function AppShell({
   const [apiKeyEpoch, setApiKeyEpoch] = useState(0);
   const apiKeyLabel = useApiKeyLabel(apiKeyEpoch);
   const sessionInfo = useSessionInfo();
+  const user = sessionInfo?.user ?? LOCAL_USER;
 
   useEffect(() => {
     setRenamingNodeId(null);
@@ -205,7 +206,7 @@ export function AppShell({
     function onKeyDown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        if (tree) setSearchOpen((open) => !open);
+        if (tree && !home) setSearchOpen((open) => !open);
         return;
       }
       // One Escape closes one thing, outermost first. Anything layered above the
@@ -216,16 +217,17 @@ export function AppShell({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClosePanel, panel, tree]);
+  }, [home, onClosePanel, panel, tree]);
 
   const historyReady = Boolean(activeWorkspace && tree?.currentVersionHash);
-  const panelOpen = Boolean(
-    (panel === "inspector" && selectedNode) ||
-      (panel === "agent" && activeWorkspace) ||
-      (panel === "history" && historyReady),
-  );
+  const panelOpen =
+    !home &&
+    Boolean(
+      (panel === "inspector" && selectedNode) ||
+        (panel === "agent" && activeWorkspace) ||
+        (panel === "history" && historyReady),
+    );
   const panelPresence = useExitAnimation(panelOpen, PANEL_EXIT_MS);
-  const sidebarPresence = useExitAnimation(!sidebarCollapsed, PANEL_EXIT_MS);
 
   // What the panel was showing when it was told to close. The mode itself is
   // cleared immediately, but the panel is still on screen playing its exit, and
@@ -238,75 +240,49 @@ export function AppShell({
   }, [panel, panelOpen]);
   const shownPanel = panel ?? lastPanelRef.current;
 
-  return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background">
-      {sidebarPresence.present ? (
-        <>
-          <Sidebar
-            closing={sidebarPresence.closing}
-            workspaces={workspaces}
-            activeWorkspaceId={activeWorkspaceId}
-            onSelectWorkspace={onSelectWorkspace}
-            onOpenOptions={(workspace, trigger) =>
-              setOptionsMenu({ workspace, anchor: anchorFromEvent(trigger, "left") })
-            }
-            onNewWorkspace={() => onOpenCreator()}
-            onToggleSidebar={onToggleSidebar}
-            onOpenAgent={() => (panel === "agent" ? onClosePanel() : onOpenPanel("agent"))}
-            agentActive={panel === "agent"}
-            agentDisabled={!activeWorkspace || activeRunning}
-            buildingRun={buildingRun}
-            onResumeBuild={() => onOpenCreator()}
-            live={live}
-          />
-          <div
-            className={cx(
-              "fixed inset-0 z-backdrop hidden bg-[rgb(31_35_40_/_28%)] max-[900px]:block",
-              sidebarPresence.closing ? "animate-backdrop-exit" : "animate-backdrop-enter",
-            )}
-            role="presentation"
-            onClick={onToggleSidebar}
-          />
-        </>
-      ) : null}
+  function togglePanel(target: UtilityPanel) {
+    if (panel === target) onClosePanel();
+    else onOpenPanel(target);
+  }
 
-      <main className="flex min-w-0 flex-1 flex-col" aria-label="Research workspace">
+  const mainContent = (() => {
+    if (status === "error") {
+      return (
+        <WorkspaceNotice
+          title="Workspaces unavailable"
+          detail={error ?? "Your workspaces could not be loaded. Refresh and try again."}
+          tone="error"
+          actionLabel="Retry"
+          onAction={onRefresh}
+        />
+      );
+    }
+    if (home) {
+      return <NewWorkspacePage build={build} onOpenWorkspace={onOpenWorkspace} />;
+    }
+    if (!route || !activeSummary) {
+      return <WorkspaceNotice title="Loading…" />;
+    }
+    return (
+      <>
         <TopBar
-          workspaceTitle={tree?.title ?? activeSummary?.title ?? "Research Tree"}
+          workspaceTitle={tree?.title ?? activeSummary.title}
           branchCount={tree?.branchCount ?? null}
           paperCount={tree?.paperCount ?? null}
-          sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={onToggleSidebar}
           onOpenSearch={() => setSearchOpen(true)}
           searchDisabled={!tree}
-          onToggleHistory={() => (panel === "history" ? onClosePanel() : onOpenPanel("history"))}
+          onToggleHistory={() => togglePanel("history")}
           historyActive={panel === "history"}
           historyDisabled={!historyReady}
-          onToggleProfile={(trigger) =>
-            setProfileAnchor((current) => (current ? null : anchorFromEvent(trigger, "right")))
-          }
-          profileOpen={profileAnchor !== null}
-          user={sessionInfo?.user ?? LOCAL_USER}
+          onToggleAssistant={() => togglePanel("agent")}
+          assistantActive={panel === "agent"}
+          assistantDisabled={!activeWorkspace || activeRunning}
+          assistantDisabledReason={activeRunning ? "Wait for the build to finish" : undefined}
         />
-
         <div className="relative flex min-h-0 flex-1">
-          <section
-            className="relative min-h-0 min-w-0 flex-1 overflow-hidden"
-            aria-live={status === "loading" ? "polite" : "off"}
-          >
-            {status === "loading" || (status === "ready" && !tree && workspaceLoading) ? (
-              <WorkspaceNotice title="Loading workspace" />
-            ) : null}
-            {status === "error" ? (
-              <WorkspaceNotice
-                title="Workspaces unavailable"
-                detail={error ?? "Your workspaces could not be loaded. Refresh and try again."}
-                tone="error"
-                actionLabel="Retry"
-                onAction={onRefresh}
-              />
-            ) : null}
-            {status === "ready" && !tree && !workspaceLoading && workspaceError ? (
+          <section className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+            {!tree && workspaceLoading ? <WorkspaceNotice title="Loading workspace…" /> : null}
+            {!tree && !workspaceLoading && workspaceError ? (
               <WorkspaceNotice
                 title="Workspace failed to load"
                 detail={workspaceError}
@@ -315,13 +291,7 @@ export function AppShell({
                 onAction={onRefresh}
               />
             ) : null}
-            {status === "ready" && !tree && !workspaceLoading && !workspaceError ? (
-              <WorkspaceEmptyState
-                onCreate={(topic) => onOpenCreator(topic)}
-                disabled={isRunActive(buildingRun)}
-              />
-            ) : null}
-            {status === "ready" && tree ? (
+            {tree ? (
               <CanvasErrorBoundary
                 fallback={
                   <WorkspaceNotice
@@ -345,51 +315,6 @@ export function AppShell({
                 />
               </CanvasErrorBoundary>
             ) : null}
-
-            {refreshError || signOutError || editor.notice ? (
-              <ToastStack>
-                {refreshError ? (
-                  <Toast
-                    tone="error"
-                    onDismiss={() => setDismissedError(refreshError)}
-                    dismissLabel="Dismiss workspace refresh error"
-                  >
-                    {refreshError}
-                  </Toast>
-                ) : null}
-                {signOutError ? (
-                  <Toast
-                    tone="error"
-                    onDismiss={() => setSignOutError(null)}
-                    dismissLabel="Dismiss sign-out error"
-                  >
-                    {signOutError}
-                  </Toast>
-                ) : null}
-                {editor.notice ? (
-                  <Toast
-                    key={editor.notice.text}
-                    tone={editor.notice.tone}
-                    onDismiss={editor.dismissNotice}
-                    dismissLabel="Dismiss"
-                  >
-                    <span className="flex items-center justify-between gap-3">
-                      <span className="min-w-0 [overflow-wrap:anywhere]">{editor.notice.text}</span>
-                      {editor.notice.undo ? (
-                        <button
-                          className="flex-none rounded-[5px] border border-accent-border bg-surface px-2 py-0.5 text-[11px] font-semibold text-accent-deep transition-[background-color] duration-150 enabled:hover:bg-accent-subtle disabled:cursor-not-allowed disabled:text-text-muted"
-                          type="button"
-                          onClick={editor.notice.undo}
-                          disabled={editor.busy}
-                        >
-                          Undo
-                        </button>
-                      ) : null}
-                    </span>
-                  </Toast>
-                ) : null}
-              </ToastStack>
-            ) : null}
           </section>
 
           {panelPresence.present && shownPanel ? (
@@ -403,7 +328,6 @@ export function AppShell({
                       ? inspectorLabel(selectedNode)
                       : "Details"
               }
-              tone={shownPanel === "agent" ? "agent" : "surface"}
               closing={panelPresence.closing}
               width={
                 shownPanel === "agent"
@@ -417,7 +341,7 @@ export function AppShell({
                 <NodeInspector
                   node={selectedNode}
                   tree={tree}
-                  updatedAt={activeSummary?.updated_at ?? null}
+                  updatedAt={activeSummary.updated_at}
                   onSelectNode={onSelectNode}
                   onClose={onClosePanel}
                   onOpenAssistant={() => onOpenPanel("agent")}
@@ -445,11 +369,7 @@ export function AppShell({
                 />
               ) : null}
               {shownPanel === "agent" && activeWorkspace ? (
-                <WorkspaceAgent
-                  session={session}
-                  tree={tree}
-                  onClose={onClosePanel}
-                />
+                <WorkspaceAgent session={session} tree={tree} onClose={onClosePanel} />
               ) : null}
               {shownPanel === "history" && activeWorkspace && tree?.currentVersionHash ? (
                 <WorkspaceHistory
@@ -463,6 +383,80 @@ export function AppShell({
             </RightPanel>
           ) : null}
         </div>
+      </>
+    );
+  })();
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-surface">
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        homeActive={home}
+        buildingRun={build.run}
+        live={live}
+        user={user}
+        accountDetail={sessionInfo && isLocalSession(sessionInfo) ? "Runs without accounts" : user.email}
+        accountMenuOpen={accountAnchor !== null}
+        onToggle={onToggleSidebar}
+        onNewWorkspace={onOpenHome}
+        onSelectWorkspace={onOpenWorkspace}
+        onOpenOptions={(workspace, trigger) =>
+          setOptionsMenu({ workspace, anchor: anchorFromEvent(trigger, "left") })
+        }
+        onOpenAccount={(trigger) =>
+          setAccountAnchor((current) => (current ? null : anchorFromEvent(trigger, "left", true)))
+        }
+      />
+
+      <main className="relative flex min-w-0 flex-1 flex-col" aria-label="Research workspace">
+        {mainContent}
+
+        {refreshError || signOutError || stoppedRebuild || editor.notice ? (
+          <ToastStack>
+            {refreshError ? (
+              <Toast
+                tone="error"
+                onDismiss={() => setDismissedError(refreshError)}
+                dismissLabel="Dismiss workspace refresh error"
+              >
+                {refreshError}
+              </Toast>
+            ) : null}
+            {signOutError ? (
+              <Toast
+                tone="error"
+                onDismiss={() => setSignOutError(null)}
+                dismissLabel="Dismiss sign-out error"
+              >
+                {signOutError}
+              </Toast>
+            ) : null}
+            {stoppedRebuild ? (
+              <Toast tone="error" onDismiss={build.dismiss} dismissLabel="Dismiss rebuild notice">
+                {stoppedRebuild.status === "cancelled"
+                  ? "The rebuild was cancelled."
+                  : `The rebuild failed. ${stoppedRebuild.error ?? ""}`.trim()}
+              </Toast>
+            ) : null}
+            {editor.notice ? (
+              <Toast
+                key={editor.notice.text}
+                tone={editor.notice.tone}
+                onDismiss={editor.dismissNotice}
+                dismissLabel="Dismiss"
+                action={
+                  editor.notice.undo
+                    ? { label: "Undo", onClick: editor.notice.undo, disabled: editor.busy }
+                    : undefined
+                }
+              >
+                {editor.notice.text}
+              </Toast>
+            ) : null}
+          </ToastStack>
+        ) : null}
       </main>
 
       {searchOpen && tree ? (
@@ -473,18 +467,18 @@ export function AppShell({
         />
       ) : null}
 
-      {profileAnchor && sessionInfo ? (
+      {accountAnchor && sessionInfo ? (
         <ProfileMenu
-          anchor={profileAnchor}
+          anchor={accountAnchor}
           session={sessionInfo}
-          onClose={() => setProfileAnchor(null)}
+          onClose={() => setAccountAnchor(null)}
           onOpenScreen={setAccountScreen}
           onSignOut={() => {
-            setProfileAnchor(null);
+            setAccountAnchor(null);
             setSignOutError(null);
-            signOut().catch((error: unknown) => {
+            signOut().catch((signOutFailure: unknown) => {
               setSignOutError(
-                `Sign-out did not complete, so you are still signed in. ${messageFrom(error)}`,
+                `Sign-out did not complete, so you are still signed in. ${messageFrom(signOutFailure)}`,
               );
             });
           }}
@@ -512,9 +506,9 @@ export function AppShell({
         >
           <MenuSection>
             <MenuItem
-              icon={<ClockIcon className="h-[13px] w-[13px]" />}
+              icon={<ClockIcon className="h-[14px] w-[14px]" />}
               onClick={() => {
-                onSelectWorkspace(optionsMenu.workspace.workspace_id);
+                onOpenWorkspace(optionsMenu.workspace.workspace_id);
                 onOpenPanel("history");
               }}
             >
@@ -524,7 +518,7 @@ export function AppShell({
           <MenuSection>
             <MenuItem
               tone="danger"
-              icon={<TrashIcon className="h-[13px] w-[13px]" />}
+              icon={<TrashIcon className="h-[14px] w-[14px]" />}
               onClick={() => setDeleteTargetId(optionsMenu.workspace.workspace_id)}
             >
               Delete workspace…
@@ -559,17 +553,6 @@ export function AppShell({
           }}
         />
       ) : null}
-
-      <WorkspaceCreator
-        open={creatorOpen}
-        initialTopic={creatorTopic}
-        onClose={onCloseCreator}
-        onCreated={onCreated}
-        onOpenExisting={onSelectWorkspace}
-        activeRun={buildingRun}
-        onRunStarted={onPipelineStarted}
-        onRunFinished={onPipelineFinished}
-      />
     </div>
   );
 }

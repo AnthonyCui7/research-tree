@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { cx } from "../../lib/cx";
 import { compactActionClass, compactPrimaryActionClass } from "../../lib/controlClasses";
+import { pluralize } from "../../lib/format";
 import {
   fallbackChipsFromDiffSummary,
   nameLookupFromTree,
@@ -53,66 +54,59 @@ export function ProposedRevision({
   const hiddenChipCount = chips.length - visibleChips.length;
 
   return (
-    <div className="overflow-hidden rounded-[11px] border border-border bg-surface">
-      <div className="flex items-center gap-[7px] border-b border-hairline-soft px-[13px] py-2.5">
-        <span className="h-[7px] w-[7px] flex-none rounded-full bg-accent" aria-hidden="true" />
-        <span className="flex-1 text-xs font-semibold text-text-primary">Proposed revision</span>
-        <span className="text-[10.5px] text-text-muted">
-          {count === null ? "needs approval" : `${count} op${count === 1 ? "" : "s"} · needs approval`}
+    <div className="overflow-hidden rounded-2xl border border-border bg-surface">
+      <div className="flex items-baseline gap-2 px-4 pt-3.5 pb-2">
+        <span className="text-[13.5px] font-semibold text-text-primary">Proposed revision</span>
+        {count !== null ? (
+          <span className="text-[12px] text-text-muted">{pluralize(count, "change")}</span>
+        ) : null}
+        <span className="ml-auto flex-none rounded-full bg-accent-subtle px-2 py-px text-[11px] font-semibold text-accent-deep">
+          Needs approval
         </span>
       </div>
-      <div className="flex flex-col gap-2 px-[13px] py-[11px]">
+      <div className="grid gap-2 px-4 pb-3.5">
         {restoredUserMessage ? (
-          <p className="m-0 text-[11.5px] leading-[1.5] text-text-muted">
+          <p className="m-0 text-[12.5px] leading-[1.5] text-text-muted">
             In response to: “{restoredUserMessage}”
           </p>
         ) : null}
         {visibleChips.length > 0 ? (
           visibleChips.map((chip) => (
-            <div className="flex gap-2 text-xs leading-[1.5]" key={chip.key}>
-              <span
-                className={cx(
-                  "mt-px flex-none rounded-[5px] px-[7px] text-[10px] font-semibold uppercase",
-                  badgeToneClass(chip.tone),
-                )}
-              >
-                {chip.badge}
-              </span>
+            <div className="flex items-baseline gap-2 text-[13px] leading-[1.5]" key={chip.key}>
+              <OperationBadge chip={chip} />
               <span className="min-w-0 truncate text-text-secondary" title={chipTitle(chip)}>
-                {chip.name ? (
-                  <strong className="font-semibold text-text-primary">{chip.name}</strong>
-                ) : null}
+                {chip.name ? <strong className="font-medium text-text-primary">{chip.name}</strong> : null}
                 {chip.name && chip.detail ? " " : null}
                 {chip.detail}
               </span>
             </div>
           ))
         ) : (
-          <p className="m-0 text-xs leading-[1.5] text-text-secondary">
+          <p className="m-0 text-[13px] leading-[1.5] text-text-secondary">
             A structural revision is ready for your review.
           </p>
         )}
         {hiddenChipCount > 0 ? (
-          <p className="m-0 text-[11.5px] leading-[1.5] text-text-muted">
-            +{hiddenChipCount} more — View diff shows all
+          <p className="m-0 text-[12.5px] leading-[1.5] text-text-muted">
+            +{hiddenChipCount} more in the diff
           </p>
         ) : null}
         {paperDelta || notes.length > 0 ? (
-          <div className="grid gap-1.5 border-t border-dashed border-hairline pt-2">
+          <div className="mt-1 grid gap-1.5 border-t border-hairline pt-2.5">
             {paperDelta ? (
-              <p className="m-0 text-[11.5px] leading-[1.55] text-text-muted">
+              <p className="m-0 text-[12.5px] leading-[1.55] text-text-muted">
                 Visible papers: {paperDelta.before} → {paperDelta.after}
               </p>
             ) : null}
             {notes.map((note, index) => (
-              <p className="m-0 text-[11.5px] leading-[1.55] text-warning" key={`${index}:${note}`}>
+              <p className="m-0 text-[12.5px] leading-[1.55] text-warning" key={`${index}:${note}`}>
                 <strong className="font-semibold">Skeptic:</strong> {note}
               </p>
             ))}
           </div>
         ) : null}
       </div>
-      <div className="flex items-center gap-2 border-t border-hairline-soft bg-surface-muted px-[13px] py-2.5">
+      <div className="flex items-center gap-2 border-t border-hairline px-4 py-2.5">
         <button
           className={compactPrimaryActionClass}
           type="button"
@@ -131,7 +125,7 @@ export function ProposedRevision({
         </button>
         {operations.length > 0 ? (
           <button
-            className="ml-auto border-0 bg-transparent p-0 text-[11px] text-text-muted transition-[color] duration-150 hover:text-accent-deep hover:underline"
+            className="ml-auto border-0 bg-transparent p-0 text-[12.5px] font-medium text-text-secondary transition-[color] duration-150 hover:text-accent-deep hover:underline"
             type="button"
             onClick={() => setDiffOpen(true)}
           >
@@ -150,11 +144,25 @@ export function ProposedRevision({
   );
 }
 
-function badgeToneClass(tone: ChipTone): string {
-  if (tone === "add") return "bg-accent-subtle text-accent-deep";
-  if (tone === "remove") return "bg-error-surface text-error";
-  return "bg-surface-subtle text-text-secondary";
+/** ADD, REMOVE, MOVE…: tinted by whether the change adds, removes, or rearranges. */
+export function OperationBadge({ chip }: { chip: OperationChip }) {
+  return (
+    <span
+      className={cx(
+        "flex-none rounded-[5px] px-1.5 py-px text-[10.5px] font-semibold tracking-[0.02em] uppercase",
+        BADGE_TONE[chip.tone],
+      )}
+    >
+      {chip.badge}
+    </span>
+  );
 }
+
+const BADGE_TONE: Record<ChipTone, string> = {
+  add: "bg-accent-subtle text-accent-deep",
+  remove: "bg-error-surface text-error",
+  neutral: "bg-surface-subtle text-text-secondary",
+};
 
 function chipTitle(chip: OperationChip): string {
   return chip.name ? `${chip.name} ${chip.detail}` : chip.detail;

@@ -1,11 +1,9 @@
 import { cx } from "../../lib/cx";
-import { secondaryActionClass } from "../../lib/controlClasses";
+import { kickerClass, secondaryActionClass } from "../../lib/controlClasses";
+import { pluralize } from "../../lib/format";
 import { AccountDialog } from "../account/AccountDialog";
-import {
-  operationFieldChanges,
-  type ChipTone,
-  type OperationChip,
-} from "../../lib/proposedOperations";
+import { OperationBadge } from "./ProposedRevision";
+import { operationFieldChanges, type OperationChip } from "../../lib/proposedOperations";
 import type { ProposedOperation } from "../../lib/types";
 
 type RevisionDiffDialogProps = {
@@ -24,7 +22,7 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
   return (
     <AccountDialog
       title="Proposed revision"
-      subtitle={`${operations.length} operation${operations.length === 1 ? "" : "s"} against the current version`}
+      subtitle={`${pluralize(operations.length, "change")} to the current version`}
       onClose={onClose}
       footer={
         <button className={cx(secondaryActionClass, "ml-auto")} type="button" onClick={onClose}>
@@ -32,54 +30,41 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
         </button>
       }
     >
-      <div className="grid gap-4">
+      <div className="grid gap-5">
         {operations.map((operation, index) => {
           const chip = chips[index];
           const changes = operationFieldChanges(operation);
           return (
             <section
-              className="border-b border-hairline pb-4 last:border-b-0 last:pb-0"
+              className="border-b border-hairline pb-5 last:border-b-0 last:pb-0"
               key={chip?.key ?? `${index}:${operation.operation_type}`}
             >
-              <div className="flex gap-2 text-[12.5px] leading-[1.5]">
-                {chip ? (
-                  <span
-                    className={cx(
-                      "mt-px flex-none rounded-[5px] px-[7px] text-[10px] font-semibold uppercase",
-                      badgeToneClass(chip.tone),
-                    )}
-                  >
-                    {chip.badge}
-                  </span>
-                ) : null}
-                <span className="min-w-0 text-text-primary">
+              <div className="flex items-baseline gap-2 text-[13.5px] leading-[1.5]">
+                {chip ? <OperationBadge chip={chip} /> : null}
+                <span className="min-w-0 text-text-primary [overflow-wrap:anywhere]">
                   {chip?.name ? <strong className="font-semibold">{chip.name}</strong> : null}
                   {chip?.name && chip.detail ? " " : null}
                   {chip?.detail}
                 </span>
               </div>
               {operation.rationale ? (
-                <p className="mt-1.5 mb-0 text-xs leading-[1.55] text-text-muted">
+                <p className="mt-1.5 mb-0 text-[13px] leading-[1.55] text-text-secondary">
                   {operation.rationale}
                 </p>
               ) : null}
               {changes.length > 0 ? (
-                <dl className="mt-2.5 mb-0 grid gap-2">
+                <dl className="mt-3 mb-0 grid gap-2.5">
                   {changes.map((change) => (
                     <div className="grid gap-0.5" key={change.label}>
-                      <dt className="text-[10.5px] font-semibold tracking-[0.04em] text-text-muted uppercase">
-                        {change.label}
-                      </dt>
-                      <dd className="m-0 grid gap-0.5 text-xs leading-[1.55]">
+                      <dt className={kickerClass}>{change.label}</dt>
+                      <dd className="m-0 grid gap-0.5 text-[13px] leading-[1.55]">
                         {change.before !== null ? (
                           <span className="text-text-muted line-through [overflow-wrap:anywhere]">
                             {change.before}
                           </span>
                         ) : null}
                         {change.after !== null ? (
-                          <span className="text-text-primary [overflow-wrap:anywhere]">
-                            {change.after}
-                          </span>
+                          <span className="text-text-primary [overflow-wrap:anywhere]">{change.after}</span>
                         ) : null}
                         {change.before === null && change.after === null ? (
                           <span className="text-text-muted">(cleared)</span>
@@ -93,17 +78,11 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
           );
         })}
         {operations.length === 0 ? (
-          <p className="m-0 text-xs text-text-secondary">
+          <p className="m-0 text-[13px] text-text-secondary">
             This proposal carries no operation details to show.
           </p>
         ) : null}
       </div>
     </AccountDialog>
   );
-}
-
-function badgeToneClass(tone: ChipTone): string {
-  if (tone === "add") return "bg-accent-subtle text-accent-deep";
-  if (tone === "remove") return "bg-error-surface text-error";
-  return "bg-surface-subtle text-text-secondary";
 }

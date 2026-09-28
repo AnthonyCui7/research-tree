@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { cx } from "../../lib/cx";
 import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { useModalDialog } from "../../lib/modalDialog";
+import { iconButtonClass, plainNoticeClass } from "../../lib/controlClasses";
 import { CloseIcon } from "../ui/icons";
 
 type AccountDialogProps = {
@@ -14,9 +15,9 @@ type AccountDialogProps = {
 };
 
 /**
- * The shell every account screen shares — settings, API keys, help, bug reports.
- * They differ only in what they hold, so the chrome, the dismissal and the
- * entrance and exit are written once here.
+ * The shell every account screen shares — settings, API keys, help, bug reports
+ * — and the revision diff. They differ only in what they hold, so the chrome,
+ * the dismissal and the entrance and exit are written once here.
  */
 export function AccountDialog({ title, subtitle, onClose, children, footer }: AccountDialogProps) {
   const { ref, closing, dismiss } = useModalDialog(DIALOG_EXIT_MS);
@@ -50,26 +51,24 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
     >
       <section
         className={cx(
-          "flex max-h-[min(620px,calc(100vh-48px))] w-[480px] max-w-full flex-col overflow-hidden rounded-[14px] bg-surface shadow-dialog",
+          "flex max-h-[min(640px,calc(100vh-48px))] w-[500px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog",
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
       >
-        <header className="flex flex-none items-start gap-2 border-b border-hairline px-5 py-3.5">
-          <div className="min-w-0 flex-1">
+        <header className="flex flex-none items-start gap-3 pt-5 pr-4 pb-4 pl-6">
+          <div className="min-w-0 flex-1 pt-0.5">
             <h2
-              className="m-0 text-[15px] font-bold tracking-[-0.01em] text-text-primary"
+              className="m-0 text-[17px] leading-[1.3] font-semibold tracking-[-0.01em] text-text-primary"
               id="account-dialog-title"
             >
               {title}
             </h2>
             {subtitle ? (
-              <p className="mt-0.5 mb-0 text-[12.5px] leading-[1.5] text-text-secondary">
-                {subtitle}
-              </p>
+              <p className="mt-1 mb-0 text-[13px] leading-[1.5] text-text-secondary">{subtitle}</p>
             ) : null}
           </div>
           <button
-            className="grid h-[26px] w-[26px] flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary"
+            className={iconButtonClass}
             type="button"
             onClick={dismiss}
             aria-label={`Close ${title}`}
@@ -79,12 +78,10 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
           </button>
         </header>
 
-        <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 pt-[18px] pb-5">
-          {children}
-        </div>
+        <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-6 pb-6">{children}</div>
 
         {footer ? (
-          <div className="flex flex-none items-center gap-2 border-t border-hairline bg-surface-muted px-5 py-3.5">
+          <div className="flex flex-none items-center gap-2 border-t border-hairline px-6 py-3.5">
             {footer}
           </div>
         ) : null}
@@ -104,21 +101,17 @@ export function AccountSection({
   children?: ReactNode;
 }) {
   return (
-    <section className="mt-[22px] first:mt-0">
-      <h3 className="m-0 text-[13.5px] font-bold text-text-primary">{title}</h3>
+    <section className="mt-6 first:mt-0">
+      <h3 className="m-0 text-[13.5px] font-semibold text-text-primary">{title}</h3>
       {detail ? (
-        <p className="mt-[3px] mb-0 text-[12.5px] leading-[1.55] text-text-secondary">{detail}</p>
+        <p className="mt-1 mb-0 text-[13px] leading-[1.55] text-text-secondary">{detail}</p>
       ) : null}
-      {children ? <div className="mt-2.5">{children}</div> : null}
+      {children ? <div className="mt-3">{children}</div> : null}
     </section>
   );
 }
 
-/** The strip that says a control is built but not yet connected to anything. */
+/** The strip that says what a control will and will not do on this server. */
 export function AccountNotice({ children }: { children: ReactNode }) {
-  return (
-    <p className="mt-3 mb-0 rounded-lg border border-border bg-surface-subtle px-3.5 py-2.5 text-[12px] leading-[1.55] text-text-secondary">
-      {children}
-    </p>
-  );
+  return <p className={cx(plainNoticeClass, "mt-3 mb-0")}>{children}</p>;
 }

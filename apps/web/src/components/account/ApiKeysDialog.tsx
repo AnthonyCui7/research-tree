@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { messageFrom } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
 import { longDateLabel, pluralize } from "../../lib/format";
-import { compactActionClass, primaryActionClass, textInputClass } from "../../lib/controlClasses";
+import {
+  compactActionClass,
+  errorNoticeClass,
+  primaryActionClass,
+  textInputClass,
+} from "../../lib/controlClasses";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { isLocalSession, useSessionInfo } from "../../data/session";
 import { AccountDialog, AccountNotice, AccountSection } from "./AccountDialog";
@@ -109,7 +114,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
       }
     >
       <AccountSection title="OpenAI">
-        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-surface-subtle px-3.5 py-2.5">
+        <div className="flex min-h-12 items-center gap-2.5 rounded-xl border border-hairline px-4 py-2.5">
           <span
             className={cx(
               "h-1.5 w-1.5 flex-none rounded-full",
@@ -117,11 +122,11 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
             )}
             aria-hidden="true"
           />
-          <span className="min-w-0 flex-1 text-[12.5px] text-text-primary">
+          <span className="min-w-0 flex-1 text-[13.5px] text-text-primary">
             {keys ? keyStatusText(keys, local) : error ? "Key status unavailable" : "Checking…"}
           </span>
           {openai?.masked ? (
-            <code className="flex-none font-mono text-[12px] text-text-muted">{openai.masked}</code>
+            <code className="flex-none font-mono text-[12.5px] text-text-muted">{openai.masked}</code>
           ) : null}
           {!local && openai?.configured ? (
             <button
@@ -136,8 +141,8 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
         </div>
         {local && keys && !openai?.configured ? (
           <AccountNotice>
-            Set <code className="font-mono text-[11.5px]">OPENAI_API_KEY</code> in the server's{" "}
-            <code className="font-mono text-[11.5px]">.env</code> and restart it. Without a key,
+            Set <code className="font-mono text-[12px]">OPENAI_API_KEY</code> in the server's{" "}
+            <code className="font-mono text-[12px]">.env</code> and restart it. Without a key,
             topic review, workspace builds and the assistant all fail.
           </AccountNotice>
         ) : null}
@@ -152,9 +157,9 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
 
       {allowance ? (
         <AccountSection title="Sponsored allowance" detail={allowanceText(allowance)}>
-          <div className="h-1.5 overflow-hidden rounded-[3px] bg-track" aria-hidden="true">
+          <div className="h-1.5 overflow-hidden rounded-full bg-track" aria-hidden="true">
             <div
-              className={cx("h-full rounded-[3px]", allowance.exhausted ? "bg-error" : "bg-accent")}
+              className={cx("h-full rounded-full", allowance.exhausted ? "bg-error" : "bg-accent")}
               style={{
                 width: `${Math.min(100, Math.round((allowance.spent_usd / Math.max(allowance.limit_usd, 0.01)) * 100))}%`,
               }}
@@ -186,7 +191,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
         {local ? (
           <AccountNotice>
             Saving is off in this build. Nothing you type here is sent anywhere. Change the key in
-            the server's <code className="font-mono text-[11.5px]">.env</code> for now.
+            the server's <code className="font-mono text-[12px]">.env</code> for now.
           </AccountNotice>
         ) : keys && !keys.saving_enabled ? (
           <AccountNotice>Saving keys is not enabled on this server.</AccountNotice>
@@ -201,10 +206,10 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
       {!local && usage ? (
         <AccountSection title={`Usage, last ${usage.days} days`} detail={usageText(usage)}>
           {usage.recent.length > 0 ? (
-            <ul className="m-0 grid list-none gap-1 p-0">
+            <ul className="m-0 grid list-none gap-1.5 p-0">
               {usage.recent.slice(0, RECENT_USAGE_ROWS).map((event, index) => (
                 <li
-                  className="flex items-baseline gap-2.5 text-[11.5px] text-text-secondary"
+                  className="flex items-baseline gap-3 text-[12.5px] text-text-secondary"
                   key={`${index}:${event.created_at ?? ""}`}
                 >
                   <span className="flex-none text-text-muted">
@@ -220,10 +225,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
       ) : null}
 
       {error ? (
-        <p
-          className="mt-4 mb-0 rounded-lg border border-error-border bg-error-surface px-3.5 py-3 text-xs leading-[1.5] text-error"
-          role="alert"
-        >
+        <p className={cx(errorNoticeClass, "mt-5 mb-0")} role="alert">
           {error}
         </p>
       ) : null}

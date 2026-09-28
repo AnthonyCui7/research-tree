@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { messageFrom } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
-import { primaryActionClass, secondaryActionClass, textInputClass } from "../../lib/controlClasses";
+import {
+  errorNoticeClass,
+  primaryActionClass,
+  secondaryActionClass,
+  textInputClass,
+} from "../../lib/controlClasses";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { AccountDialog, AccountNotice, AccountSection } from "./AccountDialog";
 import { CheckIcon } from "../ui/icons";
@@ -60,8 +65,8 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
           >
             <CheckIcon className="h-4 w-4" />
           </span>
-          <p className="mt-3 mb-0 text-[13px] leading-[1.6] text-text-primary">Report sent.</p>
-          <p className="mt-1.5 mb-0 max-w-[42ch] text-[12.5px] leading-[1.6] text-text-muted">
+          <p className="mt-3 mb-0 text-[14px] leading-[1.6] font-medium text-text-primary">Report sent.</p>
+          <p className="mt-1.5 mb-0 max-w-[42ch] text-[13px] leading-[1.6] text-text-muted">
             {sent}
           </p>
         </div>
@@ -96,7 +101,7 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
             {AREAS.map((option) => (
               <button
                 className={cx(
-                  "rounded-[20px] border px-[11px] py-1 text-[12px] transition-[background-color,border-color,color] duration-150",
+                  "rounded-full border px-3 py-1 text-[12.5px] transition-[background-color,border-color,color] duration-150",
                   area === option.id
                     ? "border-accent-border bg-accent-subtle text-accent-deep"
                     : "border-border bg-surface text-text-secondary hover:border-border-strong hover:text-text-primary",
@@ -135,10 +140,7 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
         <AccountNotice>Reports are written to the server log for now.</AccountNotice>
 
         {error ? (
-          <p
-            className="mt-3 mb-0 rounded-lg border border-error-border bg-error-surface px-3.5 py-3 text-xs leading-[1.5] text-error"
-            role="alert"
-          >
+          <p className={cx(errorNoticeClass, "mt-3 mb-0")} role="alert">
             {error}
           </p>
         ) : null}

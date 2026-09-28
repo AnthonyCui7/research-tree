@@ -1,21 +1,29 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cx } from "../../lib/cx";
 import { DROPDOWN_EXIT_MS, useDismissAnimation } from "../../lib/animation";
+import { CheckIcon } from "./icons";
 
 export type MenuAnchor = {
   /** Viewport coordinates of the edge the menu is pinned to. */
   x: number;
   y: number;
   align: "left" | "right";
+  /** Opens upward from `y`, for a control at the foot of the screen. */
+  above?: boolean;
 };
 
 /** Reads the anchor for a menu from the control that opened it. */
-export function anchorFromEvent(element: HTMLElement, align: MenuAnchor["align"]): MenuAnchor {
+export function anchorFromEvent(
+  element: HTMLElement,
+  align: MenuAnchor["align"],
+  above = false,
+): MenuAnchor {
   const rect = element.getBoundingClientRect();
   return {
     x: align === "right" ? window.innerWidth - rect.right : rect.left,
-    y: rect.bottom + 6,
+    y: above ? rect.top - 6 : rect.bottom + 6,
     align,
+    above,
   };
 }
 
@@ -52,13 +60,23 @@ export function PopoverMenu({ anchor, onClose, label, width = 216, children }: P
   useLayoutEffect(() => {
     const menu = menuRef.current;
     if (!menu) return;
+    if (anchor.above) {
+      setTop(Math.max(VIEWPORT_MARGIN, anchor.y - menu.offsetHeight));
+      return;
+    }
     const overflow = anchor.y + menu.offsetHeight + VIEWPORT_MARGIN - window.innerHeight;
     setTop(overflow > 0 ? Math.max(VIEWPORT_MARGIN, anchor.y - overflow) : anchor.y);
-  }, [anchor.y, children]);
+  }, [anchor.above, anchor.y, children]);
 
+  // Focus starts on the first item, and goes back there when the body is
+  // swapped in place (a list of destinations replacing the actions) and took
+  // the focused item with it. Not while leaving: focus is on its way back to
+  // the opener then.
   useEffect(() => {
-    (enabledItems(menuRef.current)[0] ?? menuRef.current)?.focus();
-  }, []);
+    const menu = menuRef.current;
+    if (closing || !menu || menu.contains(document.activeElement)) return;
+    (enabledItems(menu)[0] ?? menu).focus();
+  }, [children, closing]);
 
   function close() {
     if (opener instanceof HTMLElement) opener.focus();
@@ -91,9 +109,15 @@ export function PopoverMenu({ anchor, onClose, label, width = 216, children }: P
       <div
         ref={menuRef}
         className={cx(
-          "absolute overflow-hidden rounded-[11px] border border-border bg-surface shadow-popover outline-none",
-          // The menu grows out of the edge it is pinned to.
-          anchor.align === "right" ? "origin-top-right" : "origin-top-left",
+          "absolute overflow-hidden rounded-xl border border-border bg-surface shadow-popover outline-none",
+          // The menu grows out of the corner it is pinned to.
+          anchor.above
+            ? anchor.align === "right"
+              ? "origin-bottom-right"
+              : "origin-bottom-left"
+            : anchor.align === "right"
+              ? "origin-top-right"
+              : "origin-top-left",
           // Choosing an item starts the exit; a second click landing during it
           // must not choose again, or a double click sent an edit twice.
           closing ? "pointer-events-none animate-dropdown-exit" : "animate-dropdown-enter",
@@ -112,9 +136,11 @@ export function PopoverMenu({ anchor, onClose, label, width = 216, children }: P
         onMouseDown={(event) => event.stopPropagation()}
         // Choosing an item dismisses the menu, so items carry their action
         // alone. Capturing means the exit starts before the action runs, and
-        // scoping it to menu items leaves headers and footers inert.
+        // scoping it to menu items leaves headers and footers inert. An item
+        // that changes the menu's own body keeps it open.
         onClickCapture={(event) => {
-          if ((event.target as HTMLElement).closest('[role="menuitem"]')) {
+          const item = (event.target as HTMLElement).closest(MENU_ITEM_SELECTOR);
+          if (item && !item.hasAttribute("data-keeps-menu-open")) {
             close();
           }
         }}
@@ -125,70 +151,79 @@ export function PopoverMenu({ anchor, onClose, label, width = 216, children }: P
   );
 }
 
+/** Plain items and one-of-several choices alike. */
+const MENU_ITEM_SELECTOR = '[role="menuitem"], [role="menuitemradio"]';
+
 function enabledItems(menu: HTMLElement | null): HTMLElement[] {
-  return Array.from(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? []);
+  return Array.from(menu?.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR) ?? []).filter(
+    (item) => !(item as HTMLButtonElement).disabled,
+  );
 }
 
 type MenuItemProps = {
   children: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
   tone?: "default" | "danger";
   icon?: ReactNode;
   title?: string;
   /** Quiet value shown at the end of the row — a state, not a second action. */
   trailing?: ReactNode;
-} & (
-  | { onClick: () => void; disabled?: boolean; href?: never }
-  | { href: string; onClick?: never; disabled?: never }
-);
+  /** A second, quieter line under the label. */
+  description?: string;
+  /** Makes the row one choice of several, marked when it is the current one. */
+  checked?: boolean;
+  /** The row changes what the menu shows rather than choosing something. */
+  keepsMenuOpen?: boolean;
+};
 
-/** One row of a menu: an action, or a link that opens in a new tab. */
-export function MenuItem({ children, tone = "default", icon, title, trailing, ...item }: MenuItemProps) {
-  const className = cx(
-    "flex w-full items-center gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[7px] text-left text-[13px] no-underline transition-[background-color] duration-150",
-    tone === "danger"
-      ? "text-error hover:bg-error-surface focus-visible:bg-error-surface"
-      : "text-text-primary hover:bg-surface-subtle focus-visible:bg-surface-subtle",
-  );
-  const content = (
-    <>
+/** One row of a menu. Rows are reached with the arrow keys, never with Tab. */
+export function MenuItem({
+  children,
+  onClick,
+  disabled,
+  tone = "default",
+  icon,
+  title,
+  trailing,
+  description,
+  checked,
+  keepsMenuOpen = false,
+}: MenuItemProps) {
+  const choice = checked !== undefined;
+  return (
+    <button
+      className={cx(
+        "flex w-full items-center gap-2.5 rounded-md border-0 bg-transparent px-2.5 text-left text-[13px] transition-[background-color] duration-150 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-text-muted",
+        description ? "py-1.5" : "h-8",
+        tone === "danger"
+          ? "text-error hover:bg-error-surface focus-visible:bg-error-surface"
+          : "text-text-primary hover:bg-surface-subtle focus-visible:bg-surface-subtle",
+      )}
+      type="button"
+      role={choice ? "menuitemradio" : "menuitem"}
+      aria-checked={choice ? checked : undefined}
+      tabIndex={-1}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      data-keeps-menu-open={keepsMenuOpen || undefined}
+    >
       {icon ? <span className="flex-none text-text-muted">{icon}</span> : null}
-      <span className="min-w-0 flex-1 truncate">{children}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{children}</span>
+        {description ? (
+          <span className="block truncate text-[12px] text-text-muted">{description}</span>
+        ) : null}
+      </span>
       {trailing ? (
         <span className="flex-none font-mono text-[11.5px] text-text-muted">{trailing}</span>
       ) : null}
-    </>
-  );
-  // Items are reached with the arrow keys, never with Tab.
-  if (item.href !== undefined) {
-    return (
-      <a
-        className={cx(className, "hover:no-underline")}
-        href={item.href}
-        target="_blank"
-        rel="noreferrer"
-        role="menuitem"
-        tabIndex={-1}
-        title={title}
-      >
-        {content}
-      </a>
-    );
-  }
-  return (
-    <button
-      className={cx(className, "disabled:cursor-not-allowed disabled:bg-transparent disabled:text-text-muted")}
-      type="button"
-      role="menuitem"
-      tabIndex={-1}
-      onClick={item.onClick}
-      disabled={item.disabled}
-      title={title}
-    >
-      {content}
+      {checked ? <CheckIcon className="h-3.5 w-3.5 flex-none text-accent" /> : null}
     </button>
   );
 }
 
 export function MenuSection({ children }: { children: ReactNode }) {
-  return <div className="border-b border-hairline-soft p-1.5 last:border-b-0">{children}</div>;
+  return <div className="border-b border-hairline p-1.5 last:border-b-0">{children}</div>;
 }
