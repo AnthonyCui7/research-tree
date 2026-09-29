@@ -38,7 +38,10 @@ export function useExitAnimation(open: boolean, durationMs: number): ExitAnimati
     return () => window.clearTimeout(timer);
   }, [durationMs, open, present]);
 
-  return { present, closing: present && !open };
+  // Present from the render that opens it, not the one after: the canvas
+  // checks whether the selected card is still in view as that render lands,
+  // and it has to see the width the panel leaves it.
+  return { present: present || open, closing: present && !open };
 }
 
 type DismissAnimation = {

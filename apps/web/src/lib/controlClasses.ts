@@ -23,7 +23,7 @@ export const compactActionClass = `${buttonBase} h-7 rounded-[7px] border border
 
 /** A square icon control on white chrome. */
 export const iconButtonClass =
-  "grid h-8 w-8 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 enabled:hover:bg-surface-subtle enabled:hover:text-text-primary disabled:cursor-not-allowed disabled:text-border-strong";
+  "grid h-8 w-8 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-[background-color,color] duration-150 enabled:hover:bg-surface-subtle enabled:hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary disabled:cursor-not-allowed disabled:text-border-strong";
 
 export const textInputClass =
   "w-full rounded-md border border-border bg-surface px-3 py-2 text-[14px] text-text-primary outline-0 transition-[border-color,box-shadow] duration-150 placeholder:text-text-muted focus:border-accent focus:shadow-[0_0_0_3px_var(--color-accent-subtle)] disabled:bg-surface-subtle disabled:text-text-secondary";

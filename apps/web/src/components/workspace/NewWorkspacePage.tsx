@@ -366,21 +366,36 @@ function ReviewStep({
       {error ? <StepError error={error} onOpenApiKeys={onOpenApiKeys} /> : null}
 
       <div className="mt-8 flex items-center gap-2">
-        <button className={secondaryActionClass} type="button" onClick={onBack} disabled={busy}>
+        <button
+          className={secondaryActionClass}
+          type="button"
+          onClick={onBack}
+          disabled={busy}
+          autoFocus={!existing && !(recognized && review.can_create)}
+        >
           <ArrowLeftIcon className="h-3.5 w-3.5" />
           Edit topic
         </button>
+        {/* The step's one action takes focus, so a topic typed and entered
+            is confirmed with a second Enter. */}
         {existing ? (
           <button
             className={cx(primaryActionClass, "ml-auto")}
             type="button"
             onClick={() => onOpenExisting(existing.workspace_id)}
+            autoFocus
           >
             Open it instead
             <ArrowRightIcon className="h-3.5 w-3.5" />
           </button>
         ) : recognized && review.can_create ? (
-          <button className={cx(primaryActionClass, "ml-auto")} type="button" disabled={busy} onClick={onBuild}>
+          <button
+            className={cx(primaryActionClass, "ml-auto")}
+            type="button"
+            disabled={busy}
+            onClick={onBuild}
+            autoFocus
+          >
             {busy ? "Starting…" : "Build workspace"}
             {busy ? null : <ArrowRightIcon className="h-3.5 w-3.5" />}
           </button>

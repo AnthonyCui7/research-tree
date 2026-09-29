@@ -53,6 +53,8 @@ type NodeInspectorProps = {
   onOpenAssistant?: () => void;
   /** Opens the card's actions menu from the button beside the close control. */
   onOpenActions?: (trigger: HTMLElement) => void;
+  /** Whether that menu is open, which the button shows. */
+  actionsOpen?: boolean;
   /** The branch heading is an input while true. */
   renaming?: boolean;
   onRenameSubmit?: (label: string) => Promise<void>;
@@ -68,6 +70,7 @@ export function NodeInspector({
   onClose,
   onOpenAssistant,
   onOpenActions,
+  actionsOpen = false,
   renaming = false,
   onRenameSubmit,
   onRenameCancel,
@@ -86,6 +89,7 @@ export function NodeInspector({
               onClick={(event) => onOpenActions(event.currentTarget)}
               aria-label={node.kind === "branch" ? "Branch actions" : "Paper actions"}
               aria-haspopup="menu"
+              aria-expanded={actionsOpen}
               title="Actions"
             >
               <EllipsisIcon className="h-4 w-4" />

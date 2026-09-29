@@ -373,6 +373,7 @@ export function AppShell({
                       anchor: anchorFromEvent(trigger, "right"),
                     })
                   }
+                  actionsOpen={nodeActions?.nodeId === selectedNode.id}
                   renaming={renamingNodeId === selectedNode.id}
                   onRenameSubmit={async (label) => {
                     if (selectedNode.kind !== "branch") return;
@@ -391,7 +392,7 @@ export function AppShell({
                 />
               ) : null}
               {shownPanel === "agent" && activeWorkspace ? (
-                <Suspense fallback={null}>
+                <Suspense fallback={<WorkspaceNotice title="Loading" tone="loading" />}>
                   <WorkspaceAgent
                     session={session}
                     tree={tree}
@@ -434,6 +435,7 @@ export function AppShell({
         onOpenOptions={(workspace, trigger) =>
           setOptionsMenu({ workspace, anchor: anchorFromEvent(trigger, "left") })
         }
+        optionsOpenFor={optionsMenu?.workspace.workspace_id ?? null}
         onOpenAccount={(trigger) =>
           setAccountAnchor((current) => (current ? null : anchorFromEvent(trigger, "left", true)))
         }
