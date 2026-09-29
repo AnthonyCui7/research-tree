@@ -188,7 +188,7 @@ function PaperView({
         </div>
       ) : null}
 
-      <Callout label="TLDR">{node.tldr || "Unavailable"}</Callout>
+      {node.tldr ? <Callout label="TLDR">{node.tldr}</Callout> : null}
       {node.importance ? (
         <Section label="Why it matters">
           <Prose>{node.importance}</Prose>
