@@ -87,11 +87,11 @@ export function Sidebar({
             aria-expanded={!collapsed}
             title={collapsed ? "Show sidebar" : "Hide sidebar"}
           >
-            <SidebarIcon className="h-4 w-4" />
+            <SidebarIcon className="size-4" />
           </button>
           <span
             className={cx(
-              "truncate text-[14.5px] font-semibold tracking-[-0.01em] whitespace-nowrap text-text-primary",
+              "truncate text-15 font-semibold whitespace-nowrap text-text-primary",
               labelClass,
             )}
           >
@@ -102,7 +102,7 @@ export function Sidebar({
         <div className="flex-none px-2.5 pb-3">
           <button
             className={cx(
-              "flex h-9 w-full items-center rounded-md border-0 text-left text-[13px] font-medium whitespace-nowrap transition-[background-color,color] duration-150",
+              "flex h-9 w-full items-center rounded-md border-0 text-left text-13 font-medium whitespace-nowrap transition-[background-color,color] duration-150",
               homeActive
                 ? "bg-accent-subtle text-accent-deep"
                 : "bg-transparent text-text-primary hover:bg-sidebar-hover",
@@ -115,7 +115,7 @@ export function Sidebar({
           >
             <span className="grid h-9 w-9 flex-none place-items-center" aria-hidden="true">
               <span className="grid h-[22px] w-[22px] place-items-center rounded-full bg-accent text-white shadow-[0_1px_2px_rgb(23_102_71/30%)]">
-                <PlusIcon className="h-3 w-3" />
+                <PlusIcon className="size-3" />
               </span>
             </span>
             <span className={cx("truncate", labelClass)} aria-hidden="true">
@@ -130,7 +130,7 @@ export function Sidebar({
               <span className={kickerClass}>Workspaces</span>
               {live ? null : (
                 <span
-                  className="flex items-center gap-1 text-[11px] text-text-muted"
+                  className="flex items-center gap-1 text-11 text-text-muted"
                   role="status"
                   title="The workspace event stream dropped. Reconnecting…"
                 >
@@ -166,12 +166,12 @@ export function Sidebar({
               <Avatar user={user} size={28} />
             </span>
             <span className={cx("min-w-0 flex-1", labelClass)}>
-              <span className="block truncate text-[13px] font-medium text-text-primary">
+              <span className="block truncate text-13 font-medium text-text-primary">
                 {displayName(user)}
               </span>
-              <span className="block truncate text-[11.5px] text-text-muted">{accountDetail}</span>
+              <span className="block truncate text-12 text-text-muted">{accountDetail}</span>
             </span>
-            <ChevronUpDownIcon className={cx("h-3.5 w-3.5 flex-none text-text-muted", labelClass)} />
+            <ChevronUpDownIcon className={cx("size-4 flex-none text-text-muted", labelClass)} />
           </button>
         </div>
       </aside>

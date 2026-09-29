@@ -42,7 +42,7 @@ export function SettingsDialog({
           <button className={secondaryActionClass} type="button" onClick={onRefresh}>
             Reload workspaces
           </button>
-          <span className="flex items-center gap-1.5 text-[12.5px] text-text-muted">
+          <span className="flex items-center gap-1.5 text-12 text-text-muted">
             <span
               className={cx("h-1.5 w-1.5 rounded-full", live ? "bg-accent" : "bg-text-muted")}
               aria-hidden="true"
@@ -74,7 +74,7 @@ function Toggle({
 }) {
   return (
     <button
-      className="flex w-full items-center gap-3 border-0 bg-transparent p-0 text-left text-[13.5px] text-text-primary"
+      className="flex w-full items-center gap-3 border-0 bg-transparent p-0 text-left text-13 text-text-primary"
       type="button"
       role="switch"
       aria-checked={checked}
@@ -101,9 +101,9 @@ function Toggle({
 
 function Shortcut({ keys, label }: { keys: string; label: string }) {
   return (
-    <div className="flex items-center gap-3 text-[13.5px] text-text-secondary">
+    <div className="flex items-center gap-3 text-13 text-text-secondary">
       <dt className="order-last m-0 flex-none">
-        <kbd className="rounded-[5px] border border-border bg-surface-subtle px-1.5 py-px font-sans text-[11.5px] text-text-secondary">
+        <kbd className="rounded-[5px] border border-border bg-surface-subtle px-1.5 py-px font-sans text-12 text-text-secondary">
           {keys}
         </kbd>
       </dt>

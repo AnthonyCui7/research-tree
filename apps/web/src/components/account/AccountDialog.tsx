@@ -58,13 +58,13 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
         <header className="flex flex-none items-start gap-3 pt-5 pr-4 pb-4 pl-6">
           <div className="min-w-0 flex-1 pt-0.5">
             <h2
-              className="m-0 text-[17px] leading-[1.3] font-semibold tracking-[-0.01em] text-text-primary"
+              className="m-0 text-17 font-semibold text-text-primary"
               id="account-dialog-title"
             >
               {title}
             </h2>
             {subtitle ? (
-              <p className="mt-1 mb-0 text-[13px] leading-[1.5] text-text-secondary">{subtitle}</p>
+              <p className="mt-1 mb-0 text-13 text-text-secondary">{subtitle}</p>
             ) : null}
           </div>
           <button
@@ -74,7 +74,7 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
             aria-label={`Close ${title}`}
             title="Close"
           >
-            <CloseIcon className="h-3 w-3" />
+            <CloseIcon className="size-3" />
           </button>
         </header>
 
@@ -102,9 +102,9 @@ export function AccountSection({
 }) {
   return (
     <section className="mt-6 first:mt-0">
-      <h3 className="m-0 text-[13.5px] font-semibold text-text-primary">{title}</h3>
+      <h3 className="m-0 text-14 font-semibold text-text-primary">{title}</h3>
       {detail ? (
-        <p className="mt-1 mb-0 text-[13px] leading-[1.55] text-text-secondary">{detail}</p>
+        <p className="mt-1 mb-0 text-13 text-text-secondary">{detail}</p>
       ) : null}
       {children ? <div className="mt-3">{children}</div> : null}
     </section>

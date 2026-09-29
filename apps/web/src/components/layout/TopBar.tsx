@@ -42,40 +42,40 @@ export function TopBar({
   return (
     <header className="flex h-[52px] flex-none items-center gap-2 border-b border-hairline bg-surface px-4">
       <div className="flex min-w-0 flex-1 items-baseline gap-2.5 overflow-hidden">
-        <h1 className="m-0 truncate text-[14.5px] font-semibold tracking-[-0.01em] text-text-primary">
+        <h1 className="m-0 truncate text-15 font-semibold text-text-primary">
           {workspaceTitle}
         </h1>
         {counts ? (
-          <span className="flex-none text-[12.5px] whitespace-nowrap text-text-muted max-[720px]:hidden">
+          <span className="flex-none text-13 whitespace-nowrap text-text-muted max-[720px]:hidden">
             {counts}
           </span>
         ) : null}
       </div>
 
       <button
-        className="flex h-8 w-[min(260px,32vw)] min-w-0 flex-none items-center gap-2 rounded-md border border-transparent bg-surface-subtle px-2.5 text-[12.5px] text-text-muted transition-[background-color,border-color] duration-150 enabled:hover:border-border disabled:cursor-not-allowed disabled:opacity-60 max-[640px]:w-8 max-[640px]:justify-center max-[640px]:border-border max-[640px]:bg-surface max-[640px]:px-0"
+        className="flex h-8 w-[min(260px,32vw)] min-w-0 flex-none items-center gap-2 rounded-md border border-transparent bg-surface-subtle px-2.5 text-13 text-text-muted transition-[background-color,border-color] duration-150 enabled:hover:border-border disabled:cursor-not-allowed disabled:opacity-60 max-[640px]:w-8 max-[640px]:justify-center max-[640px]:border-border max-[640px]:bg-surface max-[640px]:px-0"
         type="button"
         onClick={onOpenSearch}
         disabled={searchDisabled}
         aria-label="Search branches and papers"
         aria-keyshortcuts="Meta+K Control+K"
       >
-        <SearchIcon className="h-[13px] w-[13px] flex-none" />
+        <SearchIcon className="size-4 flex-none" />
         <span className="min-w-0 flex-1 truncate text-left max-[640px]:hidden">Search this workspace</span>
-        <kbd className="flex-none rounded-[4px] border border-border bg-surface px-[5px] font-sans text-[10.5px] leading-[16px] text-text-muted max-[640px]:hidden">
+        <kbd className="flex-none rounded-[4px] border border-border bg-surface px-[5px] font-sans text-11 leading-[16px] text-text-muted max-[640px]:hidden">
           ⌘K
         </kbd>
       </button>
 
       <ToolButton
-        icon={<ClockIcon className="h-[14px] w-[14px]" />}
+        icon={<ClockIcon className="size-4" />}
         label="History"
         active={historyActive}
         disabled={historyDisabled}
         onClick={onToggleHistory}
       />
       <ToolButton
-        icon={<ChatIcon className="h-[15px] w-[15px]" />}
+        icon={<ChatIcon className="size-4" />}
         label="Assistant"
         active={assistantActive}
         disabled={assistantDisabled}
@@ -109,7 +109,7 @@ function ToolButton({
   return (
     <button
       className={cx(
-        "flex h-8 flex-none items-center gap-1.5 rounded-md border px-2.5 text-[12.5px] font-medium transition-[background-color,border-color,color] duration-150 disabled:cursor-not-allowed disabled:border-border disabled:bg-surface disabled:text-border-strong max-[640px]:px-2",
+        "flex h-8 flex-none items-center gap-1.5 rounded-md border px-2.5 text-13 font-medium transition-[background-color,border-color,color] duration-150 disabled:cursor-not-allowed disabled:border-border disabled:bg-surface disabled:text-border-strong max-[640px]:px-2",
         active
           ? emphasis
             ? "border-accent-border bg-accent-subtle text-accent-deep"

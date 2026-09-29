@@ -8,7 +8,7 @@ export function HelpDialog({ onClose }: { onClose: () => void }) {
   return (
     <AccountDialog title="Help & docs" onClose={onClose}>
       <div className="grid place-items-center px-4 py-16 text-center">
-        <p className="m-0 text-[13px] leading-[1.6] text-text-secondary">
+        <p className="m-0 text-13 text-text-secondary">
           Documentation is not written yet.
         </p>
       </div>

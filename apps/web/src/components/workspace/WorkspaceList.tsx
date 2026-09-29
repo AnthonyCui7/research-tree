@@ -59,7 +59,7 @@ export function WorkspaceList({
             >
               <span
                 className={cx(
-                  "block truncate text-[13px] leading-[1.4]",
+                  "block truncate text-13 leading-[1.4]",
                   selected ? "font-semibold text-accent-deep" : "font-medium text-text-primary",
                 )}
               >
@@ -68,7 +68,7 @@ export function WorkspaceList({
               {building ? (
                 <BuildingCaption run={building} />
               ) : (
-                <span className="block truncate text-[11.5px] leading-[1.4] text-text-muted">
+                <span className="block truncate text-12 leading-[1.4] text-text-muted">
                   {workspaceCaption(workspace)}
                 </span>
               )}
@@ -87,7 +87,7 @@ export function WorkspaceList({
               aria-label={`Options for ${workspace.title}`}
               title="Workspace options"
             >
-              <EllipsisIcon className="h-3.5 w-3.5" />
+              <EllipsisIcon className="size-4" />
             </button>
           </div>
         );
@@ -100,7 +100,7 @@ function BuildingCaption({ run }: { run: PipelineRun }) {
   const progress = useBuildProgress(run);
   return (
     <>
-      <span className="mb-1.5 block truncate text-[11.5px] leading-[1.4] text-text-muted">
+      <span className="mb-1.5 block truncate text-12 leading-[1.4] text-text-muted">
         {buildingLabel(run, progress.currentLabel)}
       </span>
       <ProgressBar percent={progress.percent} />
@@ -117,13 +117,13 @@ function BuildPlaceholderRow({ run, onOpen }: { run: PipelineRun; onOpen: () => 
       type="button"
       onClick={onOpen}
     >
-      <span className="block truncate text-[13px] font-medium leading-[1.4] text-text-primary">
+      <span className="block truncate text-13 font-medium leading-[1.4] text-text-primary">
         {run.topic}
       </span>
       {stopped ? (
         <span
           className={cx(
-            "block truncate text-[11.5px] leading-[1.4]",
+            "block truncate text-12 leading-[1.4]",
             run.status === "failed" ? "text-error" : "text-text-muted",
           )}
         >
@@ -131,7 +131,7 @@ function BuildPlaceholderRow({ run, onOpen }: { run: PipelineRun; onOpen: () => 
         </span>
       ) : (
         <>
-          <span className="mb-1.5 block truncate text-[11.5px] leading-[1.4] text-text-muted">
+          <span className="mb-1.5 block truncate text-12 leading-[1.4] text-text-muted">
             {buildingLabel(run, progress.currentLabel)}
           </span>
           <ProgressBar percent={progress.percent} />

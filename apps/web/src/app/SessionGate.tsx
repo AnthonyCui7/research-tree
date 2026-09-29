@@ -25,10 +25,10 @@ export function SessionGate({ children }: { children: ReactNode }) {
     return (
       <div className="grid min-h-screen place-items-center bg-background p-6">
         <div className="w-[400px] max-w-full rounded-2xl border border-border bg-surface px-7 py-6">
-          <h1 className="m-0 text-[15px] font-semibold tracking-[-0.01em] text-text-primary">
+          <h1 className="m-0 text-15 font-semibold text-text-primary">
             Research Tree
           </h1>
-          <p className="mt-2 mb-0 text-[13.5px] leading-[1.6] text-text-secondary">{session.message}</p>
+          <p className="mt-2 mb-0 text-14 text-text-secondary">{session.message}</p>
           <button
             className={`${primaryActionClass} mt-5`}
             type="button"

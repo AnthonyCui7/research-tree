@@ -63,10 +63,10 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
             className="grid h-9 w-9 place-items-center rounded-full bg-accent-subtle text-accent-deep"
             aria-hidden="true"
           >
-            <CheckIcon className="h-4 w-4" />
+            <CheckIcon className="size-4" />
           </span>
-          <p className="mt-3 mb-0 text-[14px] leading-[1.6] font-medium text-text-primary">Report sent.</p>
-          <p className="mt-1.5 mb-0 max-w-[42ch] text-[13px] leading-[1.6] text-text-muted">
+          <p className="mt-3 mb-0 text-14 font-medium text-text-primary">Report sent.</p>
+          <p className="mt-1.5 mb-0 max-w-[42ch] text-13 text-text-muted">
             {sent}
           </p>
         </div>
@@ -101,7 +101,7 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
             {AREAS.map((option) => (
               <button
                 className={cx(
-                  "rounded-full border px-3 py-1 text-[12.5px] transition-[background-color,border-color,color] duration-150",
+                  "rounded-full border px-3 py-1 text-13 transition-[background-color,border-color,color] duration-150",
                   area === option.id
                     ? "border-accent-border bg-accent-subtle text-accent-deep"
                     : "border-border bg-surface text-text-secondary hover:border-border-strong hover:text-text-primary",

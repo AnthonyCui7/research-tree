@@ -122,11 +122,11 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
             )}
             aria-hidden="true"
           />
-          <span className="min-w-0 flex-1 text-[13.5px] text-text-primary">
+          <span className="min-w-0 flex-1 text-13 text-text-primary">
             {keys ? keyStatusText(keys, local) : error ? "Key status unavailable" : "Checking…"}
           </span>
           {openai?.masked ? (
-            <code className="flex-none font-mono text-[12.5px] text-text-muted">{openai.masked}</code>
+            <code className="flex-none font-mono text-12 text-text-muted">{openai.masked}</code>
           ) : null}
           {!local && openai?.configured ? (
             <button
@@ -141,8 +141,8 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
         </div>
         {local && keys && !openai?.configured ? (
           <AccountNotice>
-            Set <code className="font-mono text-[12px]">OPENAI_API_KEY</code> in the server's{" "}
-            <code className="font-mono text-[12px]">.env</code> and restart it. Without a key,
+            Set <code className="font-mono text-12">OPENAI_API_KEY</code> in the server's{" "}
+            <code className="font-mono text-12">.env</code> and restart it. Without a key,
             topic review, workspace builds and the assistant all fail.
           </AccountNotice>
         ) : null}
@@ -191,7 +191,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
         {local ? (
           <AccountNotice>
             Saving is off in this build. Nothing you type here is sent anywhere. Change the key in
-            the server's <code className="font-mono text-[12px]">.env</code> for now.
+            the server's <code className="font-mono text-12">.env</code> for now.
           </AccountNotice>
         ) : keys && !keys.saving_enabled ? (
           <AccountNotice>Saving keys is not enabled on this server.</AccountNotice>
@@ -209,7 +209,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
             <ul className="m-0 grid list-none gap-1.5 p-0">
               {usage.recent.slice(0, RECENT_USAGE_ROWS).map((event, index) => (
                 <li
-                  className="flex items-baseline gap-3 text-[12.5px] text-text-secondary"
+                  className="flex items-baseline gap-3 text-12 text-text-secondary"
                   key={`${index}:${event.created_at ?? ""}`}
                 >
                   <span className="flex-none text-text-muted">

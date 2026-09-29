@@ -38,10 +38,10 @@ export function ProfileMenu({
       <div className="flex items-center gap-2.5 border-b border-hairline px-3.5 py-3">
         <Avatar user={user} size={34} />
         <span className="min-w-0">
-          <span className="block truncate text-[13.5px] font-semibold text-text-primary">
+          <span className="block truncate text-13 font-semibold text-text-primary">
             {displayName(user)}
           </span>
-          <span className="block truncate text-[12px] text-text-muted">
+          <span className="block truncate text-12 text-text-muted">
             {accountDetail(user, local)}
           </span>
         </span>
@@ -49,26 +49,26 @@ export function ProfileMenu({
 
       <MenuSection>
         <MenuItem
-          icon={<GearIcon className="h-[15px] w-[15px]" />}
+          icon={<GearIcon className="size-4" />}
           onClick={() => onOpenScreen("settings")}
         >
           Settings
         </MenuItem>
         <MenuItem
-          icon={<KeyIcon className="h-[15px] w-[15px]" />}
+          icon={<KeyIcon className="size-4" />}
           onClick={() => onOpenScreen("api-keys")}
           trailing={apiKeyLabel}
         >
           API keys
         </MenuItem>
         <MenuItem
-          icon={<HelpIcon className="h-[15px] w-[15px]" />}
+          icon={<HelpIcon className="size-4" />}
           onClick={() => onOpenScreen("help")}
         >
           Help &amp; docs
         </MenuItem>
         <MenuItem
-          icon={<BugIcon className="h-[15px] w-[15px]" />}
+          icon={<BugIcon className="size-4" />}
           onClick={() => onOpenScreen("report-bug")}
         >
           Report a bug
@@ -78,7 +78,7 @@ export function ProfileMenu({
       <MenuSection>
         <MenuItem
           tone="danger"
-          icon={<SignOutIcon className="h-[15px] w-[15px]" />}
+          icon={<SignOutIcon className="size-4" />}
           disabled={local}
           title={local ? "This build runs without accounts, so there is no session to end" : undefined}
           onClick={onSignOut}

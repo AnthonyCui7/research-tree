@@ -120,12 +120,12 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
           {conversation.map((item, index) =>
             item.role === "user" ? (
               <div className="flex justify-end pl-10" key={`user-${index}`}>
-                <p className="m-0 rounded-[20px] bg-surface-subtle px-4 py-2.5 text-[14px] leading-[1.6] whitespace-pre-wrap text-text-primary [overflow-wrap:anywhere]">
+                <p className="m-0 rounded-[20px] bg-surface-subtle px-4 py-2.5 text-14 whitespace-pre-wrap text-text-primary [overflow-wrap:anywhere]">
                   {item.text}
                 </p>
               </div>
             ) : (
-              <div className="text-[14px] leading-[1.7] text-text-primary" key={`agent-${index}`}>
+              <div className="text-14 leading-[1.7] text-text-primary" key={`agent-${index}`}>
                 {item.steps?.length ? <StepsTaken steps={item.steps} /> : null}
                 <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
                   {displayMarkdown(item.text)}
@@ -166,7 +166,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
                 onClick={session.dismissError}
                 aria-label="Dismiss assistant error"
               >
-                <CloseIcon className="h-2.5 w-2.5" />
+                <CloseIcon className="size-3" />
               </button>
             </div>
           ) : null}
@@ -184,7 +184,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
           }}
         >
           <textarea
-            className="block min-h-[24px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[14px] leading-[1.55] text-text-primary outline-0 placeholder:text-text-muted"
+            className="block min-h-[24px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-14 text-text-primary outline-0 placeholder:text-text-muted"
             ref={composerRef}
             value={message}
             onChange={(event) => setMessage(event.target.value)}
@@ -195,7 +195,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
           />
           <div className="flex items-center gap-2 px-2.5 pt-1 pb-2.5">
             <button
-              className="flex h-8 items-center gap-1 rounded-full border-0 bg-transparent px-2.5 text-[12.5px] font-medium text-text-secondary transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary"
+              className="flex h-8 items-center gap-1 rounded-full border-0 bg-transparent px-2.5 text-13 font-medium text-text-secondary transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary"
               type="button"
               aria-haspopup="menu"
               aria-expanded={modelAnchor !== null}
@@ -203,7 +203,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
               title="Switch model"
             >
               {session.model}
-              <ChevronDownIcon className="h-3.5 w-3.5" />
+              <ChevronDownIcon className="size-4" />
             </button>
             <button
               className="ml-auto grid h-8 w-8 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-white transition-[background-color] duration-150 enabled:hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-border-strong"
@@ -212,7 +212,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
               aria-label="Send message"
               title="Send"
             >
-              <SendIcon className="h-3.5 w-3.5" />
+              <SendIcon className="size-4" />
             </button>
           </div>
         </form>
@@ -262,13 +262,13 @@ function AgentIntro({
         className="mx-auto mb-5 grid h-10 w-10 place-items-center rounded-[13px] bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
         aria-hidden="true"
       >
-        <ChatIcon className="h-5 w-5" />
+        <ChatIcon className="size-5" />
       </span>
-      <h3 className="m-0 text-center text-[22px] leading-[1.3] font-semibold tracking-[-0.02em] text-text-primary [overflow-wrap:anywhere]">
+      <h3 className="m-0 text-center text-24 font-semibold text-text-primary [overflow-wrap:anywhere]">
         {tree ? `Ask about ${tree.title}` : "Ask about this workspace"}
       </h3>
       {tree ? (
-        <p className="mt-1.5 mb-0 text-center text-[13px] text-text-muted">
+        <p className="mt-1.5 mb-0 text-center text-13 text-text-muted">
           {pluralize(tree.branchCount, "branch", "branches")} · {pluralize(tree.paperCount, "paper")}
         </p>
       ) : null}
@@ -287,12 +287,12 @@ function AgentIntro({
               {opener.icon}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block text-[13.5px] font-medium text-text-primary">{opener.title}</span>
-              <span className="mt-0.5 block text-[12.5px] leading-[1.5] text-text-muted">
+              <span className="block text-14 font-medium text-text-primary">{opener.title}</span>
+              <span className="mt-0.5 block text-13 text-text-muted">
                 {opener.detail}
               </span>
             </span>
-            <ArrowRightIcon className="h-3.5 w-3.5 flex-none text-text-muted opacity-0 transition-[opacity,transform] duration-150 group-hover:translate-x-0.5 group-hover:opacity-100" />
+            <ArrowRightIcon className="size-4 flex-none text-text-muted opacity-0 transition-[opacity,transform] duration-150 group-hover:translate-x-0.5 group-hover:opacity-100" />
           </button>
         ))}
       </div>
@@ -316,11 +316,11 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
       title: "Critique coverage",
       detail: "Where this tree is thin and what would fill it",
       prompt: "Critique the coverage of this workspace. Where is it thin, and what would fill it?",
-      icon: <SearchIcon className="h-4 w-4" />,
+      icon: <SearchIcon className="size-4" />,
     },
     {
       title: "Plan a reading path",
-      icon: <StepIcon className="h-4 w-4" />,
+      icon: <StepIcon className="size-4" />,
       detail: papers
         ? `All ${papers} papers in one order, tuned to your background`
         : "Every paper in one order, tuned to your background",
@@ -332,14 +332,14 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
   if (first && second) {
     openers.push({
       title: "Compare two branches",
-      icon: <TreeIcon className="h-4 w-4" />,
+      icon: <TreeIcon className="size-4" />,
       detail: `${first.title} vs. ${second.title}, and where they meet`,
       prompt: `Compare the “${first.title}” and “${second.title}” branches of this workspace, and explain where they meet.`,
     });
   } else {
     openers.push({
       title: "What's missing?",
-      icon: <PlusIcon className="h-4 w-4" />,
+      icon: <PlusIcon className="size-4" />,
       detail: "Recent work this tree does not account for",
       prompt: "What important recent work is missing from this workspace?",
     });
@@ -359,7 +359,7 @@ function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: Agen
   return (
     <div className="grid gap-2" role="status">
       {steps.map((step, index) => (
-        <div className="flex items-start gap-2.5 text-[13px] leading-[1.45] text-text-muted" key={`${index}:${stepKey(step)}`}>
+        <div className="flex items-start gap-2.5 text-13 text-text-muted" key={`${index}:${stepKey(step)}`}>
           <StepGlyph step={step} />
           <span className="min-w-0 [overflow-wrap:anywhere]">{describe(step, "done")}</span>
         </div>
@@ -369,7 +369,7 @@ function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: Agen
           className="mt-[3px] h-3.5 w-3.5 flex-none animate-progress-spin rounded-full border-[1.5px] border-accent-subtle border-t-accent"
           aria-hidden="true"
         />
-        <span className="min-w-0 text-[13.5px] leading-[1.45] font-medium text-shimmer [overflow-wrap:anywhere]">
+        <span className="min-w-0 text-13 font-medium text-shimmer [overflow-wrap:anywhere]">
           {describe(current, "doing")}
         </span>
       </div>
@@ -381,14 +381,14 @@ function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: Agen
 function StepsTaken({ steps }: { steps: AgentStep[] }) {
   return (
     <details className="group mb-3">
-      <summary className="flex w-fit max-w-full cursor-pointer list-none items-center gap-1 text-[13px] text-text-muted transition-[color] duration-150 hover:text-text-secondary [&::-webkit-details-marker]:hidden">
+      <summary className="flex w-fit max-w-full cursor-pointer list-none items-center gap-1 text-13 text-text-muted transition-[color] duration-150 hover:text-text-secondary [&::-webkit-details-marker]:hidden">
         <span className="min-w-0 truncate">{summarizeSteps(steps)}</span>
-        <ChevronDownIcon className="h-3.5 w-3.5 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
+        <ChevronDownIcon className="size-4 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
       </summary>
       <ol className="m-0 mt-2.5 grid list-none gap-2 p-0">
         {steps.map((step, index) => (
           <li
-            className="flex items-start gap-2.5 text-[12.5px] leading-[1.5] text-text-muted"
+            className="flex items-start gap-2.5 text-13 text-text-muted"
             key={`${index}:${stepKey(step)}`}
           >
             <StepGlyph step={step} />
@@ -405,22 +405,22 @@ function StepGlyph({ step }: { step: AgentStep }) {
   const glyph = step.kind === "tool" ? TOOL_GLYPH[step.name] : null;
   return (
     <span className="mt-[2px] flex h-3.5 w-3.5 flex-none items-center justify-center text-text-muted/80" aria-hidden="true">
-      {glyph ?? <StepIcon className="h-3.5 w-3.5" />}
+      {glyph ?? <StepIcon className="size-4" />}
     </span>
   );
 }
 
 const TOOL_GLYPH: Record<string, ReactNode> = {
-  search_workspace: <SearchIcon className="h-3.5 w-3.5" />,
-  search_semantic_scholar: <SearchIcon className="h-3.5 w-3.5" />,
-  web_search: <GlobeIcon className="h-3.5 w-3.5" />,
-  get_paper: <PaperIcon className="h-3.5 w-3.5" />,
-  get_paper_full_text: <PaperIcon className="h-3.5 w-3.5" />,
-  get_semantic_scholar_paper: <PaperIcon className="h-3.5 w-3.5" />,
-  get_branch: <TreeIcon className="h-3.5 w-3.5" />,
-  get_workspace_overview: <TreeIcon className="h-3.5 w-3.5" />,
-  list_reading_order: <StepIcon className="h-3.5 w-3.5" />,
-  list_workspace_history: <ClockIcon className="h-3.5 w-3.5" />,
+  search_workspace: <SearchIcon className="size-4" />,
+  search_semantic_scholar: <SearchIcon className="size-4" />,
+  web_search: <GlobeIcon className="size-4" />,
+  get_paper: <PaperIcon className="size-4" />,
+  get_paper_full_text: <PaperIcon className="size-4" />,
+  get_semantic_scholar_paper: <PaperIcon className="size-4" />,
+  get_branch: <TreeIcon className="size-4" />,
+  get_workspace_overview: <TreeIcon className="size-4" />,
+  list_reading_order: <StepIcon className="size-4" />,
+  list_workspace_history: <ClockIcon className="size-4" />,
 };
 
 type Tense = "doing" | "done";
@@ -518,11 +518,11 @@ function humanize(identifier: string): string {
 /** How the reader's decision on the last proposal landed. */
 function ReviewOutcomeLine({ outcome }: { outcome: NonNullable<AgentSession["outcome"]> }) {
   if (outcome === "rejected") {
-    return <p className="m-0 text-[13px] text-text-muted">Revision rejected.</p>;
+    return <p className="m-0 text-13 text-text-muted">Revision rejected.</p>;
   }
   return (
-    <p className="m-0 flex items-center gap-2 text-[13px] font-medium text-accent-deep" role="status">
-      <CheckIcon className="h-3.5 w-3.5 flex-none" />
+    <p className="m-0 flex items-center gap-2 text-13 font-medium text-accent-deep" role="status">
+      <CheckIcon className="size-4 flex-none" />
       {outcome === "applied" ? "Revision applied." : "Approved. The workspace is being rebuilt."}
     </p>
   );
@@ -546,7 +546,7 @@ function AgentRunNotices({ result }: { result: AgentRunResult }) {
         <div className={cx(errorNoticeClass, "grid gap-1")} role="alert">
           <span>{result.final_response?.trim() || "The assistant could not complete that request."}</span>
           {errors.map((detail, index) => (
-            <span className="text-[12px] opacity-80 [overflow-wrap:anywhere]" key={`${index}:${detail}`}>
+            <span className="text-12 opacity-80 [overflow-wrap:anywhere]" key={`${index}:${detail}`}>
               {detail}
             </span>
           ))}
@@ -581,16 +581,16 @@ const markdownComponents = {
     return <p className={cx("mb-3.5 whitespace-pre-wrap last:mb-0", className)} {...props} />;
   },
   h1({ node: _node, className, ...props }: MarkdownComponentProps<"h1">) {
-    return <h1 className={cx(markdownHeadingClass, "text-[17px]", className)} {...props} />;
+    return <h1 className={cx(markdownHeadingClass, "text-17", className)} {...props} />;
   },
   h2({ node: _node, className, ...props }: MarkdownComponentProps<"h2">) {
-    return <h2 className={cx(markdownHeadingClass, "text-[15.5px]", className)} {...props} />;
+    return <h2 className={cx(markdownHeadingClass, "text-15", className)} {...props} />;
   },
   h3({ node: _node, className, ...props }: MarkdownComponentProps<"h3">) {
-    return <h3 className={cx(markdownHeadingClass, "text-[14.5px]", className)} {...props} />;
+    return <h3 className={cx(markdownHeadingClass, "text-15", className)} {...props} />;
   },
   h4({ node: _node, className, ...props }: MarkdownComponentProps<"h4">) {
-    return <h4 className={cx(markdownHeadingClass, "text-[14px]", className)} {...props} />;
+    return <h4 className={cx(markdownHeadingClass, "text-14", className)} {...props} />;
   },
   ul({ node: _node, className, ...props }: MarkdownComponentProps<"ul">) {
     return <ul className={cx("mb-3.5 list-disc pl-5 last:mb-0", className)} {...props} />;
@@ -626,7 +626,7 @@ const markdownComponents = {
     return (
       <pre
         className={cx(
-          "mb-3.5 overflow-x-auto rounded-lg border border-hairline bg-surface-subtle p-3.5 text-[13px] leading-[1.55] last:mb-0 [&_code]:bg-transparent [&_code]:p-0",
+          "mb-3.5 overflow-x-auto rounded-lg border border-hairline bg-surface-subtle p-3.5 text-13 last:mb-0 [&_code]:bg-transparent [&_code]:p-0",
           className,
         )}
         {...props}
@@ -643,7 +643,7 @@ const markdownComponents = {
   table({ node: _node, className, ...props }: MarkdownComponentProps<"table">) {
     return (
       <div className="mb-3.5 overflow-x-auto last:mb-0">
-        <table className={cx("w-full border-collapse text-[13px] leading-[1.5]", className)} {...props} />
+        <table className={cx("w-full border-collapse text-13", className)} {...props} />
       </div>
     );
   },

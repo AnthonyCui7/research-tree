@@ -24,18 +24,18 @@ export function Toast({ tone, children, onDismiss, dismissLabel = "Dismiss", act
   return (
     <div
       className={cx(
-        "flex items-start gap-2.5 rounded-xl border border-border bg-surface py-2.5 pr-2.5 pl-3.5 text-[13px] leading-[1.5] text-text-primary shadow-toast",
+        "flex items-start gap-2.5 rounded-xl border border-border bg-surface py-2.5 pr-2.5 pl-3.5 text-13 text-text-primary shadow-toast",
         closing ? "animate-toast-exit" : "animate-toast-enter",
       )}
       role={success ? "status" : "alert"}
     >
       <span className={cx("mt-[3px] flex-none", success ? "text-accent" : "text-error")}>
-        {success ? <CheckIcon className="h-3.5 w-3.5" /> : <WarningIcon className="h-3.5 w-3.5" />}
+        {success ? <CheckIcon className="size-4" /> : <WarningIcon className="size-4" />}
       </span>
       <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{children}</span>
       {action ? (
         <button
-          className="-my-0.5 h-6 flex-none rounded-md border-0 bg-transparent px-2 text-[12.5px] font-semibold text-accent-deep transition-[background-color] duration-150 enabled:hover:bg-accent-subtle disabled:cursor-not-allowed disabled:text-text-muted"
+          className="-my-0.5 h-6 flex-none rounded-md border-0 bg-transparent px-2 text-13 font-semibold text-accent-deep transition-[background-color] duration-150 enabled:hover:bg-accent-subtle disabled:cursor-not-allowed disabled:text-text-muted"
           type="button"
           onClick={action.onClick}
           disabled={action.disabled}
@@ -51,7 +51,7 @@ export function Toast({ tone, children, onDismiss, dismissLabel = "Dismiss", act
           aria-label={dismissLabel}
           title={dismissLabel}
         >
-          <CloseIcon className="h-2.5 w-2.5" />
+          <CloseIcon className="size-3" />
         </button>
       ) : null}
     </div>

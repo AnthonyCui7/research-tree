@@ -122,10 +122,10 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
         )}
       >
         <div className="flex flex-none items-center gap-3 border-b border-hairline px-5 py-4">
-          <SearchIcon className="h-4 w-4 flex-none text-text-muted" />
+          <SearchIcon className="size-4 flex-none text-text-muted" />
           <input
             ref={inputRef}
-            className="min-w-0 flex-1 border-0 bg-transparent text-[15px] text-text-primary outline-0 placeholder:text-text-muted"
+            className="min-w-0 flex-1 border-0 bg-transparent text-15 text-text-primary outline-0 placeholder:text-text-muted"
             type="text"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -137,7 +137,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
             aria-controls="search-results"
             aria-activedescendant={results.length > 0 ? optionId(activeIndex) : undefined}
           />
-          <kbd className="flex-none rounded-[5px] border border-border bg-surface-subtle px-1.5 py-px font-sans text-[11px] text-text-muted">
+          <kbd className="flex-none rounded-[5px] border border-border bg-surface-subtle px-1.5 py-px font-sans text-11 text-text-muted">
             esc
           </kbd>
         </div>
@@ -160,7 +160,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
                     active={activeIndex === index}
                     onHover={() => setActiveIndex(index)}
                     onSelect={() => open({ kind: "branch", node })}
-                    icon={<TreeIcon className="h-3.5 w-3.5" />}
+                    icon={<TreeIcon className="size-4" />}
                     tint={branchTint(node.family)}
                     title={node.title}
                     trailing={pluralize(node.paperCount, "paper")}
@@ -180,7 +180,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
                       active={activeIndex === resultIndex}
                       onHover={() => setActiveIndex(resultIndex)}
                       onSelect={() => open({ kind: "paper", node })}
-                      icon={<PaperIcon className="h-3.5 w-3.5" />}
+                      icon={<PaperIcon className="size-4" />}
                       tint="var(--color-surface)"
                       title={node.title}
                       subtitle={`${authorLine(node.authors)} · ${publicationDate(node)} · ${node.branchTitle}`}
@@ -191,13 +191,13 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
             ) : null}
           </div>
           {results.length === 0 ? (
-            <p className="m-0 p-8 text-center text-[13.5px] text-text-muted">
+            <p className="m-0 p-8 text-center text-13 text-text-muted">
               No branches or papers match “{query.trim()}”.
             </p>
           ) : null}
         </div>
 
-        <div className="flex flex-none items-center gap-4 border-t border-hairline px-5 py-2.5 text-[11.5px] text-text-muted">
+        <div className="flex flex-none items-center gap-4 border-t border-hairline px-5 py-2.5 text-12 text-text-muted">
           <span className="flex items-center gap-1.5 max-[520px]:hidden">
             <FooterKey>↑↓</FooterKey> navigate
           </span>
@@ -225,7 +225,7 @@ function GroupLabel({ id, children }: { id: string; children: string }) {
 
 function FooterKey({ children }: { children: string }) {
   return (
-    <kbd className="rounded-[4px] border border-border bg-surface-subtle px-1 font-sans text-[11px]">
+    <kbd className="rounded-[4px] border border-border bg-surface-subtle px-1 font-sans text-11">
       {children}
     </kbd>
   );
@@ -272,12 +272,12 @@ function ResultRow({
         {icon}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13.5px] font-medium text-text-primary">{title}</span>
+        <span className="block truncate text-14 font-medium text-text-primary">{title}</span>
         {subtitle ? (
-          <span className="mt-px block truncate text-[12px] text-text-muted">{subtitle}</span>
+          <span className="mt-px block truncate text-12 text-text-muted">{subtitle}</span>
         ) : null}
       </span>
-      {trailing ? <span className="flex-none text-[12px] text-text-muted">{trailing}</span> : null}
+      {trailing ? <span className="flex-none text-12 text-text-muted">{trailing}</span> : null}
     </div>
   );
 }
