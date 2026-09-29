@@ -1,4 +1,5 @@
 import { cx } from "../../lib/cx";
+import { inlineIconButtonClass } from "../../lib/controlClasses";
 import { relativeTimestamp, pluralize } from "../../lib/format";
 import { isRunActive, useBuildProgress } from "../../lib/pipelineStages";
 import { EllipsisIcon } from "../ui/icons";
@@ -35,7 +36,7 @@ export function WorkspaceList({
 
   return (
     <nav
-      className="scrollbar-rt flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5 pb-3"
+      className="scrollbar-rt flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-3"
       aria-label="Workspaces"
     >
       {placeholderRun ? <BuildPlaceholderRow run={placeholderRun} onOpen={onOpenBuild} /> : null}
@@ -52,14 +53,14 @@ export function WorkspaceList({
             )}
           >
             <button
-              className="min-w-0 flex-1 border-0 bg-transparent py-[7px] pr-1 pl-2.5 text-left"
+              className="min-w-0 flex-1 border-0 bg-transparent py-1.5 pr-1 pl-3 text-left"
               type="button"
               aria-current={selected ? "page" : undefined}
               onClick={() => onSelectWorkspace(workspace.workspace_id)}
             >
               <span
                 className={cx(
-                  "block truncate text-13 leading-[1.4]",
+                  "block truncate text-13",
                   selected ? "font-semibold text-accent-deep" : "font-medium text-text-primary",
                 )}
               >
@@ -68,14 +69,15 @@ export function WorkspaceList({
               {building ? (
                 <BuildingCaption run={building} />
               ) : (
-                <span className="block truncate text-12 leading-[1.4] text-text-muted">
+                <span className="block truncate text-12 text-text-muted">
                   {workspaceCaption(workspace)}
                 </span>
               )}
             </button>
             <button
               className={cx(
-                "mr-1.5 grid h-6 w-6 flex-none place-items-center rounded-[6px] border-0 bg-transparent p-0 opacity-0 transition-[background-color,color,opacity] duration-150 group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100",
+                inlineIconButtonClass,
+                "mr-2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100",
                 selected
                   ? "text-accent-deep hover:bg-accent-border"
                   : "text-text-muted hover:bg-hairline hover:text-text-primary",
@@ -100,7 +102,7 @@ function BuildingCaption({ run }: { run: PipelineRun }) {
   const progress = useBuildProgress(run);
   return (
     <>
-      <span className="mb-1.5 block truncate text-12 leading-[1.4] text-text-muted">
+      <span className="mb-1.5 block truncate text-12 text-text-muted">
         {buildingLabel(run, progress.currentLabel)}
       </span>
       <ProgressBar percent={progress.percent} />
@@ -113,17 +115,17 @@ function BuildPlaceholderRow({ run, onOpen }: { run: PipelineRun; onOpen: () => 
   const stopped = !isRunActive(run);
   return (
     <button
-      className="rounded-md border-0 bg-transparent px-2.5 py-[7px] text-left transition-[background-color] duration-150 hover:bg-sidebar-hover"
+      className="rounded-md border-0 bg-transparent px-3 py-1.5 text-left transition-[background-color] duration-150 hover:bg-sidebar-hover"
       type="button"
       onClick={onOpen}
     >
-      <span className="block truncate text-13 font-medium leading-[1.4] text-text-primary">
+      <span className="block truncate text-13 font-medium text-text-primary">
         {run.topic}
       </span>
       {stopped ? (
         <span
           className={cx(
-            "block truncate text-12 leading-[1.4]",
+            "block truncate text-12",
             run.status === "failed" ? "text-error" : "text-text-muted",
           )}
         >
@@ -131,7 +133,7 @@ function BuildPlaceholderRow({ run, onOpen }: { run: PipelineRun; onOpen: () => 
         </span>
       ) : (
         <>
-          <span className="mb-1.5 block truncate text-12 leading-[1.4] text-text-muted">
+          <span className="mb-1.5 block truncate text-12 text-text-muted">
             {buildingLabel(run, progress.currentLabel)}
           </span>
           <ProgressBar percent={progress.percent} />
@@ -149,7 +151,7 @@ function buildingLabel(run: PipelineRun, currentLabel: string | null): string {
 
 function ProgressBar({ percent }: { percent: number }) {
   return (
-    <span className="mb-0.5 block h-[3px] overflow-hidden rounded-full bg-hairline" aria-hidden="true">
+    <span className="mb-0.5 block h-0.75 overflow-hidden rounded-full bg-hairline" aria-hidden="true">
       <span
         className="block h-full rounded-full bg-accent transition-[width] duration-500 ease-linear"
         style={{ width: `${percent}%` }}

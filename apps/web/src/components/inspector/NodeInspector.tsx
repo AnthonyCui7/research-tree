@@ -251,7 +251,7 @@ function AuthorList({ authors }: { authors: string[] }) {
   const shown = names.slice(0, SHOWN_AUTHORS);
   const more = names.length - shown.length;
   return (
-    <p className="mt-2.5 mb-0 text-14 text-text-secondary">
+    <p className="mt-2 mb-0 text-14 text-text-secondary">
       {shown.join(", ")}
       {more > 0 ? <span className="text-text-muted">, and {more} more</span> : null}
     </p>
@@ -267,7 +267,7 @@ function Abstract({ text }: { text: string }) {
     <>
       <p
         className={cx(
-          "m-0 max-w-[68ch] text-14 leading-[1.7] text-text-primary",
+          "m-0 max-w-[68ch] text-14 leading-6 text-text-primary",
           folded && "line-clamp-6 [mask-image:linear-gradient(to_bottom,black_60%,transparent)]",
         )}
       >
@@ -298,9 +298,9 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   const visible = showAll ? papers : papers.slice(0, SIMILAR_PREVIEW);
   return (
     <Section label="Similar papers" count={papers.length}>
-      <ul className="m-0 grid list-none divide-y divide-hairline-soft p-0">
+      <ul className="m-0 grid list-none divide-y divide-hairline p-0">
         {visible.map((paper) => (
-          <li className="py-3 first:pt-1" key={paper.paper_id}>
+          <li className="py-3 first:pt-0" key={paper.paper_id}>
             <p className="m-0 text-13 font-medium text-text-primary [overflow-wrap:anywhere]">
               {paper.title}
             </p>
@@ -379,17 +379,17 @@ function BranchView({
               <li className="relative" key={paper.id}>
                 {index < readingPath.length - 1 ? (
                   <span
-                    className="absolute top-[34px] bottom-[-6px] left-[19.5px] w-px bg-accent-border"
+                    className="absolute top-8 -bottom-1 left-[17.5px] w-px bg-accent-border"
                     aria-hidden="true"
                   />
                 ) : null}
                 <button
-                  className="group relative flex w-full gap-3 rounded-lg border-0 bg-transparent px-2 py-2.5 text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
+                  className="group relative flex w-full gap-3 rounded-md border-0 bg-transparent p-2 text-left transition-[background-color] duration-150 hover:bg-surface-subtle"
                   type="button"
                   onClick={() => onSelectNode(paper.id)}
                 >
                   <span
-                    className="mt-px grid h-[23px] w-[23px] flex-none place-items-center rounded-full border border-accent-border bg-accent-subtle text-12 font-semibold text-accent-deep tabular-nums transition-[background-color,color] duration-150 group-hover:bg-accent group-hover:text-white"
+                    className="grid h-5 w-5 flex-none place-items-center rounded-full border border-accent-border bg-accent-subtle text-11 font-semibold text-accent-deep tabular-nums transition-[background-color,color] duration-150 group-hover:bg-accent group-hover:text-white"
                     aria-hidden="true"
                   >
                     {index + 1}
@@ -398,7 +398,7 @@ function BranchView({
                     <span className="block text-13 font-medium text-text-primary">
                       {paper.title}
                     </span>
-                    <span className="mt-0.5 block text-12 text-text-muted">
+                    <span className="mt-1 block text-12 text-text-muted">
                       {authorLine(paper.authors)} · {publicationDate(paper)}
                     </span>
                   </span>
@@ -453,7 +453,7 @@ function RenameForm({
 
   return (
     <form
-      className="grid gap-2.5"
+      className="grid gap-3"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -474,7 +474,7 @@ function RenameForm({
         maxLength={200}
         disabled={busy}
       />
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-2">
         <button className={compactPrimaryActionClass} type="submit" disabled={busy || unchanged}>
           {busy ? "Saving…" : "Save"}
         </button>
@@ -546,7 +546,7 @@ function Title({ children, large = false }: { children: string; large?: boolean 
 /** The short facts under a title, each with the icon that says what it is. */
 function Facts({ children }: { children: ReactNode }) {
   return (
-    <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-13 text-text-muted">
+    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-13 text-text-muted">
       {children}
     </div>
   );
@@ -555,7 +555,7 @@ function Facts({ children }: { children: ReactNode }) {
 function Fact({ icon, wide = false, children }: { icon: ReactNode; wide?: boolean; children: ReactNode }) {
   return (
     <span className={cx("inline-flex min-w-0 items-start gap-1.5", wide && "basis-full")}>
-      <span className="mt-px flex-none text-text-muted/80">{icon}</span>
+      <span className="mt-0.5 flex-none text-text-muted/80">{icon}</span>
       <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
     </span>
   );
@@ -565,10 +565,10 @@ function Fact({ icon, wide = false, children }: { icon: ReactNode; wide?: boolea
 function Section({ label, count, children }: { label: string; count?: number; children: ReactNode }) {
   return (
     <section className="mt-8">
-      <h4 className={cx(kickerClass, "m-0 mb-2.5 flex items-center gap-2")}>
+      <h4 className={cx(kickerClass, "m-0 mb-2 flex items-center gap-2")}>
         {label}
         {count !== undefined ? (
-          <span className="rounded-full bg-surface-subtle px-1.5 py-px text-11 font-semibold tracking-normal text-text-secondary tabular-nums">
+          <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-surface-subtle px-1.5 text-11 font-semibold tracking-normal text-text-secondary tabular-nums">
             {count}
           </span>
         ) : null}
@@ -584,15 +584,15 @@ function Section({ label, count, children }: { label: string; count?: number; ch
  */
 function Callout({ label, children }: { label: string; children: string }) {
   return (
-    <section className="mt-7 rounded-xl border border-accent-border/70 bg-accent-wash px-4 py-3.5">
-      <h4 className={cx(kickerTypeClass, "m-0 mb-1.5 text-accent-deep")}>{label}</h4>
-      <p className="m-0 max-w-[68ch] text-14 leading-[1.7] text-text-primary">{children}</p>
+    <section className="mt-8 rounded-xl border border-accent-border/70 bg-accent-wash p-4">
+      <h4 className={cx(kickerTypeClass, "m-0 mb-2 text-accent-deep")}>{label}</h4>
+      <p className="m-0 max-w-[68ch] text-14 leading-6 text-text-primary">{children}</p>
     </section>
   );
 }
 
 function Prose({ children }: { children: string }) {
-  return <p className="m-0 max-w-[68ch] text-14 leading-[1.7] text-text-primary">{children}</p>;
+  return <p className="m-0 max-w-[68ch] text-14 leading-6 text-text-primary">{children}</p>;
 }
 
 /**
@@ -602,11 +602,11 @@ function Prose({ children }: { children: string }) {
 function SurveyAnchor({ label, paper }: { label: string; paper: PaperDetails }) {
   return (
     <Section label={label}>
-      <div className="rounded-xl border border-hairline px-4 py-3.5">
+      <div className="rounded-xl border border-hairline p-4">
         <p className="m-0 text-13 font-medium text-text-primary [overflow-wrap:anywhere]">
           {paper.title}
         </p>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-12 text-text-muted">
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-12 text-text-muted">
           <span>
             {authorLine(paper.authors)} · {publicationDate(paper)}
           </span>
@@ -624,7 +624,7 @@ function SurveyAnchor({ label, paper }: { label: string; paper: PaperDetails }) 
 function SourceLink({ href, icon, children }: { href: string; icon: ReactNode; children: string }) {
   return (
     <a
-      className="inline-flex items-center gap-1 text-13 font-medium text-text-secondary no-underline transition-[color] duration-150 hover:text-accent-deep"
+      className="inline-flex items-center gap-1.5 text-13 font-medium text-text-secondary no-underline transition-[color] duration-150 hover:text-accent-deep"
       href={href}
       target="_blank"
       rel="noreferrer"
@@ -672,9 +672,9 @@ function Questions({ questions }: { questions: string[] }) {
   }
   return (
     <Section label="Open questions" count={questions.length}>
-      <ul className="m-0 grid max-w-[68ch] list-none gap-2.5 p-0">
+      <ul className="m-0 grid max-w-[68ch] list-none gap-3 p-0">
         {questions.map((question) => (
-          <li className="flex gap-3 text-14 leading-[1.7] text-text-primary" key={question}>
+          <li className="flex gap-3 text-14 leading-6 text-text-primary" key={question}>
             <span className="mt-[9px] h-1.5 w-1.5 flex-none rounded-full bg-accent-border" aria-hidden="true" />
             <span className="min-w-0">{question}</span>
           </li>

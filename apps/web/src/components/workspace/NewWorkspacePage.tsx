@@ -15,12 +15,13 @@ import type { BuildRun } from "../../data/useBuildRun";
 import {
   compactActionClass,
   errorNoticeClass,
-  ghostActionClass,
   kickerClass,
   kickerTypeClass,
+  largeGhostActionClass,
+  largePrimaryActionClass,
+  largeSecondaryActionClass,
+  pillClass,
   plainNoticeClass,
-  primaryActionClass,
-  secondaryActionClass,
   warningNoticeClass,
 } from "../../lib/controlClasses";
 import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, CloseIcon, PlusIcon, TreeIcon, WarningIcon } from "../ui/icons";
@@ -172,21 +173,21 @@ function TopicStep({
   return (
     <div className="animate-interface-center-enter">
       <span
-        className="mx-auto grid h-11 w-11 place-items-center rounded-[14px] bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
+        className="mx-auto grid h-10 w-10 place-items-center rounded-lg bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
         aria-hidden="true"
       >
         <TreeIcon className="size-5" />
       </span>
-      <h1 className="mt-6 mb-0 text-center text-30 font-semibold text-text-primary">
+      <h1 className="mt-5 mb-0 text-center text-30 font-semibold text-text-primary">
         What field do you want to map?
       </h1>
-      <p className="mx-auto mt-3 mb-0 max-w-[46ch] text-center text-15 leading-[1.6] text-text-secondary">
+      <p className="mx-auto mt-3 mb-0 max-w-[46ch] text-center text-15 text-text-secondary">
         Research Tree drafts an editable map of the literature: its branches, key papers, and
         reading paths.
       </p>
 
       <form
-        className="mt-9 rounded-[20px] border border-border bg-surface shadow-composer transition-[border-color,box-shadow] duration-200 focus-within:border-[color-mix(in_srgb,var(--color-accent)_45%,var(--color-border))] focus-within:shadow-[0_0_0_4px_var(--color-accent-wash),var(--shadow-composer)]"
+        className="mt-8 rounded-3xl border border-border bg-surface shadow-composer transition-[border-color,box-shadow] duration-200 focus-within:border-[color-mix(in_srgb,var(--color-accent)_45%,var(--color-border))] focus-within:shadow-[0_0_0_4px_var(--color-accent-wash),var(--shadow-composer)]"
         aria-busy={busy}
         onSubmit={(event) => {
           event.preventDefault();
@@ -212,7 +213,7 @@ function TopicStep({
             <textarea
               id="build-instructions"
               autoFocus
-              className="mt-1.5 block min-h-[76px] w-full resize-none border-0 bg-transparent p-0 text-14 text-text-primary outline-0 placeholder:text-text-muted"
+              className="mt-2 block w-full resize-none border-0 bg-transparent p-0 text-14 leading-6 text-text-primary outline-0 placeholder:text-text-muted"
               value={instructions}
               onChange={(event) => onInstructions(event.target.value)}
               placeholder="e.g. emphasize evaluation methods; leave out hardware-specific serving papers."
@@ -222,10 +223,13 @@ function TopicStep({
             />
           </div>
         ) : null}
-        <div className="flex items-center gap-2 px-3 pt-2 pb-3">
+        {/* As in the assistant's composer: controls 8px inside a box rounded
+            24px, their own 16px radius plus that gap. */}
+        <div className="flex items-center gap-2 p-2">
           <button
             className={cx(
-              "flex h-8 items-center gap-1.5 rounded-full border px-3 text-13 font-medium transition-[background-color,border-color,color] duration-150",
+              pillClass,
+              "font-medium",
               instructionsOpen
                 ? "border-accent-border bg-accent-wash text-accent-deep enabled:hover:bg-accent-subtle"
                 : "border-border bg-surface text-text-secondary enabled:hover:bg-surface-subtle enabled:hover:text-text-primary",
@@ -240,7 +244,7 @@ function TopicStep({
             Instructions
           </button>
           <button
-            className="ml-auto grid h-9 w-9 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-white shadow-[0_1px_2px_rgb(23_102_71/30%)] transition-[background-color,transform] duration-150 enabled:hover:bg-accent-deep enabled:active:scale-95 disabled:cursor-not-allowed disabled:bg-border-strong disabled:shadow-none"
+            className="ml-auto grid h-8 w-8 flex-none place-items-center rounded-full border-0 bg-accent p-0 text-white shadow-[0_1px_2px_rgb(23_102_71/30%)] transition-[background-color,transform] duration-150 enabled:hover:bg-accent-deep enabled:active:scale-95 disabled:cursor-not-allowed disabled:bg-border-strong disabled:shadow-none"
             type="submit"
             disabled={busy || !topic.trim()}
             aria-label="Review topic"
@@ -261,7 +265,10 @@ function TopicStep({
       <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
         {EXAMPLE_TOPICS.map((example) => (
           <button
-            className="rounded-full border border-border bg-surface px-3.5 py-1.5 text-13 text-text-secondary transition-[background-color,border-color,color] duration-150 enabled:hover:border-border-strong enabled:hover:bg-surface-subtle enabled:hover:text-text-primary"
+            className={cx(
+              pillClass,
+              "border-border bg-surface text-text-secondary enabled:hover:border-border-strong enabled:hover:bg-surface-subtle enabled:hover:text-text-primary",
+            )}
             key={example}
             type="button"
             onClick={() => {
@@ -283,7 +290,7 @@ function TopicStep({
 /** A refused step, with the way past it when that is an API key. */
 function StepError({ error, onOpenApiKeys }: { error: ErrorNotice; onOpenApiKeys: () => void }) {
   return (
-    <div className={cx(errorNoticeClass, "mt-6 flex items-center gap-3")} role="alert">
+    <div className={cx(errorNoticeClass, "mt-6 flex items-center gap-2.5")} role="alert">
       <WarningIcon className="size-4 flex-none" />
       <span className="min-w-0 flex-1">{error.message}</span>
       {error.needsKey ? (
@@ -321,14 +328,14 @@ function ReviewStep({
   return (
     <div className="animate-interface-center-enter">
       {recognized ? (
-        <p className="m-0 flex items-center gap-2.5 text-13 font-medium text-accent-deep">
+        <p className="m-0 flex items-center gap-2 text-13 font-medium text-accent-deep">
           <span className="grid h-6 w-6 place-items-center rounded-full bg-accent-subtle" aria-hidden="true">
             <CheckIcon className="size-4" />
           </span>
           Recognized research field
         </p>
       ) : (
-        <p className="m-0 flex items-center gap-2.5 text-13 font-medium text-warning">
+        <p className="m-0 flex items-center gap-2 text-13 font-medium text-warning">
           <span className="grid h-6 w-6 place-items-center rounded-full bg-warning-surface" aria-hidden="true">
             <WarningIcon className="size-4" />
           </span>
@@ -339,13 +346,13 @@ function ReviewStep({
         {recognized ? review.normalized_topic : review.submitted_topic}
       </h1>
       {review.guidance || !recognized ? (
-        <p className="mt-3 mb-0 max-w-[60ch] text-15 leading-[1.6] text-text-secondary">
+        <p className="mt-3 mb-0 max-w-[60ch] text-15 text-text-secondary">
           {review.guidance || "Try a specific field, method, benchmark, or research question."}
         </p>
       ) : null}
 
       {recognized && (review.source_paper || instructions) ? (
-        <dl className="mt-7 mb-0 grid gap-4 rounded-2xl border border-hairline bg-surface p-5">
+        <dl className="mt-6 mb-0 grid gap-4 rounded-xl border border-hairline bg-surface p-4">
           {review.source_paper ? (
             <ReviewFact label="Linked paper">
               {review.source_paper.title} will anchor the map.
@@ -365,7 +372,7 @@ function ReviewStep({
 
       <div className="mt-8 flex items-center gap-2">
         <button
-          className={secondaryActionClass}
+          className={largeSecondaryActionClass}
           type="button"
           onClick={onBack}
           disabled={busy}
@@ -378,7 +385,7 @@ function ReviewStep({
             is confirmed with a second Enter. */}
         {existing ? (
           <button
-            className={cx(primaryActionClass, "ml-auto")}
+            className={cx(largePrimaryActionClass, "ml-auto")}
             type="button"
             onClick={() => onOpenExisting(existing.workspace_id)}
             autoFocus
@@ -388,7 +395,7 @@ function ReviewStep({
           </button>
         ) : recognized && review.can_create ? (
           <button
-            className={cx(primaryActionClass, "ml-auto")}
+            className={cx(largePrimaryActionClass, "ml-auto")}
             type="button"
             disabled={busy}
             onClick={onBuild}
@@ -407,7 +414,7 @@ function ReviewFact({ label, children }: { label: string; children: ReactNode })
   return (
     <div>
       <dt className={kickerClass}>{label}</dt>
-      <dd className="m-0 mt-1.5 text-14 text-text-primary [overflow-wrap:anywhere]">
+      <dd className="m-0 mt-1 text-14 text-text-primary [overflow-wrap:anywhere]">
         {children}
       </dd>
     </div>
@@ -447,10 +454,10 @@ function BuildProgress({
       <div className="flex items-end gap-4">
         <div className="min-w-0 flex-1">
           <BuildStatus run={run} />
-          <h1 className="mt-2.5 mb-0 text-24 font-semibold text-text-primary [overflow-wrap:anywhere]">
+          <h1 className="mt-2 mb-0 text-24 font-semibold text-text-primary [overflow-wrap:anywhere]">
             Mapping {run.topic}
           </h1>
-          <p className="mt-1.5 mb-0 text-13 text-text-muted tabular-nums">
+          <p className="mt-1 mb-0 text-13 text-text-muted tabular-nums">
             {run.status === "queued"
               ? "Waiting for a free worker. It starts when the build ahead of it finishes."
               : Number.isNaN(started)
@@ -477,7 +484,7 @@ function BuildProgress({
         />
       </div>
 
-      <div className="tree-grid-bg mt-6 overflow-hidden rounded-2xl border border-hairline px-5 py-5">
+      <div className="tree-grid-bg mt-6 overflow-hidden rounded-xl border border-hairline p-5">
         <BuildIllustration stages={progress.stages} />
       </div>
 
@@ -520,7 +527,7 @@ function BuildProgress({
         {active ? (
           <>
             <button
-              className={cx(ghostActionClass, "-ml-3")}
+              className={cx(largeGhostActionClass, "-ml-3.5")}
               type="button"
               disabled={canceling}
               onClick={() => {
@@ -531,14 +538,14 @@ function BuildProgress({
               {canceling ? "Cancelling…" : "Cancel build"}
             </button>
             {isOpenable(run) ? (
-              <button className={cx(primaryActionClass, "ml-auto")} type="button" onClick={onOpen}>
+              <button className={cx(largePrimaryActionClass, "ml-auto")} type="button" onClick={onOpen}>
                 Open workspace
                 <ArrowRightIcon className="size-4" />
               </button>
             ) : null}
           </>
         ) : (
-          <button className={secondaryActionClass} type="button" onClick={onStartOver}>
+          <button className={largeSecondaryActionClass} type="button" onClick={onStartOver}>
             Start over
           </button>
         )}
@@ -568,11 +575,11 @@ function BuildStatus({ run }: { run: PipelineRun }) {
 
 function StageRow({ stage, last, took }: { stage: BuildStage; last: boolean; took: string | null }) {
   return (
-    <li className="relative flex items-center gap-3 py-[9px]">
+    <li className="relative flex items-center gap-3 py-2.5">
       {last ? null : (
         <span
           className={cx(
-            "absolute top-[29px] bottom-[-9px] left-[8.5px] w-px",
+            "absolute top-8.5 -bottom-1.5 left-[9.5px] w-px",
             stage.state === "done" ? "bg-accent-border" : "bg-hairline",
           )}
           aria-hidden="true"
@@ -616,7 +623,7 @@ function StageMark({ state }: { state: BuildStage["state"] }) {
   if (state === "done") {
     return (
       <span
-        className="relative grid h-[18px] w-[18px] flex-none place-items-center rounded-full bg-accent text-white"
+        className="relative grid h-5 w-5 flex-none place-items-center rounded-full bg-accent text-white"
         aria-hidden="true"
       >
         <CheckIcon className="size-3" />
@@ -626,7 +633,7 @@ function StageMark({ state }: { state: BuildStage["state"] }) {
   if (state === "current") {
     return (
       <span
-        className="relative h-[18px] w-[18px] flex-none animate-progress-spin rounded-full border-2 border-accent-subtle border-t-accent bg-surface"
+        className="relative h-5 w-5 flex-none animate-progress-spin rounded-full border-2 border-accent-subtle border-t-accent bg-surface"
         aria-hidden="true"
       />
     );
@@ -634,7 +641,7 @@ function StageMark({ state }: { state: BuildStage["state"] }) {
   if (state === "failed") {
     return (
       <span
-        className="relative grid h-[18px] w-[18px] flex-none place-items-center rounded-full bg-error text-white"
+        className="relative grid h-5 w-5 flex-none place-items-center rounded-full bg-error text-white"
         aria-hidden="true"
       >
         <CloseIcon className="size-3" />
@@ -643,7 +650,7 @@ function StageMark({ state }: { state: BuildStage["state"] }) {
   }
   return (
     <span
-      className="relative h-[18px] w-[18px] flex-none rounded-full border-2 border-hairline bg-surface"
+      className="relative h-5 w-5 flex-none rounded-full border-2 border-hairline bg-surface"
       aria-hidden="true"
     />
   );

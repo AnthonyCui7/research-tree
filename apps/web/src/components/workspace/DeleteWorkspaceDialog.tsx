@@ -80,7 +80,7 @@ export function DeleteWorkspaceDialog({
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
       >
-        <div className="px-6 pt-6 pb-5">
+        <div className="p-6">
           <h2
             className="m-0 text-17 font-semibold text-text-primary [overflow-wrap:anywhere]"
             id="delete-workspace-title"
@@ -99,7 +99,7 @@ export function DeleteWorkspaceDialog({
             </p>
           ) : null}
         </div>
-        <div className="flex items-center justify-end gap-2 px-6 pb-5">
+        <div className="flex items-center justify-end gap-2 px-6 pb-6">
           <button className={secondaryActionClass} type="button" onClick={dismiss} disabled={busy}>
             Cancel
           </button>

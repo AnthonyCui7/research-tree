@@ -206,7 +206,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
       {!local && usage ? (
         <AccountSection title={`Usage, last ${usage.days} days`} detail={usageText(usage)}>
           {usage.recent.length > 0 ? (
-            <ul className="m-0 grid list-none gap-1.5 p-0">
+            <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0">
               {usage.recent.slice(0, RECENT_USAGE_ROWS).map((event, index) => (
                 <li
                   className="flex items-baseline gap-3 text-12 text-text-secondary"
@@ -225,7 +225,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
       ) : null}
 
       {error ? (
-        <p className={cx(errorNoticeClass, "mt-5 mb-0")} role="alert">
+        <p className={cx(errorNoticeClass, "mt-6 mb-0")} role="alert">
           {error}
         </p>
       ) : null}

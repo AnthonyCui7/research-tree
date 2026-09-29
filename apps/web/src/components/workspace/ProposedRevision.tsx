@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { compactActionClass, compactPrimaryActionClass } from "../../lib/controlClasses";
+import { cx } from "../../lib/cx";
+import { badgeClass, compactActionClass, compactPrimaryActionClass } from "../../lib/controlClasses";
 import { pluralize } from "../../lib/format";
 import {
   fallbackChipsFromDiffSummary,
@@ -53,10 +54,10 @@ export function ProposedRevision({
   const hiddenChipCount = chips.length - visibleChips.length;
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border bg-surface">
-      <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5">
+    <div className="overflow-hidden rounded-xl border border-border bg-surface">
+      <div className="flex items-center gap-2 px-4 pt-4 pb-3">
         <span
-          className="grid h-6 w-6 flex-none place-items-center rounded-md bg-accent-subtle text-accent-deep"
+          className="grid h-6 w-6 flex-none place-items-center rounded-sm bg-accent-subtle text-accent-deep"
           aria-hidden="true"
         >
           <TreeIcon className="size-4" />
@@ -65,11 +66,11 @@ export function ProposedRevision({
         {count !== null ? (
           <span className="text-12 text-text-muted">{pluralize(count, "change")}</span>
         ) : null}
-        <span className="ml-auto flex-none rounded-full bg-accent-subtle px-2 py-px text-11 font-semibold text-accent-deep">
-          Needs approval
-        </span>
+        <span className={cx(badgeClass, "ml-auto bg-accent-subtle text-accent-deep")}>Needs approval</span>
       </div>
-      <div className="grid gap-2 px-4 pb-3.5">
+      {/* One column no wider than the card, so a long row truncates instead of
+          widening the column past the card's edge. */}
+      <div className="grid grid-cols-1 gap-2 px-4 pb-4">
         {restoredUserMessage ? (
           <p className="m-0 text-12 text-text-muted">
             In response to: “{restoredUserMessage}”
@@ -97,7 +98,7 @@ export function ProposedRevision({
           </p>
         ) : null}
         {paperDelta || notes.length > 0 ? (
-          <div className="mt-1 grid gap-1.5 border-t border-hairline pt-2.5">
+          <div className="mt-1 grid gap-2 border-t border-hairline pt-3">
             {paperDelta ? (
               <p className="m-0 text-12 text-text-muted">
                 Visible papers: {paperDelta.before} → {paperDelta.after}
@@ -111,7 +112,7 @@ export function ProposedRevision({
           </div>
         ) : null}
       </div>
-      <div className="flex items-center gap-2 border-t border-hairline px-4 py-2.5">
+      <div className="box-content flex h-12 items-center gap-2 border-t border-hairline px-4">
         <button
           className={compactPrimaryActionClass}
           type="button"

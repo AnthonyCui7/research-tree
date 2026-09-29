@@ -73,7 +73,12 @@ export function RightPanel({
   );
 }
 
-/** The header every panel mode shares: what it shows, its actions, and a close. */
+/**
+ * The header every panel mode shares: what it shows, its actions, and a close.
+ * Its right padding puts the close glyph, 10px inside its button, on the same
+ * 24px edge as the title and the panel's content. The hairline is drawn outside
+ * the 48px, as in every bar here, so what is centred in it sits on whole pixels.
+ */
 export function PanelHeader({
   title,
   actions,
@@ -86,7 +91,7 @@ export function PanelHeader({
   closeLabel: string;
 }) {
   return (
-    <header className="flex h-12 flex-none items-center gap-1 border-b border-hairline pr-2 pl-6">
+    <header className="box-content flex h-12 flex-none items-center gap-1 border-b border-hairline pr-3.5 pl-6">
       <h2 className="m-0 min-w-0 flex-1 truncate text-14 font-semibold text-text-primary">
         {title}
       </h2>

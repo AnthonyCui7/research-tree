@@ -1,5 +1,5 @@
 import { cx } from "../../lib/cx";
-import { secondaryActionClass } from "../../lib/controlClasses";
+import { keycapClass, secondaryActionClass } from "../../lib/controlClasses";
 import { AccountDialog, AccountSection } from "./AccountDialog";
 
 type SettingsDialogProps = {
@@ -38,7 +38,7 @@ export function SettingsDialog({
           live ? undefined : "The update stream dropped, so the list is not refreshing itself."
         }
       >
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-3">
           <button className={secondaryActionClass} type="button" onClick={onRefresh}>
             Reload workspaces
           </button>
@@ -91,7 +91,7 @@ function Toggle({
         <span
           className={cx(
             "absolute top-0.5 h-4 w-4 rounded-full bg-surface shadow-[0_1px_2px_rgb(31_35_40/20%)] transition-[left] duration-150 ease-research",
-            checked ? "left-[18px]" : "left-0.5",
+            checked ? "left-4.5" : "left-0.5",
           )}
         />
       </span>
@@ -103,9 +103,7 @@ function Shortcut({ keys, label }: { keys: string; label: string }) {
   return (
     <div className="flex items-center gap-3 text-13 text-text-secondary">
       <dt className="order-last m-0 flex-none">
-        <kbd className="rounded-[5px] border border-border bg-surface-subtle px-1.5 py-px font-sans text-12 text-text-secondary">
-          {keys}
-        </kbd>
+        <kbd className={keycapClass}>{keys}</kbd>
       </dt>
       <dd className="m-0 min-w-0 flex-1">{label}</dd>
     </div>

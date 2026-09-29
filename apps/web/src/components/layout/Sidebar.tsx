@@ -31,6 +31,10 @@ type SidebarProps = {
  * it keeps a rail of the same controls in the same places, so the account and
  * a new workspace stay one click away. On a narrow screen the open sidebar
  * covers the canvas instead of pushing it aside.
+ *
+ * Every glyph is centred 28px in, the middle of the 56px rail, and every label
+ * beside one starts at 48px; the list's text starts at 20px, under the
+ * toggle's glyph.
  */
 export function Sidebar({
   collapsed,
@@ -78,9 +82,9 @@ export function Sidebar({
         )}
         aria-label="Workspace navigation"
       >
-        <div className="flex h-[52px] flex-none items-center gap-1.5 px-2.5">
+        <div className="flex h-13 flex-none items-center gap-1 px-3">
           <button
-            className="grid h-9 w-9 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-[background-color,color] duration-150 hover:bg-sidebar-hover hover:text-text-primary"
+            className="grid h-8 w-8 flex-none place-items-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-[background-color,color] duration-150 hover:bg-sidebar-hover hover:text-text-primary"
             type="button"
             onClick={onToggle}
             aria-label={collapsed ? "Show sidebar" : "Hide sidebar"}
@@ -99,10 +103,10 @@ export function Sidebar({
           </span>
         </div>
 
-        <div className="flex-none px-2.5 pb-3">
+        <div className="flex-none px-2 pb-4">
           <button
             className={cx(
-              "flex h-9 w-full items-center rounded-md border-0 text-left text-13 font-medium whitespace-nowrap transition-[background-color,color] duration-150",
+              "flex h-8 w-full items-center rounded-md border-0 text-left text-13 font-medium whitespace-nowrap transition-[background-color,color] duration-150",
               homeActive
                 ? "bg-accent-subtle text-accent-deep"
                 : "bg-transparent text-text-primary hover:bg-sidebar-hover",
@@ -113,8 +117,8 @@ export function Sidebar({
             aria-label="New workspace"
             title={collapsed ? "New workspace" : undefined}
           >
-            <span className="grid h-9 w-9 flex-none place-items-center" aria-hidden="true">
-              <span className="grid h-[22px] w-[22px] place-items-center rounded-full bg-accent text-white shadow-[0_1px_2px_rgb(23_102_71/30%)]">
+            <span className="grid h-8 w-10 flex-none place-items-center" aria-hidden="true">
+              <span className="grid h-5 w-5 place-items-center rounded-full bg-accent text-white shadow-[0_1px_2px_rgb(23_102_71/30%)]">
                 <PlusIcon className="size-3" />
               </span>
             </span>
@@ -126,7 +130,7 @@ export function Sidebar({
 
         <div className={cx("flex min-h-0 flex-1 flex-col", labelClass)}>
           {workspaces.length > 0 || buildingRun || !live ? (
-            <div className="flex flex-none items-center gap-2 px-5 pb-1.5 whitespace-nowrap">
+            <div className="flex flex-none items-center gap-2 px-5 pb-1 whitespace-nowrap">
               <span className={kickerClass}>Workspaces</span>
               {live ? null : (
                 <span
@@ -151,9 +155,9 @@ export function Sidebar({
           />
         </div>
 
-        <div className="flex-none border-t border-hairline px-2.5 py-2">
+        <div className="flex-none border-t border-hairline p-2">
           <button
-            className="flex h-11 w-full items-center gap-1 rounded-md border-0 bg-transparent pr-2 text-left whitespace-nowrap transition-[background-color] duration-150 hover:bg-sidebar-hover aria-expanded:bg-sidebar-hover"
+            className="flex h-12 w-full items-center rounded-md border-0 bg-transparent pr-3 text-left whitespace-nowrap transition-[background-color] duration-150 hover:bg-sidebar-hover aria-expanded:bg-sidebar-hover"
             type="button"
             onClick={(event) => onOpenAccount(event.currentTarget)}
             aria-haspopup="menu"
@@ -162,7 +166,7 @@ export function Sidebar({
             aria-label={collapsed ? "Account" : undefined}
             title={collapsed ? displayName(user) : undefined}
           >
-            <span className="grid h-9 w-9 flex-none place-items-center">
+            <span className="grid h-8 w-10 flex-none place-items-center">
               <Avatar user={user} size={28} />
             </span>
             <span className={cx("min-w-0 flex-1", labelClass)}>

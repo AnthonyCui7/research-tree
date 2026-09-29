@@ -11,7 +11,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cx } from "../../lib/cx";
 import { pluralize } from "../../lib/format";
-import { compactActionClass, errorNoticeClass, warningNoticeClass } from "../../lib/controlClasses";
+import {
+  compactActionClass,
+  errorNoticeClass,
+  inlineIconButtonClass,
+  warningNoticeClass,
+} from "../../lib/controlClasses";
 import { agentRunFailed, type AgentSession } from "../../data/useAgentSession";
 import { PanelHeader } from "../panel/RightPanel";
 import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
@@ -54,8 +59,8 @@ const MODELS = [
   { id: "gpt-5.6-sol", detail: "Smartest" },
 ] as const;
 
-/** Tallest the composer grows before it scrolls. */
-const COMPOSER_MAX_HEIGHT = 200;
+/** Tallest the composer grows before it scrolls: eight 24px lines under its 14px top padding. */
+const COMPOSER_MAX_HEIGHT = 206;
 
 export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: WorkspaceAgentProps) {
   const [modelAnchor, setModelAnchor] = useState<MenuAnchor | null>(null);
@@ -120,16 +125,20 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
           {conversation.map((item, index) =>
             item.role === "user" ? (
               <div className="flex justify-end pl-10" key={`user-${index}`}>
-                <p className="m-0 rounded-[20px] bg-surface-subtle px-4 py-2.5 text-14 whitespace-pre-wrap text-text-primary [overflow-wrap:anywhere]">
+                <p className="m-0 rounded-3xl bg-surface-subtle px-4 py-2 text-14 leading-6 whitespace-pre-wrap text-text-primary [overflow-wrap:anywhere]">
                   {item.text}
                 </p>
               </div>
             ) : (
-              <div className="text-14 leading-[1.7] text-text-primary" key={`agent-${index}`}>
+              <div className="text-14 leading-6 text-text-primary" key={`agent-${index}`}>
                 {item.steps?.length ? <StepsTaken steps={item.steps} /> : null}
-                <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-                  {displayMarkdown(item.text)}
-                </ReactMarkdown>
+                {/* A box of its own, so a reply that opens with a heading sets it
+                    flush under the steps rather than a heading's margin below. */}
+                <div>
+                  <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+                    {displayMarkdown(item.text)}
+                  </ReactMarkdown>
+                </div>
               </div>
             ),
           )}
@@ -149,7 +158,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
           {outcome ? <ReviewOutcomeLine outcome={outcome} /> : null}
           {result ? <AgentRunNotices result={result} /> : null}
           {error ? (
-            <div className={cx(errorNoticeClass, "flex items-start gap-2")} role="alert">
+            <div className={cx(errorNoticeClass, "flex items-start gap-3")} role="alert">
               <span className="min-w-0 flex-1">
                 {error.message}
                 {error.needsKey ? (
@@ -161,7 +170,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
                 ) : null}
               </span>
               <button
-                className="-mr-1 grid h-5 w-5 flex-none place-items-center rounded-[5px] border-0 bg-transparent p-0 hover:bg-error-border/40"
+                className={cx(inlineIconButtonClass, "-mr-1.5 hover:bg-error-border/40")}
                 type="button"
                 onClick={session.dismissError}
                 aria-label="Dismiss assistant error"
@@ -175,16 +184,16 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
 
       {/* The fade over the conversation's last lines says there is more
           below while it is scrolled up. */}
-      <div className="relative flex-none px-6 pt-1 pb-5 before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-linear-to-b before:from-transparent before:to-surface">
+      <div className="relative flex-none px-6 pt-1 pb-6 before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-linear-to-b before:from-transparent before:to-surface">
         <form
-          className="mx-auto w-full max-w-[760px] rounded-[20px] border border-border bg-surface shadow-composer transition-[border-color] duration-150 focus-within:border-border-strong"
+          className="mx-auto w-full max-w-[760px] rounded-3xl border border-border bg-surface shadow-composer transition-[border-color] duration-150 focus-within:border-border-strong"
           onSubmit={(event) => {
             event.preventDefault();
             submit();
           }}
         >
           <textarea
-            className="block min-h-[24px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-14 text-text-primary outline-0 placeholder:text-text-muted"
+            className="block w-full resize-none border-0 bg-transparent px-5 pt-3.5 text-14 leading-6 text-text-primary outline-0 placeholder:text-text-muted"
             ref={composerRef}
             value={message}
             onChange={(event) => setMessage(event.target.value)}
@@ -193,9 +202,12 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
             rows={1}
             aria-label="Message the assistant"
           />
-          <div className="flex items-center gap-2 px-2.5 pt-1 pb-2.5">
+          {/* The buttons sit 8px inside the box, which is why it is rounded 24px:
+              their own 16px radius plus that gap. The picker's label lines up with
+              the text above it. */}
+          <div className="flex items-center gap-2 p-2">
             <button
-              className="flex h-8 items-center gap-1 rounded-full border-0 bg-transparent px-2.5 text-13 font-medium text-text-secondary transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary"
+              className="flex h-8 items-center gap-1 rounded-full border-0 bg-transparent px-3 text-13 font-medium text-text-secondary transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary"
               type="button"
               aria-haspopup="menu"
               aria-expanded={modelAnchor !== null}
@@ -257,9 +269,9 @@ function AgentIntro({
 }) {
   const openers = introPrompts(tree);
   return (
-    <section className="my-auto py-6">
+    <section className="my-auto">
       <span
-        className="mx-auto mb-5 grid h-10 w-10 place-items-center rounded-[13px] bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
+        className="mx-auto mb-5 grid h-10 w-10 place-items-center rounded-lg bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
         aria-hidden="true"
       >
         <ChatIcon className="size-5" />
@@ -268,20 +280,20 @@ function AgentIntro({
         {tree ? `Ask about ${tree.title}` : "Ask about this workspace"}
       </h3>
       {tree ? (
-        <p className="mt-1.5 mb-0 text-center text-13 text-text-muted">
+        <p className="mt-1 mb-0 text-center text-13 text-text-muted">
           {pluralize(tree.branchCount, "branch", "branches")} · {pluralize(tree.paperCount, "paper")}
         </p>
       ) : null}
-      <div className="mx-auto mt-7 grid max-w-[520px] gap-2">
+      <div className="mx-auto mt-6 grid max-w-[520px] gap-2">
         {openers.map((opener) => (
           <button
-            className="group flex items-center gap-3.5 rounded-xl border border-border bg-surface px-3.5 py-3 text-left transition-[background-color,border-color] duration-150 hover:border-border-strong hover:bg-surface-subtle"
+            className="group flex items-center gap-3 rounded-xl border border-border bg-surface px-4 py-3 text-left transition-[background-color,border-color] duration-150 hover:border-border-strong hover:bg-surface-subtle"
             key={opener.title}
             type="button"
             onClick={() => onUse(opener.prompt)}
           >
             <span
-              className="grid h-8 w-8 flex-none place-items-center rounded-lg bg-surface-subtle text-text-secondary transition-[background-color,color] duration-150 group-hover:bg-accent-subtle group-hover:text-accent-deep"
+              className="grid h-8 w-8 flex-none place-items-center rounded-md bg-surface-subtle text-text-secondary transition-[background-color,color] duration-150 group-hover:bg-accent-subtle group-hover:text-accent-deep"
               aria-hidden="true"
             >
               {opener.icon}
@@ -385,7 +397,7 @@ function StepsTaken({ steps }: { steps: AgentStep[] }) {
         <span className="min-w-0 truncate">{summarizeSteps(steps)}</span>
         <ChevronDownIcon className="size-4 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
       </summary>
-      <ol className="m-0 mt-2.5 grid list-none gap-2 p-0">
+      <ol className="m-0 mt-2 grid list-none gap-2 p-0">
         {steps.map((step, index) => (
           <li
             className="flex items-start gap-2.5 text-13 text-text-muted"
@@ -578,7 +590,7 @@ type MarkdownComponentProps<T extends keyof JSX.IntrinsicElements> = ComponentPr
 
 const markdownComponents = {
   p({ node: _node, className, ...props }: MarkdownComponentProps<"p">) {
-    return <p className={cx("mb-3.5 whitespace-pre-wrap last:mb-0", className)} {...props} />;
+    return <p className={cx("mb-4 whitespace-pre-wrap last:mb-0", className)} {...props} />;
   },
   h1({ node: _node, className, ...props }: MarkdownComponentProps<"h1">) {
     return <h1 className={cx(markdownHeadingClass, "text-17", className)} {...props} />;
@@ -593,13 +605,13 @@ const markdownComponents = {
     return <h4 className={cx(markdownHeadingClass, "text-14", className)} {...props} />;
   },
   ul({ node: _node, className, ...props }: MarkdownComponentProps<"ul">) {
-    return <ul className={cx("mb-3.5 list-disc pl-5 last:mb-0", className)} {...props} />;
+    return <ul className={cx("mb-4 list-disc pl-5 last:mb-0", className)} {...props} />;
   },
   ol({ node: _node, className, ...props }: MarkdownComponentProps<"ol">) {
-    return <ol className={cx("mb-3.5 list-decimal pl-5 last:mb-0", className)} {...props} />;
+    return <ol className={cx("mb-4 list-decimal pl-5 last:mb-0", className)} {...props} />;
   },
   li({ node: _node, className, ...props }: MarkdownComponentProps<"li">) {
-    return <li className={cx("mb-1.5 pl-1 last:mb-0 marker:text-text-muted", className)} {...props} />;
+    return <li className={cx("mb-2 pl-1 last:mb-0 marker:text-text-muted", className)} {...props} />;
   },
   a({ node: _node, className, ...props }: MarkdownComponentProps<"a">) {
     return (
@@ -614,19 +626,19 @@ const markdownComponents = {
   blockquote({ node: _node, className, ...props }: MarkdownComponentProps<"blockquote">) {
     return (
       <blockquote
-        className={cx("mb-3.5 border-l-2 border-border pl-3 text-text-secondary last:mb-0", className)}
+        className={cx("mb-4 border-l-2 border-border pl-3 text-text-secondary last:mb-0", className)}
         {...props}
       />
     );
   },
   hr({ node: _node, className, ...props }: MarkdownComponentProps<"hr">) {
-    return <hr className={cx("my-5 border-0 border-t border-hairline", className)} {...props} />;
+    return <hr className={cx("my-6 border-0 border-t border-hairline", className)} {...props} />;
   },
   pre({ node: _node, className, ...props }: MarkdownComponentProps<"pre">) {
     return (
       <pre
         className={cx(
-          "mb-3.5 overflow-x-auto rounded-lg border border-hairline bg-surface-subtle p-3.5 text-13 last:mb-0 [&_code]:bg-transparent [&_code]:p-0",
+          "mb-4 overflow-x-auto rounded-md border border-hairline bg-surface-subtle p-4 text-13 last:mb-0 [&_code]:bg-transparent [&_code]:p-0",
           className,
         )}
         {...props}
@@ -635,14 +647,14 @@ const markdownComponents = {
   },
   code({ node: _node, className, ...props }: MarkdownComponentProps<"code">) {
     return (
-      <code className={cx("rounded-[5px] bg-surface-subtle px-1.5 py-0.5 font-mono text-[0.9em]", className)} {...props} />
+      <code className={cx("rounded-xs bg-surface-subtle px-1.5 py-0.5 font-mono text-[0.9em]", className)} {...props} />
     );
   },
   // Replies compare papers and branches in tables often, so a table gets
   // rules and cell padding to be read as one.
   table({ node: _node, className, ...props }: MarkdownComponentProps<"table">) {
     return (
-      <div className="mb-3.5 overflow-x-auto last:mb-0">
+      <div className="mb-4 overflow-x-auto last:mb-0">
         <table className={cx("w-full border-collapse text-13", className)} {...props} />
       </div>
     );
@@ -672,7 +684,7 @@ const markdownComponents = {
   },
 };
 
-const markdownHeadingClass = "mt-6 mb-2 font-semibold leading-[1.35] text-text-primary first:mt-0";
+const markdownHeadingClass = "mt-6 mb-2 font-semibold text-text-primary first:mt-0";
 
 function displayMarkdown(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");

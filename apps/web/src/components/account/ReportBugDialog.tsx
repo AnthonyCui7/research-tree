@@ -3,8 +3,10 @@ import { messageFrom } from "../../lib/apiError";
 import { cx } from "../../lib/cx";
 import {
   errorNoticeClass,
+  pillClass,
   primaryActionClass,
   secondaryActionClass,
+  textAreaClass,
   textInputClass,
 } from "../../lib/controlClasses";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
@@ -60,13 +62,13 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
       >
         <div className="grid justify-items-center px-4 py-12 text-center">
           <span
-            className="grid h-9 w-9 place-items-center rounded-full bg-accent-subtle text-accent-deep"
+            className="grid h-10 w-10 place-items-center rounded-full bg-accent-subtle text-accent-deep"
             aria-hidden="true"
           >
             <CheckIcon className="size-4" />
           </span>
-          <p className="mt-3 mb-0 text-14 font-medium text-text-primary">Report sent.</p>
-          <p className="mt-1.5 mb-0 max-w-[42ch] text-13 text-text-muted">
+          <p className="mt-4 mb-0 text-14 font-medium text-text-primary">Report sent.</p>
+          <p className="mt-1 mb-0 max-w-[42ch] text-13 text-text-muted">
             {sent}
           </p>
         </div>
@@ -97,11 +99,11 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
         }}
       >
         <AccountSection title="Where">
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-2">
             {AREAS.map((option) => (
               <button
                 className={cx(
-                  "rounded-full border px-3 py-1 text-13 transition-[background-color,border-color,color] duration-150",
+                  pillClass,
                   area === option.id
                     ? "border-accent-border bg-accent-subtle text-accent-deep"
                     : "border-border bg-surface text-text-secondary hover:border-border-strong hover:text-text-primary",
@@ -127,7 +129,7 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
             aria-label="Summary"
           />
           <textarea
-            className={cx(textInputClass, "mt-2 min-h-[110px] resize-y")}
+            className={cx(textAreaClass, "mt-2 resize-y")}
             value={details}
             onChange={(event) => setDetails(event.target.value)}
             placeholder="What you were doing, what you expected, and what happened instead."
