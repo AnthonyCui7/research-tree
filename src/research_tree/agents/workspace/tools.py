@@ -353,7 +353,7 @@ def _list_workspace_history(context: ToolContext, _arguments: dict[str, Any]) ->
     return {
         "versions": [
             {
-                "workspace_version_hash": version.get("workspace_version_hash"),
+                "workspace_version_hash": version.get("version_hash"),
                 "reason": version.get("reason"),
                 "actor_type": version.get("actor_type"),
                 "created_at": version.get("created_at"),
@@ -672,7 +672,7 @@ def _paper_full_text_window(context: ToolContext, paper_id: str, offset: Any) ->
         start = 0
     end = min(len(text), start + FULL_TEXT_WINDOW_CHARACTERS)
     # The window is measured the way the result cap measures it, escaped:
-    # accented and mathematical text grows up to sixfold in JSON, and a
+    # accented and mathematical text grows several times over in JSON, and a
     # window over the cap would come back as a stub the model cannot read on from.
     while end > start and len(json.dumps(text[start:end], ensure_ascii=True)) > FULL_TEXT_WINDOW_CHARACTERS:
         end = start + (end - start) * 9 // 10
