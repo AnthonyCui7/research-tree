@@ -150,8 +150,6 @@ def _details_from_cards(cards: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return details
 
 
-
-
 def _pdf_sources(details: Mapping[str, Any], arxiv_id: Any) -> list[str]:
     """Where a paper's PDF may be fetched from, best first.
 

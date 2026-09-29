@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping as MappingABC
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
@@ -19,7 +18,7 @@ class SweptInMemoryCache(InMemoryCache):
     those entries, each a copy of a workspace, would only accumulate.
     """
 
-    def set(self, keys: MappingABC[FullKey, tuple[Any, int | None]]) -> None:
+    def set(self, keys: Mapping[FullKey, tuple[Any, int | None]]) -> None:
         now = datetime.now(UTC).timestamp()
         with self._lock:
             for namespace in self._cache.values():

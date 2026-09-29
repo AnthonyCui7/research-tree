@@ -395,8 +395,8 @@ class WorkspaceAgentNodes:
     def build_workspace_context(self, state: WorkspaceAgentState) -> dict[str, Any]:
         """Assemble the heavy context the editing and critique nodes need.
 
-        This runs only on the paths that use it. It downloads nothing, but it
-        does rank similar papers, which is wasted work for a question the
+        This runs only on the paths that use it. Ranking similar papers reads
+        the build's paper database, which is wasted work for a question the
         model can answer by calling a read tool.
 
         The node is cached (see `graph.py`), so it returns only the context
@@ -1245,8 +1245,6 @@ def _workspace_id(state: WorkspaceAgentState) -> str:
     raise ValueError("workspace_id is required for persistence.")
 
 
-
-
 def _similar_papers_context_for_scope(
     *,
     workspace: Mapping[str, Any],
@@ -1630,31 +1628,28 @@ def _paper_database_for_workspace(
     store, named by its digest in the run record, is read instead.
     """
 
-    references: list[tuple[Any, Any]] = []
     provenance = workspace.get("provenance")
-    if isinstance(provenance, Mapping):
-        pipeline_run = provenance.get("pipeline_run")
-        if isinstance(pipeline_run, Mapping):
-            references.append((pipeline_run.get("paper_database_json"), None))
-    workspace_id = str(workspace.get("workspace_id") or "")
-    if workspace_id and repository is not None:
-        for run in repository.list_pipeline_runs(workspace_id):
-            artifacts = run.get("artifacts")
-            if run.get("status") in {"completed", "completed_with_warnings"} and isinstance(
-                artifacts, Mapping
-            ):
-                references.append(
-                    (artifacts.get("paper_database_json"), artifacts.get("paper_database_json_sha256"))
-                )
-
-    for path_value, digest in references:
-        path = _existing_artifact_path(path_value, repo_root)
+    pipeline_run = provenance.get("pipeline_run") if isinstance(provenance, Mapping) else None
+    if isinstance(pipeline_run, Mapping):
+        path = _existing_artifact_path(pipeline_run.get("paper_database_json"), repo_root)
         if path is not None:
             return paper_database_from_artifact(load_json_artifact(path))
-        if digest:
-            stored = default_artifact_store().get(f"pipeline/{digest}")
-            if stored is not None:
-                return paper_database_from_artifact(json.loads(stored))
+    workspace_id = str(workspace.get("workspace_id") or "")
+    if not workspace_id or repository is None:
+        return None
+    for run in repository.list_pipeline_runs(workspace_id):
+        artifacts = run.get("artifacts")
+        if run.get("status") not in {"completed", "completed_with_warnings"} or not isinstance(
+            artifacts, Mapping
+        ):
+            continue
+        path = _existing_artifact_path(artifacts.get("paper_database_json"), repo_root)
+        if path is not None:
+            return paper_database_from_artifact(load_json_artifact(path))
+        digest = artifacts.get("paper_database_json_sha256")
+        stored = default_artifact_store().get(f"pipeline/{digest}") if digest else None
+        if stored is not None:
+            return paper_database_from_artifact(json.loads(stored))
     return None
 
 
@@ -1675,8 +1670,6 @@ def _existing_artifact_path(value: Any, repo_root: Path) -> Path | None:
     if not path.is_relative_to(data_root().resolve()):
         return None
     return path if path.is_file() else None
-
-
 
 
 def _required_mapping(value: Any, name: str) -> dict[str, Any]:

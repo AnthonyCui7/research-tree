@@ -134,8 +134,10 @@ def run_pipeline(self, owner_id: str, run_id: str) -> None:
         if not redis.set(BUILD_SLOT_KEY, slot, nx=True, ex=BUILD_SLOT_LEASE_SECONDS):
             holder = (redis.get(BUILD_SLOT_KEY) or b"").decode("utf-8")
             if holder == slot:
-                # The broker delivered this build again while it runs; the
-                # copy that holds the slot is the one doing the work.
+                # The broker delivered this build again, either while it runs
+                # or after the worker running it died, whose lease lasts until
+                # it expires. Either way this copy does not run it: the run is
+                # no longer queued, and a dead one is failed by the reclaim.
                 logger.info("build %s was delivered again while it runs", run_id)
                 return
             logger.info("build %s waits for the slot held by %s", run_id, holder)

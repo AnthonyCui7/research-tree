@@ -18,6 +18,7 @@ from research_tree.auth.settings import PUBLIC_ORIGIN_ENV
 ASGIApp = Callable[[dict[str, Any], Callable[[], Awaitable[dict[str, Any]]], Callable[[dict[str, Any]], Awaitable[None]]], Awaitable[None]]
 
 MAX_BODY_BYTES = 1_000_000
+TOO_LARGE_MESSAGE = "That request is too large."
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 # `default-src 'self'` covers scripts, styles and connections (including the
@@ -166,11 +167,7 @@ class BodyLimitMiddleware:
             return
         declared = _header(scope, b"content-length")
         if declared and declared.isdigit() and int(declared) > self.max_bytes:
-            await _json_response(
-                send,
-                413,
-                {"detail": "That request is too large.", "error_code": "payload_too_large"},
-            )
+            await _json_response(send, 413, {"detail": TOO_LARGE_MESSAGE})
             return
 
         received = 0
@@ -181,24 +178,13 @@ class BodyLimitMiddleware:
             if message["type"] == "http.request":
                 received += len(message.get("body") or b"")
                 if received > self.max_bytes:
-                    raise _BodyTooLarge()
+                    # Raised inside the app, whose handlers answer it. FastAPI
+                    # lets an HTTPException out of its body parsing and turns
+                    # anything else raised there into a 400.
+                    raise StarletteHTTPException(413, TOO_LARGE_MESSAGE)
             return message
 
-        try:
-            await self.app(scope, limited_receive, send)
-        except _BodyTooLarge:
-            await _json_response(
-                send,
-                413,
-                {"detail": "That request is too large.", "error_code": "payload_too_large"},
-            )
-
-
-class _BodyTooLarge(StarletteHTTPException):
-    # An HTTPException because FastAPI answers anything else raised while it
-    # reads a body as a 400 about parsing; this one it lets through.
-    def __init__(self) -> None:
-        super().__init__(413, "That request is too large.")
+        await self.app(scope, limited_receive, send)
 
 
 def _open_to_other_sites(path: str) -> bool:

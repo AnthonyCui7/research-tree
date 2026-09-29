@@ -77,7 +77,6 @@ def build_workspace_chat_context(
             if isinstance(similar_papers_context, Mapping)
             else visible_similar_papers_context
         ),
-        "off_path_papers": [],
         "source_candidate_artifact": _source_candidate_artifact_reference(candidate_artifact),
         "provenance_warnings": _provenance_warnings(workspace, candidate_artifact),
     }

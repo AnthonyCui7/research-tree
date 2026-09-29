@@ -715,10 +715,14 @@ def test_allowances_attach_to_verified_accounts_and_spend_down(
     principal = Principal(user_id=user_id, email="friend@example.com", is_verified=True)
     with bind_principal(principal, feature="test", request_id="r1"):
         assert credentials.openai_api_key() == PLATFORM_KEY
-        # 100k input at $5/M plus 20k output at $30/M on Sol: $1.10, past the $1 limit.
+        # 100k input at $5/M plus 20k output at $30/M on Sol, and two web
+        # searches at a cent each: $1.12, past the $1 limit.
         record_llm_usage(
             model="gpt-5.6-sol",
-            raw_response={"usage": {"input_tokens": 100_000, "output_tokens": 20_000}},
+            raw_response={
+                "usage": {"input_tokens": 100_000, "output_tokens": 20_000},
+                "output": [{"type": "web_search_call", "action": {"type": "search"}}] * 2,
+            },
             label="test call",
         )
         # The charge that emptied the allowance stops the very next call of
@@ -732,14 +736,14 @@ def test_allowances_attach_to_verified_accounts_and_spend_down(
                 label="next call",
             )
     summary = allowance_summary(user_id, "friend@example.com", verified=True)
-    assert summary["spent_usd"] == pytest.approx(1.10)
+    assert summary["spent_usd"] == pytest.approx(1.12)
     assert summary["exhausted"] is True
     with bind_principal(principal), pytest.raises(AllowanceExhaustedError):
         credentials.openai_api_key()
 
     usage = accounts_client.get("/account/usage").json()
     assert usage["calls"] == 1
-    assert usage["sponsored_usd"] == pytest.approx(1.10)
+    assert usage["sponsored_usd"] == pytest.approx(1.12)
     assert usage["recent"][0]["label"] == "test call"
     assert usage["recent"][0]["feature"] == "test"
     assert accounts_client.get("/account/api-keys").json()["allowance"]["exhausted"] is True

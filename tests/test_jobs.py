@@ -77,7 +77,17 @@ def test_annotation_miss_becomes_a_job_the_worker_completes(client: TestClient, 
     status_url = f"/workspaces/sampling/paper-annotations/jobs/{job['job_id']}"
     assert client.get(status_url).json()["status"] == "queued"
 
+    # A reader polling while the model works sees the job running, not still
+    # queued until its first heartbeat.
+    status_while_running: list[str] = []
+
+    def annotate(*args, **kwargs):
+        status_while_running.append(client.get(status_url).json()["status"])
+        return annotator(*args, **kwargs)
+
+    service.generate_annotations = annotate
     service.run_annotation_job(load_annotation_job(job["job_id"], redis=service._redis))
+    assert status_while_running == ["running"]
     # Redelivery is harmless: a finished job is left alone.
     service.run_annotation_job(load_annotation_job(job["job_id"], redis=service._redis))
     assert annotator.calls == 1
@@ -391,19 +401,21 @@ def test_builds_take_turns_on_the_worker(redis_env, monkeypatch: pytest.MonkeyPa
     assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"local_user:pipeline_other"
 
 
-def test_a_build_slot_lease_renews_and_releases_only_its_own_slot(redis_env) -> None:
+def test_a_build_slot_lease_renews_and_releases_only_its_own_slot(redis_env, monkeypatch) -> None:
     from research_tree import tasks
 
+    monkeypatch.setattr(tasks, "BUILD_SLOT_RENEW_SECONDS", 0.05)
     redis_env.set(tasks.BUILD_SLOT_KEY, "local_user:pipeline_one", ex=5)
     lease = tasks._BuildSlotLease(redis_env, "local_user:pipeline_one")
-    redis_env.eval(
-        tasks._RENEW_SLOT_LUA, 1, tasks.BUILD_SLOT_KEY, "local_user:pipeline_one",
-        tasks.BUILD_SLOT_LEASE_SECONDS,
-    )
+    deadline = time.monotonic() + 5
+    while redis_env.ttl(tasks.BUILD_SLOT_KEY) <= 5 and time.monotonic() < deadline:
+        time.sleep(0.02)
     assert redis_env.ttl(tasks.BUILD_SLOT_KEY) > 5
-    # The lease lapsed and the next build took the slot: releasing the old
-    # lease must not free the new holder's slot.
+    # The lease lapsed and the next build took the slot: neither the renewals
+    # still running nor the release may touch the new holder's slot.
     redis_env.set(tasks.BUILD_SLOT_KEY, "local_user:pipeline_two", ex=60)
+    time.sleep(0.2)
+    assert redis_env.ttl(tasks.BUILD_SLOT_KEY) <= 60
     lease.release()
     assert redis_env.get(tasks.BUILD_SLOT_KEY) == b"local_user:pipeline_two"
 
@@ -478,4 +490,3 @@ def test_two_deliveries_of_one_annotation_job_start_it_once(redis_env) -> None:
     first, second = dict(job), dict(job)
     assert _claim_queued_job(redis_env, first)
     assert not _claim_queued_job(redis_env, second)
-

@@ -1118,7 +1118,6 @@ class WorkspaceAgentPureHelperTest(unittest.TestCase):
 
         self.assertEqual(context["visible_paper_count"], 2)
         self.assertEqual(context["similar_papers_context"], {})
-        self.assertEqual(context["off_path_papers"], [])
         self.assertNotIn("candidates", context["source_candidate_artifact"])
         self.assertNotIn("p3", context["workspace"]["paper_cards"])
         self.assertEqual(context["workspace"]["discarded_candidates"], [])

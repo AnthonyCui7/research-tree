@@ -79,6 +79,20 @@ class TestReadTools:
         assert "truncated" not in result
         assert result["next_offset"] == len(result["full_text"])
 
+    def test_history_lists_the_newest_versions_with_their_hashes(self) -> None:
+        class History:
+            def list_workspace_versions(self, workspace_id: str) -> list[dict[str, Any]]:
+                # Stored oldest first, as both repositories keep them.
+                return [{"version_hash": f"hash-{index}", "reason": f"edit {index}"} for index in range(30)]
+
+            def list_workspace_reviews(self, workspace_id: str) -> list[dict[str, Any]]:
+                return []
+
+        result = json.loads(run_tool("list_workspace_history", _context(repository=History()), {}))
+
+        hashes = [version["workspace_version_hash"] for version in result["versions"]]
+        assert hashes == [f"hash-{index}" for index in range(29, 9, -1)]
+
     def test_get_branch_returns_its_paths_and_papers(self) -> None:
         result = json.loads(run_tool("get_branch", _context(), {"branch_id": "branch-main"}))
 
