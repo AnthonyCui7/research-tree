@@ -173,7 +173,9 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
         </div>
       </div>
 
-      <div className="flex-none px-6 pt-1 pb-5">
+      {/* The fade over the conversation's last lines says there is more
+          below while it is scrolled up. */}
+      <div className="relative flex-none px-6 pt-1 pb-5 before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-linear-to-b before:from-transparent before:to-surface">
         <form
           className="mx-auto w-full max-w-[760px] rounded-[20px] border border-border bg-surface shadow-composer transition-[border-color] duration-150 focus-within:border-border-strong"
           onSubmit={(event) => {

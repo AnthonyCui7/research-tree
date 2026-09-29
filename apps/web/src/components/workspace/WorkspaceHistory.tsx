@@ -172,7 +172,11 @@ export function WorkspaceHistory({
 function humanReason(reason: string): string {
   const normalized = reason.trim();
   if (!normalized) return "Manual revision";
-  if (normalized.startsWith("pipeline run ")) return "Generated structure";
+  // A build publishes twice: the tree as soon as it can be read, then the
+  // finished workspace with its similar papers.
+  if (normalized.startsWith("pipeline run ")) {
+    return normalized.endsWith(" completed") ? "Finished build" : "Generated structure";
+  }
   if (normalized === "restored from workspace history") return "Restored structure";
   const label = normalized.charAt(0).toUpperCase() + normalized.slice(1);
   return label.length > 96 ? `${label.slice(0, 93).trimEnd()}…` : label;

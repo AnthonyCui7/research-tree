@@ -22,6 +22,7 @@ type SidebarProps = {
   onNewWorkspace: () => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onOpenOptions: (workspace: WorkspaceSummary, trigger: HTMLElement) => void;
+  optionsOpenFor: string | null;
   onOpenAccount: (trigger: HTMLElement) => void;
 };
 
@@ -45,6 +46,7 @@ export function Sidebar({
   onNewWorkspace,
   onSelectWorkspace,
   onOpenOptions,
+  optionsOpenFor,
   onOpenAccount,
 }: SidebarProps) {
   // Everything stays rendered and fades with the width, so collapsing reads
@@ -143,6 +145,7 @@ export function Sidebar({
             activeWorkspaceId={activeWorkspaceId}
             onSelectWorkspace={onSelectWorkspace}
             onOpenOptions={onOpenOptions}
+            optionsOpenFor={optionsOpenFor}
             buildingRun={buildingRun}
             onOpenBuild={onNewWorkspace}
           />

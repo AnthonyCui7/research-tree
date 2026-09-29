@@ -9,6 +9,8 @@ type WorkspaceListProps = {
   activeWorkspaceId: string | null;
   onSelectWorkspace: (workspaceId: string) => void;
   onOpenOptions: (workspace: WorkspaceSummary, trigger: HTMLElement) => void;
+  /** The workspace whose options menu is open, which keeps its row marked. */
+  optionsOpenFor: string | null;
   buildingRun: PipelineRun | null;
   /** Shows the build's progress on the new-workspace page. */
   onOpenBuild: () => void;
@@ -19,6 +21,7 @@ export function WorkspaceList({
   activeWorkspaceId,
   onSelectWorkspace,
   onOpenOptions,
+  optionsOpenFor,
   buildingRun,
   onOpenBuild,
 }: WorkspaceListProps) {
@@ -38,13 +41,14 @@ export function WorkspaceList({
       {placeholderRun ? <BuildPlaceholderRow run={placeholderRun} onOpen={onOpenBuild} /> : null}
       {workspaces.map((workspace) => {
         const selected = workspace.workspace_id === activeWorkspaceId;
+        const optionsOpen = workspace.workspace_id === optionsOpenFor;
         const building = activeRun?.workspace_id === workspace.workspace_id ? activeRun : null;
         return (
           <div
             key={workspace.workspace_id}
             className={cx(
               "group relative flex items-center gap-1 rounded-md transition-[background-color] duration-150",
-              selected ? "bg-accent-subtle" : "hover:bg-sidebar-hover",
+              selected ? "bg-accent-subtle" : optionsOpen ? "bg-sidebar-hover" : "hover:bg-sidebar-hover",
             )}
           >
             <button
@@ -78,6 +82,8 @@ export function WorkspaceList({
               )}
               type="button"
               onClick={(event) => onOpenOptions(workspace, event.currentTarget)}
+              aria-haspopup="menu"
+              aria-expanded={optionsOpen}
               aria-label={`Options for ${workspace.title}`}
               title="Workspace options"
             >
