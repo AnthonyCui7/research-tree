@@ -122,6 +122,7 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       aria-pressed={active}
+      aria-label={label}
       title={title}
     >
       {icon}

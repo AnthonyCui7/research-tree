@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../../lib/apiError";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { cx } from "../../lib/cx";
@@ -108,6 +108,7 @@ export function WorkspaceHistory({
             // workspaces can still carry, so neither offered a way back.
             const current = version.is_current ?? version.version_hash === currentVersionHash;
             const last = index === ordered.length - 1;
+            const editor = versionEditor(version);
             return (
               <li
                 className="relative flex gap-3.5 pb-6 last:pb-0"
@@ -128,7 +129,7 @@ export function WorkspaceHistory({
                   )}
                   aria-hidden="true"
                 >
-                  <ActorGlyph version={version} />
+                  {editor.icon}
                 </span>
                 <div className="min-w-0 flex-1 pt-[3px]">
                   <div className="flex items-start gap-2">
@@ -142,7 +143,7 @@ export function WorkspaceHistory({
                     ) : null}
                   </div>
                   <p className="mt-0.5 mb-0 text-[12px] leading-[1.5] text-text-muted">
-                    {editorLabel(version)} · {dateTimeLabel(version.created_at)}
+                    {editor.label} · {dateTimeLabel(version.created_at)}
                   </p>
                   {current ? null : (
                     <div className="mt-2 flex items-center gap-2.5">
@@ -183,16 +184,11 @@ function humanReason(reason: string): string {
 }
 
 /** Who made the version: the reader, the assistant with the reader's approval, or a build. */
-function editorLabel(version: WorkspaceVersion): string {
+function versionEditor(version: WorkspaceVersion): { label: string; icon: ReactNode } {
   const actor = version.actor_type || version.actor;
-  if (actor === "user") return "You";
-  if (actor === "agent") return "Assistant, approved by you";
-  return "Build";
-}
-
-function ActorGlyph({ version }: { version: WorkspaceVersion }) {
-  const actor = version.actor_type || version.actor;
-  if (actor === "user") return <PencilIcon className="h-3.5 w-3.5" />;
-  if (actor === "agent") return <ChatIcon className="h-3.5 w-3.5" />;
-  return <TreeIcon className="h-3.5 w-3.5" />;
+  if (actor === "user") return { label: "You", icon: <PencilIcon className="h-3.5 w-3.5" /> };
+  if (actor === "agent") {
+    return { label: "Assistant, approved by you", icon: <ChatIcon className="h-3.5 w-3.5" /> };
+  }
+  return { label: "Build", icon: <TreeIcon className="h-3.5 w-3.5" /> };
 }

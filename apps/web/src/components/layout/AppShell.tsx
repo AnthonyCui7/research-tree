@@ -2,9 +2,10 @@ import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "rea
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { ProfileMenu, type AccountScreen } from "./ProfileMenu";
+import { accountDetail } from "./Avatar";
 import { AccountScreens, useApiKeyLabel } from "../account/AccountScreens";
 import { TreeCanvas } from "../tree/TreeCanvas";
-import { CanvasErrorBoundary } from "../ui/CanvasErrorBoundary";
+import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { SearchOverlay } from "../search/SearchOverlay";
 import { NodeInspector, inspectorLabel } from "../inspector/NodeInspector";
 import { RightPanel, RIGHT_PANEL_DEFAULT_WIDTH } from "../panel/RightPanel";
@@ -141,9 +142,11 @@ export function AppShell({
   const selectedNode = tree && selectedNodeId ? (tree.nodesById[selectedNodeId] ?? null) : null;
   const activeRunning =
     build.run?.workspace_id === activeWorkspaceId && isRunActive(build.run);
-  const refreshError = status !== "error" && error && error !== dismissedError ? error : null;
+  // A list that failed to load replaces a workspace view with its notice; the
+  // new-workspace page stays usable and hears about it here.
+  const refreshError = (status !== "error" || home) && error && error !== dismissedError ? error : null;
   // A build that stopped short is reported on the new-workspace page. Away
-  // from it, one whose workspace is listed (a rebuild, or a build that failed
+  // from it, one whose workspace is listed (a rebuild, or a build cancelled
   // after its structure landed) is reported here instead; one that never
   // landed keeps a row in the sidebar that leads back to the page.
   const stoppedBuild =
@@ -264,7 +267,15 @@ export function AppShell({
   }
 
   let mainContent: ReactNode;
-  if (status === "error") {
+  if (home) {
+    mainContent = (
+      <NewWorkspacePage
+        build={build}
+        onOpenWorkspace={onOpenWorkspace}
+        onOpenApiKeys={() => setAccountScreen("api-keys")}
+      />
+    );
+  } else if (status === "error") {
     mainContent = (
       <WorkspaceNotice
         title="Workspaces unavailable"
@@ -272,14 +283,6 @@ export function AppShell({
         tone="error"
         actionLabel="Retry"
         onAction={onRefresh}
-      />
-    );
-  } else if (home) {
-    mainContent = (
-      <NewWorkspacePage
-        build={build}
-        onOpenWorkspace={onOpenWorkspace}
-        onOpenApiKeys={() => setAccountScreen("api-keys")}
       />
     );
   } else if (!route || !activeSummary) {
@@ -314,7 +317,7 @@ export function AppShell({
               />
             ) : null}
             {tree ? (
-              <CanvasErrorBoundary
+              <ErrorBoundary
                 fallback={
                   <WorkspaceNotice
                     title="Workspace failed to load"
@@ -335,7 +338,7 @@ export function AppShell({
                     setNodeActions({ nodeId, anchor: { x: point.x, y: point.y, align: "left" } });
                   }}
                 />
-              </CanvasErrorBoundary>
+              </ErrorBoundary>
             ) : null}
           </section>
 
@@ -392,14 +395,26 @@ export function AppShell({
                 />
               ) : null}
               {shownPanel === "agent" && activeWorkspace ? (
-                <Suspense fallback={<WorkspaceNotice title="Loading" tone="loading" />}>
-                  <WorkspaceAgent
-                    session={session}
-                    tree={tree}
-                    onClose={onClosePanel}
-                    onOpenApiKeys={() => setAccountScreen("api-keys")}
-                  />
-                </Suspense>
+                <ErrorBoundary
+                  fallback={
+                    <WorkspaceNotice
+                      title="The assistant could not load"
+                      detail="Reload the page to try again."
+                      tone="error"
+                      actionLabel="Reload"
+                      onAction={() => window.location.reload()}
+                    />
+                  }
+                >
+                  <Suspense fallback={<WorkspaceNotice title="Loading" tone="loading" />}>
+                    <WorkspaceAgent
+                      session={session}
+                      tree={tree}
+                      onClose={onClosePanel}
+                      onOpenApiKeys={() => setAccountScreen("api-keys")}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               ) : null}
               {shownPanel === "history" && activeWorkspace && tree?.currentVersionHash ? (
                 <WorkspaceHistory
@@ -427,7 +442,7 @@ export function AppShell({
         buildingRun={build.run}
         live={live}
         user={user}
-        accountDetail={sessionInfo && isLocalSession(sessionInfo) ? "Runs without accounts" : user.email}
+        accountDetail={accountDetail(user, Boolean(sessionInfo && isLocalSession(sessionInfo)))}
         accountMenuOpen={accountAnchor !== null}
         onToggle={onToggleSidebar}
         onNewWorkspace={onOpenHome}

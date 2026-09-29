@@ -8,6 +8,7 @@ import {
   stageSpans,
   useBuildProgress,
   type BuildStage,
+  type StageSpan,
 } from "../../lib/pipelineStages";
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import type { BuildRun } from "../../data/useBuildRun";
@@ -160,16 +161,13 @@ function TopicStep({
   onSubmit: () => void;
 }) {
   const topicRef = useRef<HTMLInputElement>(null);
-  const instructionsRef = useRef<HTMLTextAreaElement>(null);
   const instructionsOpen = instructions !== null;
 
+  // Runs after the instructions box's autoFocus, so returning to this step
+  // lands on the topic while opening the box lands in it.
   useEffect(() => {
     topicRef.current?.focus();
   }, []);
-
-  useEffect(() => {
-    if (instructionsOpen) instructionsRef.current?.focus();
-  }, [instructionsOpen]);
 
   return (
     <div className="animate-interface-center-enter">
@@ -213,7 +211,7 @@ function TopicStep({
             </label>
             <textarea
               id="build-instructions"
-              ref={instructionsRef}
+              autoFocus
               className="mt-1.5 block min-h-[76px] w-full resize-none border-0 bg-transparent p-0 text-[14px] leading-[1.6] text-text-primary outline-0 placeholder:text-text-muted"
               value={instructions}
               onChange={(event) => onInstructions(event.target.value)}
@@ -441,7 +439,11 @@ function BuildProgress({
   const started = Date.parse(run.started_at ?? "");
 
   return (
-    <div className="animate-interface-center-enter" aria-live="polite">
+    <div className="animate-interface-center-enter">
+      {/* Announced when the stage changes; the clock and percent tick too often. */}
+      <p className="sr-only" aria-live="polite">
+        {progress.currentLabel ?? ""}
+      </p>
       <div className="flex items-end gap-4">
         <div className="min-w-0 flex-1">
           <BuildStatus run={run} />
@@ -461,7 +463,14 @@ function BuildProgress({
           <span className="text-[16px] font-medium">%</span>
         </span>
       </div>
-      <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-track" aria-hidden="true">
+      <div
+        className="mt-5 h-1.5 overflow-hidden rounded-full bg-track"
+        role="progressbar"
+        aria-label="Build progress"
+        aria-valuenow={progress.percent}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
         <div
           className="h-full rounded-full bg-accent transition-[width] duration-500 ease-linear"
           style={{ width: `${progress.percent}%` }}
@@ -598,7 +607,7 @@ function StageRow({ stage, last, took }: { stage: BuildStage; last: boolean; too
   );
 }
 
-function stageDuration(span: { start: number; end: number | null } | undefined, now: number): string | null {
+function stageDuration(span: StageSpan | undefined, now: number): string | null {
   if (!span) return null;
   return durationLabel((span.end ?? now) - span.start);
 }

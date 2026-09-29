@@ -5,6 +5,7 @@ import {
   chipClass,
   compactActionClass,
   compactPrimaryActionClass,
+  errorNoticeClass,
   iconButtonClass,
   kickerClass,
   kickerTypeClass,
@@ -12,6 +13,7 @@ import {
 } from "../../lib/controlClasses";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import { PanelHeader } from "../panel/RightPanel";
+import { ErrorBoundary } from "../ui/ErrorBoundary";
 import {
   BookIcon,
   CalendarIcon,
@@ -187,6 +189,26 @@ function PaperView({
           </div>
         </div>
       ) : null}
+      {/* The reader is a modal, so it can sit here, under the button that opens it,
+          where its fallback is read if its code cannot be loaded. */}
+      {readerOpen ? (
+        <ErrorBoundary
+          fallback={
+            <p className={cx(errorNoticeClass, "mt-3 mb-0")} role="alert">
+              The reader could not load. Reload the page to try again.
+            </p>
+          }
+        >
+          <Suspense fallback={null}>
+            <AnnotatedPaperReader
+              workspaceId={workspaceId}
+              paper={node}
+              onClose={() => setReaderOpen(false)}
+              onOpenAssistant={onOpenAssistant}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      ) : null}
 
       {node.tldr ? <Callout label="TLDR">{node.tldr}</Callout> : null}
       {node.importance ? (
@@ -200,17 +222,6 @@ function PaperView({
         </Section>
       ) : null}
       {node.similarPapers.length > 0 ? <SimilarPapers papers={node.similarPapers} /> : null}
-
-      {readerOpen ? (
-        <Suspense fallback={null}>
-          <AnnotatedPaperReader
-            workspaceId={workspaceId}
-            paper={node}
-            onClose={() => setReaderOpen(false)}
-            onOpenAssistant={onOpenAssistant}
-          />
-        </Suspense>
-      ) : null}
     </>
   );
 }

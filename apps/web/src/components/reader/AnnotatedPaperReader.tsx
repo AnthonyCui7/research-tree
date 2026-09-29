@@ -155,7 +155,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
           aria-expanded={modeAnchor !== null}
           title="How thoroughly annotagent reads the paper"
         >
-          <span className="text-text-secondary">Mode</span>
+          <span className="text-text-secondary max-[640px]:sr-only">Mode</span>
           {modeLabel(mode)}
           <ChevronDownIcon className="h-3.5 w-3.5 text-text-muted" />
         </button>
@@ -179,7 +179,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
             title="Chat with the workspace assistant, which can read this paper"
           >
             <ChatIcon className="h-3.5 w-3.5" />
-            Assistant
+            <span className="max-[640px]:sr-only">Assistant</span>
           </button>
         ) : null}
         <button

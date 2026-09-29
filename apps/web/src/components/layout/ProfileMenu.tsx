@@ -1,6 +1,6 @@
 import { MenuItem, MenuSection, PopoverMenu, type MenuAnchor } from "../ui/PopoverMenu";
 import { BugIcon, GearIcon, HelpIcon, KeyIcon, SignOutIcon } from "../ui/icons";
-import { Avatar, displayName } from "./Avatar";
+import { accountDetail, Avatar, displayName } from "./Avatar";
 import { isLocalSession } from "../../data/session";
 import type { SessionInfo } from "../../lib/types";
 
@@ -42,7 +42,7 @@ export function ProfileMenu({
             {displayName(user)}
           </span>
           <span className="block truncate text-[12px] text-text-muted">
-            {local ? "Runs without accounts" : user.email}
+            {accountDetail(user, local)}
           </span>
         </span>
       </div>

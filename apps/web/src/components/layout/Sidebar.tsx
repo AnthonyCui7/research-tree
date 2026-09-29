@@ -158,7 +158,8 @@ export function Sidebar({
             onClick={(event) => onOpenAccount(event.currentTarget)}
             aria-haspopup="menu"
             aria-expanded={accountMenuOpen}
-            aria-label="Account"
+            // On the rail the name and email are hidden, so they cannot name it.
+            aria-label={collapsed ? "Account" : undefined}
             title={collapsed ? displayName(user) : undefined}
           >
             <span className="grid h-9 w-9 flex-none place-items-center">

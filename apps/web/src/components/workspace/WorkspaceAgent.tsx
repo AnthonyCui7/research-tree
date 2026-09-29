@@ -184,7 +184,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
           }}
         >
           <textarea
-            className="block max-h-[200px] min-h-[24px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[14px] leading-[1.55] text-text-primary outline-0 placeholder:text-text-muted"
+            className="block min-h-[24px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[14px] leading-[1.55] text-text-primary outline-0 placeholder:text-text-muted"
             ref={composerRef}
             value={message}
             onChange={(event) => setMessage(event.target.value)}
@@ -199,11 +199,7 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
               type="button"
               aria-haspopup="menu"
               aria-expanded={modelAnchor !== null}
-              onClick={(event) =>
-                setModelAnchor((current) =>
-                  current ? null : anchorFromEvent(event.currentTarget, "left", true),
-                )
-              }
+              onClick={(event) => setModelAnchor(anchorFromEvent(event.currentTarget, "left", true))}
               title="Switch model"
             >
               {session.model}
@@ -642,8 +638,8 @@ const markdownComponents = {
       <code className={cx("rounded-[5px] bg-surface-subtle px-1.5 py-0.5 font-mono text-[0.9em]", className)} {...props} />
     );
   },
-  // Replies compare papers and branches in tables often enough that a bare
-  // browser table, with no rules or padding, was unreadable.
+  // Replies compare papers and branches in tables often, so a table gets
+  // rules and cell padding to be read as one.
   table({ node: _node, className, ...props }: MarkdownComponentProps<"table">) {
     return (
       <div className="mb-3.5 overflow-x-auto last:mb-0">
