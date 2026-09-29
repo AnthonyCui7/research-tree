@@ -2,10 +2,10 @@ import type { ReactNode } from "react";
 
 /**
  * The icon set: one 16-unit grid, 1.5-unit strokes with round caps and joins,
- * sized by the caller so one icon serves every control. The shapes are built
- * from geometry (keyline circles and squares, mirrored halves, the canvas's
- * S-shaped edges); the three zoom icons at the end belong to the canvas and
- * keep the canvas's own drawing.
+ * sized by the caller: `size-4` for controls and rows, `size-3` for marks in
+ * small indicators, `size-5` in feature tiles. Generated and checked by
+ * `apps/web/scripts/icons.py`; change an icon there, not here. The three zoom
+ * icons at the end belong to the canvas and keep the canvas's own drawing.
  */
 type IconProps = {
   className?: string;
