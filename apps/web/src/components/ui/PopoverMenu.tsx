@@ -194,7 +194,7 @@ export function MenuItem({
   return (
     <button
       className={cx(
-        "flex w-full items-center gap-2.5 rounded-md border-0 bg-transparent px-2.5 text-left text-[13px] transition-[background-color] duration-150 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-text-muted",
+        "flex w-full items-center gap-2.5 rounded-md border-0 bg-transparent px-2.5 text-left text-13 transition-[background-color] duration-150 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-text-muted",
         description ? "py-1.5" : "h-8",
         tone === "danger"
           ? "text-error hover:bg-error-surface focus-visible:bg-error-surface"
@@ -213,13 +213,13 @@ export function MenuItem({
       <span className="min-w-0 flex-1">
         <span className="block truncate">{children}</span>
         {description ? (
-          <span className="block truncate text-[12px] text-text-muted">{description}</span>
+          <span className="block truncate text-12 text-text-muted">{description}</span>
         ) : null}
       </span>
       {trailing ? (
-        <span className="flex-none font-mono text-[11.5px] text-text-muted">{trailing}</span>
+        <span className="flex-none font-mono text-12 text-text-muted">{trailing}</span>
       ) : null}
-      {checked ? <CheckIcon className="h-3.5 w-3.5 flex-none text-accent" /> : null}
+      {checked ? <CheckIcon className="size-4 flex-none text-accent" /> : null}
     </button>
   );
 }

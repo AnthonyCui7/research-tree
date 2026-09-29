@@ -59,25 +59,25 @@ export function ProposedRevision({
           className="grid h-6 w-6 flex-none place-items-center rounded-md bg-accent-subtle text-accent-deep"
           aria-hidden="true"
         >
-          <TreeIcon className="h-3.5 w-3.5" />
+          <TreeIcon className="size-4" />
         </span>
-        <span className="text-[13.5px] font-semibold text-text-primary">Proposed revision</span>
+        <span className="text-14 font-semibold text-text-primary">Proposed revision</span>
         {count !== null ? (
-          <span className="text-[12px] text-text-muted">{pluralize(count, "change")}</span>
+          <span className="text-12 text-text-muted">{pluralize(count, "change")}</span>
         ) : null}
-        <span className="ml-auto flex-none rounded-full bg-accent-subtle px-2 py-px text-[11px] font-semibold text-accent-deep">
+        <span className="ml-auto flex-none rounded-full bg-accent-subtle px-2 py-px text-11 font-semibold text-accent-deep">
           Needs approval
         </span>
       </div>
       <div className="grid gap-2 px-4 pb-3.5">
         {restoredUserMessage ? (
-          <p className="m-0 text-[12.5px] leading-[1.5] text-text-muted">
+          <p className="m-0 text-12 text-text-muted">
             In response to: “{restoredUserMessage}”
           </p>
         ) : null}
         {visibleChips.length > 0 ? (
           visibleChips.map((chip) => (
-            <div className="flex items-baseline gap-2 text-[13px] leading-[1.5]" key={chip.key}>
+            <div className="flex items-baseline gap-2 text-13" key={chip.key}>
               <OperationBadge chip={chip} />
               <span className="min-w-0 truncate text-text-secondary" title={chipTitle(chip)}>
                 {chip.name ? <strong className="font-medium text-text-primary">{chip.name}</strong> : null}
@@ -87,24 +87,24 @@ export function ProposedRevision({
             </div>
           ))
         ) : (
-          <p className="m-0 text-[13px] leading-[1.5] text-text-secondary">
+          <p className="m-0 text-13 text-text-secondary">
             A structural revision is ready for your review.
           </p>
         )}
         {hiddenChipCount > 0 ? (
-          <p className="m-0 text-[12.5px] leading-[1.5] text-text-muted">
+          <p className="m-0 text-12 text-text-muted">
             +{hiddenChipCount} more in the diff
           </p>
         ) : null}
         {paperDelta || notes.length > 0 ? (
           <div className="mt-1 grid gap-1.5 border-t border-hairline pt-2.5">
             {paperDelta ? (
-              <p className="m-0 text-[12.5px] leading-[1.55] text-text-muted">
+              <p className="m-0 text-12 text-text-muted">
                 Visible papers: {paperDelta.before} → {paperDelta.after}
               </p>
             ) : null}
             {notes.map((note, index) => (
-              <p className="m-0 text-[12.5px] leading-[1.55] text-warning" key={`${index}:${note}`}>
+              <p className="m-0 text-13 text-warning" key={`${index}:${note}`}>
                 <strong className="font-semibold">Skeptic:</strong> {note}
               </p>
             ))}
@@ -130,7 +130,7 @@ export function ProposedRevision({
         </button>
         {operations.length > 0 ? (
           <button
-            className="ml-auto border-0 bg-transparent p-0 text-[12.5px] font-medium text-text-secondary transition-[color] duration-150 hover:text-accent-deep hover:underline"
+            className="ml-auto border-0 bg-transparent p-0 text-13 font-medium text-text-secondary transition-[color] duration-150 hover:text-accent-deep hover:underline"
             type="button"
             onClick={() => setDiffOpen(true)}
           >

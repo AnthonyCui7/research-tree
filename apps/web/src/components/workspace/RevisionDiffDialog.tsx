@@ -38,7 +38,7 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
               className="border-b border-hairline pb-5 last:border-b-0 last:pb-0"
               key={chip?.key ?? `${index}:${operation.operation_type}`}
             >
-              <div className="flex items-baseline gap-2 text-[13.5px] leading-[1.5]">
+              <div className="flex items-baseline gap-2 text-13">
                 {chip ? <OperationBadge chip={chip} /> : null}
                 <span className="min-w-0 text-text-primary [overflow-wrap:anywhere]">
                   {chip?.name ? <strong className="font-semibold">{chip.name}</strong> : null}
@@ -47,7 +47,7 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
                 </span>
               </div>
               {operation.rationale ? (
-                <p className="mt-1.5 mb-0 text-[13px] leading-[1.55] text-text-secondary">
+                <p className="mt-1.5 mb-0 text-13 text-text-secondary">
                   {operation.rationale}
                 </p>
               ) : null}
@@ -56,7 +56,7 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
                   {changes.map((change) => (
                     <div className="grid gap-0.5" key={change.label}>
                       <dt className={kickerClass}>{change.label}</dt>
-                      <dd className="m-0 grid gap-0.5 text-[13px] leading-[1.55]">
+                      <dd className="m-0 grid gap-0.5 text-13">
                         {change.before !== null ? (
                           <span className="text-text-muted line-through [overflow-wrap:anywhere]">
                             {change.before}
@@ -77,7 +77,7 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
           );
         })}
         {operations.length === 0 ? (
-          <p className="m-0 text-[13px] text-text-secondary">
+          <p className="m-0 text-13 text-text-secondary">
             This proposal carries no operation details to show.
           </p>
         ) : null}
@@ -91,7 +91,7 @@ export function OperationBadge({ chip }: { chip: OperationChip }) {
   return (
     <span
       className={cx(
-        "flex-none rounded-[5px] px-1.5 py-px text-[10.5px] font-semibold tracking-[0.02em] uppercase",
+        "flex-none rounded-[5px] px-1.5 py-px text-11 font-semibold tracking-[0.02em] uppercase",
         BADGE_TONE[chip.tone],
       )}
     >

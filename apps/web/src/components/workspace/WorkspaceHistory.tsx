@@ -97,7 +97,7 @@ export function WorkspaceHistory({
           </p>
         ) : null}
         {ordered.length === 0 ? (
-          <p className="m-0 text-[13px] text-text-muted">
+          <p className="m-0 text-13 text-text-muted">
             {loading ? "Loading versions…" : "No saved versions yet."}
           </p>
         ) : null}
@@ -133,16 +133,16 @@ export function WorkspaceHistory({
                 </span>
                 <div className="min-w-0 flex-1 pt-[3px]">
                   <div className="flex items-start gap-2">
-                    <p className="m-0 flex-1 text-[13.5px] leading-[1.45] font-medium text-text-primary [overflow-wrap:anywhere]">
+                    <p className="m-0 flex-1 text-13 font-medium text-text-primary [overflow-wrap:anywhere]">
                       {humanReason(version.reason)}
                     </p>
                     {current ? (
-                      <span className="flex-none rounded-full bg-accent-subtle px-2 py-px text-[11px] font-semibold text-accent-deep">
+                      <span className="flex-none rounded-full bg-accent-subtle px-2 py-px text-11 font-semibold text-accent-deep">
                         Current
                       </span>
                     ) : null}
                   </div>
-                  <p className="mt-0.5 mb-0 text-[12px] leading-[1.5] text-text-muted">
+                  <p className="mt-0.5 mb-0 text-12 text-text-muted">
                     {editor.label} · {dateTimeLabel(version.created_at)}
                   </p>
                   {current ? null : (
@@ -155,7 +155,7 @@ export function WorkspaceHistory({
                       >
                         {busyHash === version.version_hash ? "Restoring…" : "Restore"}
                       </button>
-                      <span className="font-mono text-[11px] text-text-muted">
+                      <span className="font-mono text-11 text-text-muted">
                         {version.version_hash.slice(0, 7)}
                       </span>
                     </div>
@@ -186,9 +186,9 @@ function humanReason(reason: string): string {
 /** Who made the version: the reader, the assistant with the reader's approval, or a build. */
 function versionEditor(version: WorkspaceVersion): { label: string; icon: ReactNode } {
   const actor = version.actor_type || version.actor;
-  if (actor === "user") return { label: "You", icon: <PencilIcon className="h-3.5 w-3.5" /> };
+  if (actor === "user") return { label: "You", icon: <PencilIcon className="size-4" /> };
   if (actor === "agent") {
-    return { label: "Assistant, approved by you", icon: <ChatIcon className="h-3.5 w-3.5" /> };
+    return { label: "Assistant, approved by you", icon: <ChatIcon className="size-4" /> };
   }
-  return { label: "Build", icon: <TreeIcon className="h-3.5 w-3.5" /> };
+  return { label: "Build", icon: <TreeIcon className="size-4" /> };
 }

@@ -87,12 +87,12 @@ export function PanelHeader({
 }) {
   return (
     <header className="flex h-12 flex-none items-center gap-1 border-b border-hairline pr-2 pl-5">
-      <h2 className="m-0 min-w-0 flex-1 truncate text-[13.5px] font-semibold text-text-primary">
+      <h2 className="m-0 min-w-0 flex-1 truncate text-14 font-semibold text-text-primary">
         {title}
       </h2>
       {actions}
       <button className={iconButtonClass} type="button" onClick={onClose} aria-label={closeLabel} title="Close">
-        <CloseIcon className="h-3 w-3" />
+        <CloseIcon className="size-3" />
       </button>
     </header>
   );

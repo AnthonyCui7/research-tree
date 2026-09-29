@@ -82,13 +82,13 @@ export function DeleteWorkspaceDialog({
       >
         <div className="px-6 pt-6 pb-5">
           <h2
-            className="m-0 text-[17px] leading-[1.3] font-semibold tracking-[-0.01em] text-text-primary [overflow-wrap:anywhere]"
+            className="m-0 text-17 font-semibold text-text-primary [overflow-wrap:anywhere]"
             id="delete-workspace-title"
           >
             Delete “{workspace.title}”?
           </h2>
           <p
-            className="mt-2 mb-0 text-[13.5px] leading-[1.6] text-text-secondary"
+            className="mt-2 mb-0 text-14 text-text-secondary"
             id="delete-workspace-detail"
           >
             This removes the workspace and its version history from Research Tree.

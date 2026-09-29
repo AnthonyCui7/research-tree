@@ -45,7 +45,7 @@ export function NodeActionsMenu({
       <PopoverMenu anchor={anchor} onClose={onClose} label={label}>
         <MenuSection>
           <MenuItem
-            icon={<PencilIcon className="h-[14px] w-[14px]" />}
+            icon={<PencilIcon className="size-4" />}
             onClick={() => onRename(node.branchNodeId)}
             disabled={disabled}
             title={disabledTitle}
@@ -63,14 +63,14 @@ export function NodeActionsMenu({
       <PopoverMenu anchor={anchor} onClose={onClose} label={`Move ${node.title} to`} width={260}>
         <MenuSection>
           <MenuItem
-            icon={<ArrowLeftIcon className="h-[14px] w-[14px]" />}
+            icon={<ArrowLeftIcon className="size-4" />}
             onClick={() => setChoosingDestination(false)}
             keepsMenuOpen
           >
             <span className={kickerClass}>Move to</span>
           </MenuItem>
           {destinations.length === 0 ? (
-            <p className="m-0 px-2.5 py-1.5 text-[12.5px] text-text-muted">
+            <p className="m-0 px-2.5 py-1.5 text-12 text-text-muted">
               No other branch to move it to.
             </p>
           ) : null}
@@ -102,7 +102,7 @@ export function NodeActionsMenu({
     <PopoverMenu anchor={anchor} onClose={onClose} label={label} width={240}>
       <MenuSection>
         <MenuItem
-          icon={<ArrowRightIcon className="h-[14px] w-[14px]" />}
+          icon={<ArrowRightIcon className="size-4" />}
           onClick={() => setChoosingDestination(true)}
           disabled={disabled}
           title={disabledTitle}
@@ -114,7 +114,7 @@ export function NodeActionsMenu({
       <MenuSection>
         <MenuItem
           tone="danger"
-          icon={<TrashIcon className="h-[14px] w-[14px]" />}
+          icon={<TrashIcon className="size-4" />}
           onClick={() =>
             onApply([{ op: "remove", entity_type: "paper_placement", paper_id: node.paperId }])
           }

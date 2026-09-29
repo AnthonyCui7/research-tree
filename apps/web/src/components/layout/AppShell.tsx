@@ -552,7 +552,7 @@ export function AppShell({
         >
           <MenuSection>
             <MenuItem
-              icon={<ClockIcon className="h-[14px] w-[14px]" />}
+              icon={<ClockIcon className="size-4" />}
               onClick={() => {
                 onOpenWorkspace(optionsMenu.workspace.workspace_id);
                 onOpenPanel("history");
@@ -564,7 +564,7 @@ export function AppShell({
           <MenuSection>
             <MenuItem
               tone="danger"
-              icon={<TrashIcon className="h-[14px] w-[14px]" />}
+              icon={<TrashIcon className="size-4" />}
               onClick={() => setDeleteTargetId(optionsMenu.workspace.workspace_id)}
             >
               Delete workspace…
