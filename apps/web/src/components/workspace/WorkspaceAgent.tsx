@@ -271,20 +271,20 @@ function AgentIntro({
   return (
     <section className="my-auto">
       <span
-        className="mx-auto mb-5 grid h-10 w-10 place-items-center rounded-lg bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
+        className="mx-auto mb-4 grid h-10 w-10 place-items-center rounded-lg bg-accent-subtle text-accent-deep shadow-[inset_0_0_0_1px_var(--color-accent-border)]"
         aria-hidden="true"
       >
         <ChatIcon className="size-5" />
       </span>
-      <h3 className="m-0 text-center text-24 font-semibold text-text-primary [overflow-wrap:anywhere]">
+      <h3 className="m-0 text-center text-24 font-semibold text-text-primary text-trim [overflow-wrap:anywhere]">
         {tree ? `Ask about ${tree.title}` : "Ask about this workspace"}
       </h3>
       {tree ? (
-        <p className="mt-1 mb-0 text-center text-13 text-text-muted">
+        <p className="mt-4 mb-0 text-center text-13 text-text-muted text-trim">
           {pluralize(tree.branchCount, "branch", "branches")} · {pluralize(tree.paperCount, "paper")}
         </p>
       ) : null}
-      <div className="mx-auto mt-6 grid max-w-[520px] gap-2">
+      <div className="mx-auto mt-8 grid max-w-[520px] gap-2">
         {openers.map((opener) => (
           <button
             className="group flex items-center gap-3 rounded-xl border border-border bg-surface px-4 py-3 text-left transition-[background-color,border-color] duration-150 hover:border-border-strong hover:bg-surface-subtle"

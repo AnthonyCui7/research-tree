@@ -69,10 +69,11 @@ export function ProposedRevision({
         <span className={cx(badgeClass, "ml-auto bg-accent-subtle text-accent-deep")}>Needs approval</span>
       </div>
       {/* One column no wider than the card, so a long row truncates instead of
-          widening the column past the card's edge. */}
-      <div className="grid grid-cols-1 gap-2 px-4 pb-4">
+          widening the column past the card's edge. Lines of text sit 12px
+          apart, more than a line's own leading, so each reads as its own. */}
+      <div className="grid grid-cols-1 gap-2 px-4 pb-3">
         {restoredUserMessage ? (
-          <p className="m-0 text-12 text-text-muted">
+          <p className="m-0 mb-1 text-12 text-text-muted text-trim">
             In response to: “{restoredUserMessage}”
           </p>
         ) : null}
@@ -88,24 +89,24 @@ export function ProposedRevision({
             </div>
           ))
         ) : (
-          <p className="m-0 text-13 text-text-secondary">
+          <p className="m-0 text-13 text-text-secondary text-trim">
             A structural revision is ready for your review.
           </p>
         )}
         {hiddenChipCount > 0 ? (
-          <p className="m-0 text-12 text-text-muted">
+          <p className="m-0 text-12 text-text-muted text-trim">
             +{hiddenChipCount} more in the diff
           </p>
         ) : null}
         {paperDelta || notes.length > 0 ? (
-          <div className="mt-1 grid gap-2 border-t border-hairline pt-3">
+          <div className="mt-1 grid gap-3 border-t border-hairline pt-3">
             {paperDelta ? (
-              <p className="m-0 text-12 text-text-muted">
+              <p className="m-0 text-12 text-text-muted text-trim">
                 Visible papers: {paperDelta.before} → {paperDelta.after}
               </p>
             ) : null}
             {notes.map((note, index) => (
-              <p className="m-0 text-13 text-warning" key={`${index}:${note}`}>
+              <p className="m-0 text-13 text-warning text-trim" key={`${index}:${note}`}>
                 <strong className="font-semibold">Skeptic:</strong> {note}
               </p>
             ))}

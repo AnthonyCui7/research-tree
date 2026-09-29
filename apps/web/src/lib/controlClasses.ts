@@ -50,7 +50,7 @@ export const inlineIconButtonClass =
   "-my-0.5 grid h-6 w-6 flex-none place-items-center rounded-sm border-0 bg-transparent p-0 transition-[background-color,color,opacity] duration-150";
 
 const fieldBase =
-  "w-full rounded-md border border-border bg-surface px-3 text-14 text-text-primary outline-0 transition-[border-color,box-shadow] duration-150 placeholder:text-text-muted focus:border-accent focus:shadow-[0_0_0_3px_var(--color-accent-subtle)] disabled:bg-surface-subtle disabled:text-text-secondary";
+  "block w-full rounded-md border border-border bg-surface px-3 text-14 text-text-primary outline-0 transition-[border-color,box-shadow] duration-150 placeholder:text-text-muted focus:border-accent focus:shadow-[0_0_0_3px_var(--color-accent-subtle)] disabled:bg-surface-subtle disabled:text-text-secondary";
 
 /** A one-line field, a step taller than a button because it holds 14px text. */
 export const textInputClass = `${fieldBase} h-9`;

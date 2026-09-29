@@ -225,7 +225,7 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
       ) : null}
 
       {error ? (
-        <p className={cx(errorNoticeClass, "mt-6 mb-0")} role="alert">
+        <p className={cx(errorNoticeClass, "mt-8 mb-0")} role="alert">
           {error}
         </p>
       ) : null}

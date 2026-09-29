@@ -67,8 +67,8 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
           >
             <CheckIcon className="size-4" />
           </span>
-          <p className="mt-4 mb-0 text-14 font-medium text-text-primary">Report sent.</p>
-          <p className="mt-1 mb-0 max-w-[42ch] text-13 text-text-muted">
+          <p className="mt-4 mb-0 text-14 font-medium text-text-primary text-trim">Report sent.</p>
+          <p className="mt-2 mb-0 max-w-[42ch] text-13 text-text-muted text-trim">
             {sent}
           </p>
         </div>
@@ -142,7 +142,7 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
         <AccountNotice>Reports are written to the server log for now.</AccountNotice>
 
         {error ? (
-          <p className={cx(errorNoticeClass, "mt-3 mb-0")} role="alert">
+          <p className={cx(errorNoticeClass, "mt-2 mb-0")} role="alert">
             {error}
           </p>
         ) : null}

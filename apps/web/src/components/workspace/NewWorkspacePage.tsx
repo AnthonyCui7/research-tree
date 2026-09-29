@@ -178,10 +178,10 @@ function TopicStep({
       >
         <TreeIcon className="size-5" />
       </span>
-      <h1 className="mt-5 mb-0 text-center text-30 font-semibold text-text-primary">
+      <h1 className="mt-5 mb-0 text-center text-30 font-semibold text-text-primary text-trim">
         What field do you want to map?
       </h1>
-      <p className="mx-auto mt-3 mb-0 max-w-[46ch] text-center text-15 text-text-secondary">
+      <p className="mx-auto mt-5 mb-0 max-w-[46ch] text-center text-15 text-text-secondary text-trim">
         Research Tree drafts an editable map of the literature: its branches, key papers, and
         reading paths.
       </p>
@@ -207,13 +207,16 @@ function TopicStep({
         />
         {instructionsOpen ? (
           <div className="mx-5 animate-settle border-t border-hairline pt-3">
-            <label className={kickerClass} htmlFor="build-instructions">
+            <label className={cx(kickerClass, "block text-trim")} htmlFor="build-instructions">
               Instructions
             </label>
+            {/* A textarea cannot be trimmed and sets its first line 7px inside,
+                so 6px here leaves its capitals 12px under the label, as far as
+                the label sits from the rule. */}
             <textarea
               id="build-instructions"
               autoFocus
-              className="mt-2 block w-full resize-none border-0 bg-transparent p-0 text-14 leading-6 text-text-primary outline-0 placeholder:text-text-muted"
+              className="mt-1.5 block w-full resize-none border-0 bg-transparent p-0 text-14 leading-6 text-text-primary outline-0 placeholder:text-text-muted"
               value={instructions}
               onChange={(event) => onInstructions(event.target.value)}
               placeholder="e.g. emphasize evaluation methods; leave out hardware-specific serving papers."
@@ -262,7 +265,7 @@ function TopicStep({
         </div>
       </form>
 
-      <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
         {EXAMPLE_TOPICS.map((example) => (
           <button
             className={cx(
@@ -290,11 +293,11 @@ function TopicStep({
 /** A refused step, with the way past it when that is an API key. */
 function StepError({ error, onOpenApiKeys }: { error: ErrorNotice; onOpenApiKeys: () => void }) {
   return (
-    <div className={cx(errorNoticeClass, "mt-6 flex items-center gap-2.5")} role="alert">
-      <WarningIcon className="size-4 flex-none" />
+    <div className={cx(errorNoticeClass, "mt-8 flex items-start gap-2.5")} role="alert">
+      <WarningIcon className="mt-0.5 size-4 flex-none" />
       <span className="min-w-0 flex-1">{error.message}</span>
       {error.needsKey ? (
-        <button className={cx(compactActionClass, "flex-none")} type="button" onClick={onOpenApiKeys}>
+        <button className={cx(compactActionClass, "-my-1 flex-none")} type="button" onClick={onOpenApiKeys}>
           Add API key
         </button>
       ) : null}
@@ -342,17 +345,17 @@ function ReviewStep({
           Not recognized as a research field
         </p>
       )}
-      <h1 className="mt-4 mb-0 text-30 font-semibold text-text-primary [overflow-wrap:anywhere]">
+      <h1 className="mt-5 mb-0 text-30 font-semibold text-text-primary text-trim [overflow-wrap:anywhere]">
         {recognized ? review.normalized_topic : review.submitted_topic}
       </h1>
       {review.guidance || !recognized ? (
-        <p className="mt-3 mb-0 max-w-[60ch] text-15 text-text-secondary">
+        <p className="mt-5 mb-0 max-w-[60ch] text-15 text-text-secondary text-trim">
           {review.guidance || "Try a specific field, method, benchmark, or research question."}
         </p>
       ) : null}
 
       {recognized && (review.source_paper || instructions) ? (
-        <dl className="mt-6 mb-0 grid gap-4 rounded-xl border border-hairline bg-surface p-4">
+        <dl className="mt-8 mb-0 grid gap-4 rounded-xl border border-hairline bg-surface p-4">
           {review.source_paper ? (
             <ReviewFact label="Linked paper">
               {review.source_paper.title} will anchor the map.
@@ -363,8 +366,8 @@ function ReviewStep({
       ) : null}
 
       {existing ? (
-        <p className={cx(warningNoticeClass, "mt-6 mb-0 flex items-center gap-2.5")}>
-          <WarningIcon className="size-4 flex-none" />
+        <p className={cx(warningNoticeClass, "mt-8 mb-0 flex items-start gap-2.5")}>
+          <WarningIcon className="mt-0.5 size-4 flex-none" />
           You already have a “{existing.title}” workspace for this topic.
         </p>
       ) : null}
@@ -413,8 +416,8 @@ function ReviewStep({
 function ReviewFact({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
-      <dt className={kickerClass}>{label}</dt>
-      <dd className="m-0 mt-1 text-14 text-text-primary [overflow-wrap:anywhere]">
+      <dt className={cx(kickerClass, "text-trim")}>{label}</dt>
+      <dd className="m-0 mt-2 text-14 text-text-primary text-trim [overflow-wrap:anywhere]">
         {children}
       </dd>
     </div>
@@ -454,10 +457,10 @@ function BuildProgress({
       <div className="flex items-end gap-4">
         <div className="min-w-0 flex-1">
           <BuildStatus run={run} />
-          <h1 className="mt-2 mb-0 text-24 font-semibold text-text-primary [overflow-wrap:anywhere]">
+          <h1 className="mt-4 mb-0 text-24 font-semibold text-text-primary text-trim [overflow-wrap:anywhere]">
             Mapping {run.topic}
           </h1>
-          <p className="mt-1 mb-0 text-13 text-text-muted tabular-nums">
+          <p className="mt-4 mb-0 text-13 text-text-muted tabular-nums text-trim">
             {run.status === "queued"
               ? "Waiting for a free worker. It starts when the build ahead of it finishes."
               : Number.isNaN(started)
@@ -465,13 +468,14 @@ function BuildProgress({
                 : `Started ${TIME.format(started)}${active ? ` · ${durationLabel(progress.now - started)} so far` : ""}`}
           </p>
         </div>
-        <span className="flex-none text-24 leading-none font-semibold text-accent tabular-nums">
+        {/* Trimmed like the lines beside it, so its baseline is theirs. */}
+        <span className="flex-none text-24 font-semibold text-accent tabular-nums text-trim">
           {progress.percent}
           <span className="text-15 font-medium">%</span>
         </span>
       </div>
       <div
-        className="mt-5 h-1.5 overflow-hidden rounded-full bg-track"
+        className="mt-6 h-1.5 overflow-hidden rounded-full bg-track"
         role="progressbar"
         aria-label="Build progress"
         aria-valuenow={progress.percent}
@@ -488,7 +492,7 @@ function BuildProgress({
         <BuildIllustration stages={progress.stages} />
       </div>
 
-      <ol className="m-0 mt-6 grid list-none p-0">
+      <ol className="m-0 mt-6 grid list-none gap-5 p-0">
         {progress.stages.map((stage, index) => (
           <StageRow
             key={stage.id}
@@ -523,7 +527,7 @@ function BuildProgress({
         </p>
       ) : null}
 
-      <div className="mt-8 flex items-center gap-2">
+      <div className="mt-6 flex items-center gap-2">
         {active ? (
           <>
             <button
@@ -557,29 +561,29 @@ function BuildProgress({
 /** Where the build stands, in the page's kicker. */
 function BuildStatus({ run }: { run: PipelineRun }) {
   if (run.status === "failed") {
-    return <span className={cx(kickerTypeClass, "text-error")}>Build failed</span>;
+    return <p className={cx(kickerTypeClass, "m-0 text-error text-trim")}>Build failed</p>;
   }
   if (run.status === "cancelled") {
-    return <span className={kickerClass}>Build cancelled</span>;
+    return <p className={cx(kickerClass, "m-0 text-trim")}>Build cancelled</p>;
   }
   return (
-    <span className={cx(kickerTypeClass, "flex items-center gap-2 text-accent-deep")}>
+    <p className={cx(kickerTypeClass, "m-0 flex items-center gap-2 text-accent-deep")}>
       <span className="relative flex h-2 w-2" aria-hidden="true">
         <span className="absolute inset-0 animate-breathe rounded-full bg-accent" />
         <span className="relative h-2 w-2 rounded-full bg-accent" />
       </span>
-      {run.status === "queued" ? "Queued" : "Building"}
-    </span>
+      <span className="text-trim">{run.status === "queued" ? "Queued" : "Building"}</span>
+    </p>
   );
 }
 
 function StageRow({ stage, last, took }: { stage: BuildStage; last: boolean; took: string | null }) {
   return (
-    <li className="relative flex items-center gap-3 py-2.5">
+    <li className="relative flex items-center gap-3">
       {last ? null : (
         <span
           className={cx(
-            "absolute top-8.5 -bottom-1.5 left-[9.5px] w-px",
+            "absolute top-6 -bottom-4 left-[9.5px] w-px",
             stage.state === "done" ? "bg-accent-border" : "bg-hairline",
           )}
           aria-hidden="true"

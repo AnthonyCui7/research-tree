@@ -31,14 +31,14 @@ export function WorkspaceNotice({
         ) : null}
         <h2
           className={cx(
-            "m-0",
+            "m-0 text-trim",
             tone === "error" ? "text-15 font-semibold text-error" : "text-13 font-medium text-text-muted",
           )}
         >
           {title}
         </h2>
         {detail ? (
-          <p className="mt-1 mb-0 text-13 text-text-secondary">{detail}</p>
+          <p className="mt-2 mb-0 text-13 text-text-secondary text-trim">{detail}</p>
         ) : null}
         {actionLabel && onAction ? (
           <button className={cx(secondaryActionClass, "mt-4")} type="button" onClick={onAction}>

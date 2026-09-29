@@ -47,26 +47,26 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
                 </span>
               </div>
               {operation.rationale ? (
-                <p className="mt-1 mb-0 text-13 text-text-secondary">
+                <p className="mt-3 mb-0 text-13 text-text-secondary text-trim">
                   {operation.rationale}
                 </p>
               ) : null}
               {changes.length > 0 ? (
-                <dl className="mt-3 mb-0 grid gap-3">
+                <dl className="mt-4 mb-0 grid gap-4">
                   {changes.map((change) => (
-                    <div className="grid gap-1" key={change.label}>
-                      <dt className={kickerClass}>{change.label}</dt>
-                      <dd className="m-0 grid gap-0.5 text-13">
+                    <div className="grid gap-2" key={change.label}>
+                      <dt className={cx(kickerClass, "text-trim")}>{change.label}</dt>
+                      <dd className="m-0 grid gap-2 text-13">
                         {change.before !== null ? (
-                          <span className="text-text-muted line-through [overflow-wrap:anywhere]">
+                          <span className="text-text-muted line-through text-trim [overflow-wrap:anywhere]">
                             {change.before}
                           </span>
                         ) : null}
                         {change.after !== null ? (
-                          <span className="text-text-primary [overflow-wrap:anywhere]">{change.after}</span>
+                          <span className="text-text-primary text-trim [overflow-wrap:anywhere]">{change.after}</span>
                         ) : null}
                         {change.before === null && change.after === null ? (
-                          <span className="text-text-muted">(cleared)</span>
+                          <span className="text-text-muted text-trim">(cleared)</span>
                         ) : null}
                       </dd>
                     </div>

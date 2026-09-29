@@ -140,11 +140,11 @@ export function WorkspaceHistory({
                       <span className={cx(badgeClass, "bg-accent-subtle text-accent-deep")}>Current</span>
                     ) : null}
                   </div>
-                  <p className="mt-1 mb-0 text-12 text-text-muted">
+                  <p className="mt-1.5 mb-0 text-12 text-text-muted text-trim">
                     {editor.label} · {dateTimeLabel(version.created_at)}
                   </p>
                   {current ? null : (
-                    <div className="mt-2 flex items-center gap-3">
+                    <div className="mt-3 flex items-center gap-3">
                       <button
                         className={compactActionClass}
                         type="button"
