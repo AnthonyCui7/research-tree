@@ -366,7 +366,7 @@ function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: Agen
       ))}
       <div className="flex items-start gap-2.5">
         <span
-          className="mt-[3px] h-3.5 w-3.5 flex-none animate-progress-spin rounded-full border-[1.5px] border-accent-subtle border-t-accent"
+          className="mt-0.5 size-4 flex-none animate-progress-spin rounded-full border-[1.5px] border-accent-subtle border-t-accent"
           aria-hidden="true"
         />
         <span className="min-w-0 text-13 font-medium text-shimmer [overflow-wrap:anywhere]">
@@ -404,7 +404,7 @@ function StepsTaken({ steps }: { steps: AgentStep[] }) {
 function StepGlyph({ step }: { step: AgentStep }) {
   const glyph = step.kind === "tool" ? TOOL_GLYPH[step.name] : null;
   return (
-    <span className="mt-[2px] flex h-3.5 w-3.5 flex-none items-center justify-center text-text-muted/80" aria-hidden="true">
+    <span className="mt-0.5 flex size-4 flex-none items-center justify-center text-text-muted/80" aria-hidden="true">
       {glyph ?? <StepIcon className="size-4" />}
     </span>
   );

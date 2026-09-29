@@ -90,7 +90,7 @@ export function WorkspaceHistory({
   return (
     <>
       <PanelHeader title="Version history" onClose={onClose} closeLabel="Close version history" />
-      <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-5 py-5">
+      <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-6 py-6">
         {error ? (
           <p className={cx(errorNoticeClass, "mt-0 mb-4")} role="alert">
             {error}
@@ -131,7 +131,7 @@ export function WorkspaceHistory({
                 >
                   {editor.icon}
                 </span>
-                <div className="min-w-0 flex-1 pt-[3px]">
+                <div className="min-w-0 flex-1 pt-1">
                   <div className="flex items-start gap-2">
                     <p className="m-0 flex-1 text-13 font-medium text-text-primary [overflow-wrap:anywhere]">
                       {humanReason(version.reason)}
