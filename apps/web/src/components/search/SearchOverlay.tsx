@@ -153,7 +153,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
             onMouseDown={(event) => event.preventDefault()}
           >
             {branches.length > 0 ? (
-              <div role="group" aria-labelledby="search-group-branches">
+              <div className="not-first:mt-4" role="group" aria-labelledby="search-group-branches">
                 <GroupLabel id="search-group-branches">Branches</GroupLabel>
                 {branches.map((node, index) => (
                   <ResultRow
@@ -171,7 +171,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
               </div>
             ) : null}
             {papers.length > 0 ? (
-              <div role="group" aria-labelledby="search-group-papers">
+              <div className="not-first:mt-4" role="group" aria-labelledby="search-group-papers">
                 <GroupLabel id="search-group-papers">Papers</GroupLabel>
                 {papers.map((node, index) => {
                   const resultIndex = branches.length + index;
@@ -217,9 +217,13 @@ function optionId(index: number): string {
   return `search-result-${index}`;
 }
 
+/**
+ * A group's heading: 4px above its first row, and after another group, which
+ * sets it 16px further down, about twice as far from that group's last row.
+ */
 function GroupLabel({ id, children }: { id: string; children: string }) {
   return (
-    <div className={cx(kickerClass, "px-3 pt-3 pb-1")} id={id} role="presentation">
+    <div className={cx(kickerClass, "px-3 pt-3 pb-1 text-trim")} id={id} role="presentation">
       {children}
     </div>
   );

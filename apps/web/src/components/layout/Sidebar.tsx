@@ -103,7 +103,7 @@ export function Sidebar({
           </span>
         </div>
 
-        <div className="flex-none px-2 pb-4">
+        <div className="flex-none px-2 pb-6">
           <button
             className={cx(
               "flex h-8 w-full items-center rounded-md border-0 text-left text-13 font-medium whitespace-nowrap transition-[background-color,color] duration-150",
@@ -130,8 +130,10 @@ export function Sidebar({
 
         <div className={cx("flex min-h-0 flex-1 flex-col", labelClass)}>
           {workspaces.length > 0 || buildingRun || !live ? (
-            <div className="flex flex-none items-center gap-2 px-5 pb-1 whitespace-nowrap">
-              <span className={kickerClass}>Workspaces</span>
+            // Closer to the list than to the button above, so it reads as the
+            // list's heading, with room for a highlighted first row under it.
+            <div className="flex flex-none items-center gap-2 px-5 pb-2 whitespace-nowrap">
+              <span className={cx(kickerClass, "text-trim")}>Workspaces</span>
               {live ? null : (
                 <span
                   className="flex items-center gap-1 text-11 text-text-muted"
@@ -139,7 +141,7 @@ export function Sidebar({
                   title="The workspace event stream dropped. Reconnecting…"
                 >
                   <span className="h-1.5 w-1.5 rounded-full bg-text-muted" aria-hidden="true" />
-                  Live updates paused
+                  <span className="text-trim">Live updates paused</span>
                 </span>
               )}
             </div>

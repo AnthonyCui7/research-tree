@@ -55,22 +55,22 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
       >
-        <header className="flex flex-none items-start gap-3 p-6">
+        <header className="flex flex-none items-start gap-3 px-6 pt-6 pb-8">
           <div className="min-w-0 flex-1">
             <h2
-              className="m-0 text-17 font-semibold text-text-primary"
+              className="m-0 text-17 font-semibold text-text-primary text-trim"
               id="account-dialog-title"
             >
               {title}
             </h2>
             {subtitle ? (
-              <p className="mt-1 mb-0 text-13 text-text-secondary">{subtitle}</p>
+              <p className="mt-3 mb-0 text-13 text-text-secondary text-trim">{subtitle}</p>
             ) : null}
           </div>
-          {/* Centred on the title's line, with its glyph on the 24px edge the
-              title and the body share. */}
+          {/* Centred on the title's capitals without adding to the header's
+              height, with its glyph on the 24px edge the title and body share. */}
           <button
-            className={cx(iconButtonClass, "-mt-1 -mr-2.5")}
+            className={cx(iconButtonClass, "-my-2.5 -mr-2.5")}
             type="button"
             onClick={dismiss}
             aria-label={`Close ${title}`}
@@ -80,7 +80,11 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
           </button>
         </header>
 
-        <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-6 pb-6">{children}</div>
+        {/* Over a footer the body ends 16px above its rule, as far as the rule
+            is from the buttons. */}
+        <div className={cx("scrollbar-rt min-h-0 flex-1 overflow-y-auto px-6", footer ? "pb-4" : "pb-6")}>
+          {children}
+        </div>
 
         {footer ? (
           <div className="box-content flex h-16 flex-none items-center gap-2 border-t border-hairline px-6">
@@ -103,17 +107,17 @@ export function AccountSection({
   children?: ReactNode;
 }) {
   return (
-    <section className="mt-6 first:mt-0">
-      <h3 className="m-0 text-14 font-semibold text-text-primary">{title}</h3>
+    <section className="mt-8 first:mt-0">
+      <h3 className="m-0 text-14 font-semibold text-text-primary text-trim">{title}</h3>
       {detail ? (
-        <p className="mt-1 mb-0 text-13 text-text-secondary">{detail}</p>
+        <p className="mt-2 mb-0 text-13 text-text-secondary text-trim">{detail}</p>
       ) : null}
-      {children ? <div className="mt-3">{children}</div> : null}
+      {children ? <div className="mt-4">{children}</div> : null}
     </section>
   );
 }
 
 /** The strip that says what a control will and will not do on this server. */
 export function AccountNotice({ children }: { children: ReactNode }) {
-  return <p className={cx(plainNoticeClass, "mt-3 mb-0")}>{children}</p>;
+  return <p className={cx(plainNoticeClass, "mt-2 mb-0")}>{children}</p>;
 }

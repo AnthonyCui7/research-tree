@@ -213,6 +213,15 @@
   }
 }
 
+/* A block of text measured from the top of its capitals to its baseline, not
+   by its line box, so the space set around it is the space the eye sees: a
+   margin between two trimmed paragraphs, or between one and a card, is the gap
+   between their visible edges. For text stacked in documents and pages;
+   controls and rows keep their line boxes, which fix their heights. */
+@utility text-trim {
+  text-box: trim-both cap alphabetic;
+}
+
 /* The canvas surface the workspace tree paints on. Unchanged by design. */
 @utility tree-grid-bg {
   background:

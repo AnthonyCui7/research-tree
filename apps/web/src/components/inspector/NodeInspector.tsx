@@ -163,14 +163,14 @@ function PaperView({
       </Facts>
 
       {hasLinks ? (
-        <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-3">
+        <div className="mt-4 flex flex-wrap items-center gap-4">
           {pdfUrl ? (
             <button className={primaryActionClass} type="button" onClick={() => setReaderOpen(true)}>
               <BookIcon className="size-4" />
               Read with annotations
             </button>
           ) : null}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             {pdfUrl ? (
               <SourceLink href={pdfUrl} icon={<DownloadIcon className="size-4" />}>
                 PDF
@@ -251,7 +251,7 @@ function AuthorList({ authors }: { authors: string[] }) {
   const shown = names.slice(0, SHOWN_AUTHORS);
   const more = names.length - shown.length;
   return (
-    <p className="mt-2 mb-0 text-14 text-text-secondary">
+    <p className="mt-4 mb-0 text-14 text-text-secondary text-trim">
       {shown.join(", ")}
       {more > 0 ? <span className="text-text-muted">, and {more} more</span> : null}
     </p>
@@ -267,7 +267,7 @@ function Abstract({ text }: { text: string }) {
     <>
       <p
         className={cx(
-          "m-0 max-w-[68ch] text-14 leading-6 text-text-primary",
+          "m-0 max-w-[68ch] text-14 leading-6 text-text-primary text-trim",
           folded && "line-clamp-6 [mask-image:linear-gradient(to_bottom,black_60%,transparent)]",
         )}
       >
@@ -275,7 +275,7 @@ function Abstract({ text }: { text: string }) {
       </p>
       {long ? (
         <button
-          className="mt-2 flex items-center gap-1 border-0 bg-transparent p-0 text-13 font-medium text-accent-deep hover:text-accent"
+          className="mt-2 flex items-center gap-1 border-0 bg-transparent p-0 text-13 leading-4 font-medium text-accent-deep hover:text-accent"
           type="button"
           onClick={() => setExpanded((current) => !current)}
           aria-expanded={expanded}
@@ -298,26 +298,24 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   const visible = showAll ? papers : papers.slice(0, SIMILAR_PREVIEW);
   return (
     <Section label="Similar papers" count={papers.length}>
-      <ul className="m-0 grid list-none divide-y divide-hairline p-0">
+      <ul className="m-0 grid list-none gap-4 p-0">
         {visible.map((paper) => (
-          <li className="py-3 first:pt-0" key={paper.paper_id}>
-            <p className="m-0 text-13 font-medium text-text-primary [overflow-wrap:anywhere]">
-              {paper.title}
-            </p>
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-12 text-text-muted">
-              <span>
-                {authorLine(paper.authors ?? [])} ·{" "}
-                {publicationDate({ publicationDate: paper.publication_date ?? null, year: paper.year })}
-              </span>
-              {paper.arxiv_link ? <InlineLink href={paper.arxiv_link}>arXiv</InlineLink> : null}
-              {paper.s2_link ? <InlineLink href={paper.s2_link}>Semantic Scholar</InlineLink> : null}
-            </div>
+          <li key={paper.paper_id}>
+            <Reference
+              title={paper.title}
+              byline={`${authorLine(paper.authors ?? [])} · ${publicationDate({
+                publicationDate: paper.publication_date ?? null,
+                year: paper.year,
+              })}`}
+              arxivLink={paper.arxiv_link ?? null}
+              semanticScholarLink={paper.s2_link ?? null}
+            />
           </li>
         ))}
       </ul>
       {papers.length > SIMILAR_PREVIEW ? (
         <button
-          className="mt-2 flex items-center gap-1 border-0 bg-transparent p-0 text-13 font-medium text-accent-deep hover:text-accent"
+          className="mt-2 flex items-center gap-1 border-0 bg-transparent p-0 text-13 leading-4 font-medium text-accent-deep hover:text-accent"
           type="button"
           onClick={() => setShowAll((current) => !current)}
           aria-expanded={showAll}
@@ -374,7 +372,9 @@ function BranchView({
       {node.anchorPaper ? <SurveyAnchor label="Branch survey" paper={node.anchorPaper} /> : null}
       {readingPath.length > 0 ? (
         <Section label="Reading path" count={readingPath.length}>
-          <ol className="m-0 -mx-2 grid list-none p-0">
+          {/* Each row's padding is pulled back out on every side, so its number
+              sits on the column's edge and only the hover wash reaches past it. */}
+          <ol className="-m-2 grid list-none p-0">
             {readingPath.map((paper, index) => (
               <li className="relative" key={paper.id}>
                 {index < readingPath.length - 1 ? (
@@ -398,7 +398,7 @@ function BranchView({
                     <span className="block text-13 font-medium text-text-primary">
                       {paper.title}
                     </span>
-                    <span className="mt-1 block text-12 text-text-muted">
+                    <span className="mt-1.5 block text-12 text-text-muted text-trim">
                       {authorLine(paper.authors)} · {publicationDate(paper)}
                     </span>
                   </span>
@@ -534,7 +534,7 @@ function Title({ children, large = false }: { children: string; large?: boolean 
   return (
     <h3
       className={cx(
-        "m-0 font-semibold text-text-primary [overflow-wrap:anywhere]",
+        "m-0 font-semibold text-text-primary text-trim [overflow-wrap:anywhere]",
         large ? "text-24" : "text-20",
       )}
     >
@@ -546,7 +546,7 @@ function Title({ children, large = false }: { children: string; large?: boolean 
 /** The short facts under a title, each with the icon that says what it is. */
 function Facts({ children }: { children: ReactNode }) {
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-13 text-text-muted">
+    <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-13 leading-4 text-text-muted">
       {children}
     </div>
   );
@@ -555,7 +555,7 @@ function Facts({ children }: { children: ReactNode }) {
 function Fact({ icon, wide = false, children }: { icon: ReactNode; wide?: boolean; children: ReactNode }) {
   return (
     <span className={cx("inline-flex min-w-0 items-start gap-1.5", wide && "basis-full")}>
-      <span className="mt-0.5 flex-none text-text-muted/80">{icon}</span>
+      <span className="flex-none text-text-muted/80">{icon}</span>
       <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
     </span>
   );
@@ -565,12 +565,10 @@ function Fact({ icon, wide = false, children }: { icon: ReactNode; wide?: boolea
 function Section({ label, count, children }: { label: string; count?: number; children: ReactNode }) {
   return (
     <section className="mt-8">
-      <h4 className={cx(kickerClass, "m-0 mb-2 flex items-center gap-2")}>
-        {label}
+      <h4 className={cx(kickerClass, "m-0 mb-4 flex items-center gap-2")}>
+        <span className="text-trim">{label}</span>
         {count !== undefined ? (
-          <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-surface-subtle px-1.5 text-11 font-semibold tracking-normal text-text-secondary tabular-nums">
-            {count}
-          </span>
+          <span className="tracking-normal text-text-secondary tabular-nums text-trim">{count}</span>
         ) : null}
       </h4>
       {children}
@@ -585,14 +583,14 @@ function Section({ label, count, children }: { label: string; count?: number; ch
 function Callout({ label, children }: { label: string; children: string }) {
   return (
     <section className="mt-8 rounded-xl border border-accent-border/70 bg-accent-wash p-4">
-      <h4 className={cx(kickerTypeClass, "m-0 mb-2 text-accent-deep")}>{label}</h4>
-      <p className="m-0 max-w-[68ch] text-14 leading-6 text-text-primary">{children}</p>
+      <h4 className={cx(kickerTypeClass, "m-0 mb-4 text-accent-deep text-trim")}>{label}</h4>
+      <p className="m-0 max-w-[68ch] text-14 leading-6 text-text-primary text-trim">{children}</p>
     </section>
   );
 }
 
 function Prose({ children }: { children: string }) {
-  return <p className="m-0 max-w-[68ch] text-14 leading-6 text-text-primary">{children}</p>;
+  return <p className="m-0 max-w-[68ch] text-14 leading-6 text-text-primary text-trim">{children}</p>;
 }
 
 /**
@@ -603,18 +601,12 @@ function SurveyAnchor({ label, paper }: { label: string; paper: PaperDetails }) 
   return (
     <Section label={label}>
       <div className="rounded-xl border border-hairline p-4">
-        <p className="m-0 text-13 font-medium text-text-primary [overflow-wrap:anywhere]">
-          {paper.title}
-        </p>
-        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-12 text-text-muted">
-          <span>
-            {authorLine(paper.authors)} · {publicationDate(paper)}
-          </span>
-          {paper.arxivLink ? <InlineLink href={paper.arxivLink}>arXiv</InlineLink> : null}
-          {paper.semanticScholarLink ? (
-            <InlineLink href={paper.semanticScholarLink}>Semantic Scholar</InlineLink>
-          ) : null}
-        </div>
+        <Reference
+          title={paper.title}
+          byline={`${authorLine(paper.authors)} · ${publicationDate(paper)}`}
+          arxivLink={paper.arxivLink}
+          semanticScholarLink={paper.semanticScholarLink}
+        />
       </div>
     </Section>
   );
@@ -624,7 +616,7 @@ function SurveyAnchor({ label, paper }: { label: string; paper: PaperDetails }) 
 function SourceLink({ href, icon, children }: { href: string; icon: ReactNode; children: string }) {
   return (
     <a
-      className="inline-flex items-center gap-1.5 text-13 font-medium text-text-secondary no-underline transition-[color] duration-150 hover:text-accent-deep"
+      className="-my-1 inline-flex items-center gap-1.5 py-1 text-13 leading-4 font-medium text-text-secondary no-underline transition-[color] duration-150 hover:text-accent-deep"
       href={href}
       target="_blank"
       rel="noreferrer"
@@ -635,16 +627,44 @@ function SourceLink({ href, icon, children }: { href: string; icon: ReactNode; c
   );
 }
 
+/**
+ * A paper cited in a panel: its title, then who and when, and where to read
+ * it. Both lines are trimmed to their letters, so the space around a reference
+ * is the space between the text itself.
+ */
+function Reference({
+  title,
+  byline,
+  arxivLink,
+  semanticScholarLink,
+}: {
+  title: string;
+  byline: string;
+  arxivLink: string | null;
+  semanticScholarLink: string | null;
+}) {
+  return (
+    <>
+      <p className="m-0 text-13 font-medium text-text-primary text-trim [overflow-wrap:anywhere]">{title}</p>
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-12 text-text-muted">
+        <span className="text-trim">{byline}</span>
+        {arxivLink ? <InlineLink href={arxivLink}>arXiv</InlineLink> : null}
+        {semanticScholarLink ? <InlineLink href={semanticScholarLink}>Semantic Scholar</InlineLink> : null}
+      </div>
+    </>
+  );
+}
+
 function InlineLink({ href, children }: { href: string; children: string }) {
   return (
     <a
-      className="inline-flex items-center gap-0.5 font-medium text-accent-deep no-underline hover:text-accent hover:underline"
+      className="font-medium text-accent-deep no-underline text-trim hover:text-accent hover:underline"
       href={href}
       target="_blank"
       rel="noreferrer"
     >
       {children}
-      <ExternalIcon className="size-3" />
+      <ExternalIcon className="ml-0.5 inline-block size-3 align-middle" />
     </a>
   );
 }
@@ -672,11 +692,12 @@ function Questions({ questions }: { questions: string[] }) {
   }
   return (
     <Section label="Open questions" count={questions.length}>
-      <ul className="m-0 grid max-w-[68ch] list-none gap-3 p-0">
+      <ul className="m-0 grid max-w-[68ch] list-none gap-6 p-0">
         {questions.map((question) => (
           <li className="flex gap-3 text-14 leading-6 text-text-primary" key={question}>
-            <span className="mt-[9px] h-1.5 w-1.5 flex-none rounded-full bg-accent-border" aria-hidden="true" />
-            <span className="min-w-0">{question}</span>
+            {/* Centred on the capitals of the first line. */}
+            <span className="mt-0.5 h-1.5 w-1.5 flex-none rounded-full bg-accent-border" aria-hidden="true" />
+            <span className="min-w-0 text-trim">{question}</span>
           </li>
         ))}
       </ul>
