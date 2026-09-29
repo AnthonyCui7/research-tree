@@ -126,7 +126,7 @@ export function Sidebar({
 
         <div className={cx("flex min-h-0 flex-1 flex-col", labelClass)}>
           {workspaces.length > 0 || buildingRun || !live ? (
-            <div className="flex flex-none items-center gap-2 px-4 pb-1.5 whitespace-nowrap">
+            <div className="flex flex-none items-center gap-2 px-5 pb-1.5 whitespace-nowrap">
               <span className={kickerClass}>Workspaces</span>
               {live ? null : (
                 <span
