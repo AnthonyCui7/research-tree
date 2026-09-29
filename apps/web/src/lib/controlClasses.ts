@@ -32,8 +32,8 @@ export const chipClass =
   "inline-flex items-center rounded-full bg-surface-subtle px-2.5 py-[3px] text-[12px] leading-[1.4] text-text-secondary";
 
 /**
- * The canvas cards' kicker, reused wherever a section needs a label. The type
- * alone is exported for labels in another colour: `cx` joins classes without
+ * The section label, small and uppercase after the canvas cards' kicker. The
+ * type alone is exported for labels in another colour: `cx` joins classes without
  * resolving conflicts, so a colour appended to `kickerClass` would compete
  * with its own rather than replace it.
  */

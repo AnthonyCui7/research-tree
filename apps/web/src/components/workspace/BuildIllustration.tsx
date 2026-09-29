@@ -19,7 +19,9 @@ export function BuildIllustration({ stages }: { stages: BuildStage[] }) {
   const drawing = state("construct");
   const writing = state("hydrate");
   const linking = state("related");
-  const structureShown = drawing !== "waiting";
+  // A stage that failed drew nothing, so it shows as not yet reached.
+  const ran = (stage: StageState) => stage === "current" || stage === "done";
+  const structureShown = ran(drawing);
 
   return (
     <svg className="block h-auto w-full" viewBox="0 0 560 196" aria-hidden="true">
@@ -90,7 +92,7 @@ export function BuildIllustration({ stages }: { stages: BuildStage[] }) {
           {BRANCHES.map((branch, branchIndex) =>
             PAPER_XS.map((x, paperIndex) => {
               const order = branchIndex * PAPER_XS.length + paperIndex;
-              const filled = writing === "done" || writing === "current";
+              const filled = ran(writing);
               return (
                 <g key={`${branch.y}:${x}`}>
                   <rect
@@ -119,7 +121,7 @@ export function BuildIllustration({ stages }: { stages: BuildStage[] }) {
       ) : null}
 
       {/* Similar papers, linked across branches. */}
-      {linking !== "waiting" ? (
+      {ran(linking) ? (
         <g className="animate-settle">
           {LINKS.map((d) => (
             <path

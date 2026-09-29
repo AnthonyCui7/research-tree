@@ -2,8 +2,7 @@ import { cx } from "../../lib/cx";
 import { kickerClass, secondaryActionClass } from "../../lib/controlClasses";
 import { pluralize } from "../../lib/format";
 import { AccountDialog } from "../account/AccountDialog";
-import { OperationBadge } from "./ProposedRevision";
-import { operationFieldChanges, type OperationChip } from "../../lib/proposedOperations";
+import { operationFieldChanges, type ChipTone, type OperationChip } from "../../lib/proposedOperations";
 import type { ProposedOperation } from "../../lib/types";
 
 type RevisionDiffDialogProps = {
@@ -86,3 +85,23 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
     </AccountDialog>
   );
 }
+
+/** ADD, REMOVE, MOVE…: tinted by whether the change adds, removes, or rearranges. */
+export function OperationBadge({ chip }: { chip: OperationChip }) {
+  return (
+    <span
+      className={cx(
+        "flex-none rounded-[5px] px-1.5 py-px text-[10.5px] font-semibold tracking-[0.02em] uppercase",
+        BADGE_TONE[chip.tone],
+      )}
+    >
+      {chip.badge}
+    </span>
+  );
+}
+
+const BADGE_TONE: Record<ChipTone, string> = {
+  add: "bg-accent-subtle text-accent-deep",
+  remove: "bg-error-surface text-error",
+  neutral: "bg-surface-subtle text-text-secondary",
+};

@@ -8,7 +8,7 @@ import type { TreeNodeId, TreeViewModel } from "../lib/types";
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "research-tree.sidebar-collapsed";
 
-/** Below this width an open sidebar covers the canvas rather than sitting beside it. */
+/** Up to this width an open sidebar covers the canvas, as the CSS's `max-[900px]` says. */
 const NARROW_VIEWPORT = 900;
 
 /** What the main area shows: the page for starting a workspace, or one workspace. */
@@ -184,7 +184,7 @@ function readSidebarCollapsed(): boolean {
   } catch {
     // A browser set to block site data throws here rather than returning
     // null, and this runs in a state initializer above every error boundary,
-    // so an unguarded read left the whole page blank.
+    // where a throw would take the whole page down.
   }
-  return window.innerWidth < NARROW_VIEWPORT;
+  return window.innerWidth <= NARROW_VIEWPORT;
 }

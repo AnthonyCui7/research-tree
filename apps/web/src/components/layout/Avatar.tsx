@@ -44,6 +44,11 @@ export function displayName(user: SessionUser): string {
   return "Local profile";
 }
 
+/** The line under the name: the address, or that the local build has no accounts. */
+export function accountDetail(user: SessionUser, local: boolean): string {
+  return local ? "Runs without accounts" : user.email;
+}
+
 export function initials(user: SessionUser): string {
   const source = displayName(user);
   if (source === "Local profile") return "RT";

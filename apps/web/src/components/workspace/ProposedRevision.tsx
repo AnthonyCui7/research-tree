@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { cx } from "../../lib/cx";
 import { compactActionClass, compactPrimaryActionClass } from "../../lib/controlClasses";
 import { pluralize } from "../../lib/format";
 import {
@@ -8,10 +7,9 @@ import {
   operationChips,
   operationsFromResult,
   skepticNotes,
-  type ChipTone,
   type OperationChip,
 } from "../../lib/proposedOperations";
-import { RevisionDiffDialog } from "./RevisionDiffDialog";
+import { OperationBadge, RevisionDiffDialog } from "./RevisionDiffDialog";
 import { TreeIcon } from "../ui/icons";
 import type { AgentRunResult, TreeViewModel } from "../../lib/types";
 
@@ -150,26 +148,6 @@ export function ProposedRevision({
     </div>
   );
 }
-
-/** ADD, REMOVE, MOVE…: tinted by whether the change adds, removes, or rearranges. */
-export function OperationBadge({ chip }: { chip: OperationChip }) {
-  return (
-    <span
-      className={cx(
-        "flex-none rounded-[5px] px-1.5 py-px text-[10.5px] font-semibold tracking-[0.02em] uppercase",
-        BADGE_TONE[chip.tone],
-      )}
-    >
-      {chip.badge}
-    </span>
-  );
-}
-
-const BADGE_TONE: Record<ChipTone, string> = {
-  add: "bg-accent-subtle text-accent-deep",
-  remove: "bg-error-surface text-error",
-  neutral: "bg-surface-subtle text-text-secondary",
-};
 
 function chipTitle(chip: OperationChip): string {
   return chip.name ? `${chip.name} ${chip.detail}` : chip.detail;
