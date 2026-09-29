@@ -195,7 +195,7 @@ function TopicStep({
       >
         <input
           ref={topicRef}
-          className="block w-full border-0 bg-transparent px-5 pt-[18px] pb-2 text-17 text-text-primary outline-0 placeholder:text-text-muted"
+          className="block w-full border-0 bg-transparent px-5 pt-4 pb-2 text-17 text-text-primary outline-0 placeholder:text-text-muted"
           type="text"
           value={topic}
           onChange={(event) => onTopic(event.target.value)}

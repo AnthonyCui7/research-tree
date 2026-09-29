@@ -29,7 +29,7 @@ export function Toast({ tone, children, onDismiss, dismissLabel = "Dismiss", act
       )}
       role={success ? "status" : "alert"}
     >
-      <span className={cx("mt-[3px] flex-none", success ? "text-accent" : "text-error")}>
+      <span className={cx("mt-0.5 flex-none", success ? "text-accent" : "text-error")}>
         {success ? <CheckIcon className="size-4" /> : <WarningIcon className="size-4" />}
       </span>
       <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{children}</span>
