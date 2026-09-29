@@ -11,7 +11,9 @@ type AvatarProps = {
 /** A picture when the account has one, otherwise initials on the accent tint. */
 export function Avatar({ user, size, className }: AvatarProps) {
   const [broken, setBroken] = useState(false);
-  const style = { width: size, height: size, fontSize: Math.round(size * 0.36) };
+  // Initials at 40% of the circle: 11px in the sidebar's 28px avatar and 13px
+  // in the menu's 32px one, both sizes from the type scale.
+  const style = { width: size, height: size, fontSize: Math.round(size * 0.4) };
   if (user.avatar_url && !broken) {
     return (
       <img
@@ -27,7 +29,7 @@ export function Avatar({ user, size, className }: AvatarProps) {
   return (
     <span
       className={cx(
-        "grid flex-none place-items-center rounded-full bg-accent-subtle font-bold text-accent-deep",
+        "grid flex-none place-items-center rounded-full bg-accent-subtle leading-none font-bold text-accent-deep",
         className,
       )}
       style={style}

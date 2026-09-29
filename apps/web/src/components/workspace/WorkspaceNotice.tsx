@@ -38,7 +38,7 @@ export function WorkspaceNotice({
           {title}
         </h2>
         {detail ? (
-          <p className="mt-1.5 mb-0 text-13 text-text-secondary">{detail}</p>
+          <p className="mt-1 mb-0 text-13 text-text-secondary">{detail}</p>
         ) : null}
         {actionLabel && onAction ? (
           <button className={cx(secondaryActionClass, "mt-4")} type="button" onClick={onAction}>

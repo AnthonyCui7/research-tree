@@ -5,7 +5,7 @@ import { cx } from "../../lib/cx";
 import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { useModalDialog } from "../../lib/modalDialog";
 import { paperPdfUrl, repositoryWorkspaceGateway } from "../../data/workspaceApi";
-import { compactActionClass, iconButtonClass } from "../../lib/controlClasses";
+import { iconButtonClass, inlineIconButtonClass, secondaryActionClass } from "../../lib/controlClasses";
 import { MenuItem, MenuSection, PopoverMenu, anchorFromEvent, type MenuAnchor } from "../ui/PopoverMenu";
 import { ChatIcon, ChevronDownIcon, CloseIcon, HelpIcon } from "../ui/icons";
 import type {
@@ -135,19 +135,19 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
       }}
       onKeyDown={onKeyDown}
     >
-      <header className="relative flex h-14 flex-none items-center gap-2 border-b border-hairline bg-surface pr-2 pl-5">
+      <header className="box-content flex h-14 flex-none items-center gap-2 border-b border-hairline bg-surface pr-3.5 pl-6">
         <div className="min-w-0 flex-1">
           <h2 className="m-0 truncate text-14 font-semibold text-text-primary">
             {paper.title}
           </h2>
-          <p className="mt-0.5 mb-0 truncate text-12 text-text-muted">
+          <p className="m-0 truncate text-12 text-text-muted">
             {byline.join(" · ")}
             {byline.length ? " · " : null}
             <ReaderStatus annotations={annotations} error={error} />
           </p>
         </div>
         <button
-          className={compactActionClass}
+          className={secondaryActionClass}
           type="button"
           disabled={generating}
           onClick={(event) => setModeAnchor(anchorFromEvent(event.currentTarget, "right"))}
@@ -160,7 +160,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
           <ChevronDownIcon className="size-4 text-text-muted" />
         </button>
         <button
-          className={compactActionClass}
+          className={secondaryActionClass}
           type="button"
           disabled={generating}
           onClick={() => fetchAnnotations({ ...(mode ? { mode } : {}), refresh: true })}
@@ -170,7 +170,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
         </button>
         {onOpenAssistant ? (
           <button
-            className="inline-flex h-7 items-center gap-1.5 rounded-[7px] border border-accent-border bg-surface px-2.5 text-12 font-medium whitespace-nowrap text-accent-deep transition-[background-color] duration-150 hover:bg-accent-wash"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent-border bg-surface px-3 text-13 font-medium whitespace-nowrap text-accent-deep transition-[background-color] duration-150 hover:bg-accent-wash"
             type="button"
             onClick={() => {
               dismiss();
@@ -182,20 +182,23 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
             <span className="max-[640px]:sr-only">Assistant</span>
           </button>
         ) : null}
-        <button
-          className={iconButtonClass}
-          type="button"
-          onClick={() => setHelpOpen((open) => !open)}
-          aria-expanded={helpOpen}
-          aria-label="About this viewer"
-          title="About this viewer"
-        >
-          <HelpIcon className="size-4" />
-        </button>
+        {/* The popup hangs from this button, as a menu hangs from its trigger. */}
+        <div className="relative">
+          <button
+            className={iconButtonClass}
+            type="button"
+            onClick={() => setHelpOpen((open) => !open)}
+            aria-expanded={helpOpen}
+            aria-label="About this viewer"
+            title="About this viewer"
+          >
+            <HelpIcon className="size-4" />
+          </button>
+          {helpOpen ? <ViewerHelp /> : null}
+        </div>
         <button className={iconButtonClass} type="button" onClick={dismiss} aria-label="Close reader" title="Close">
           <CloseIcon className="size-3" />
         </button>
-        {helpOpen ? <ViewerHelp /> : null}
       </header>
       {modeAnchor ? (
         <PopoverMenu anchor={modeAnchor} onClose={() => setModeAnchor(null)} label="Annotation mode" width={220}>
@@ -236,7 +239,7 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
           // sentence above is for the reader, and the cause goes to the console.
           onLoadError={(loadError) => console.error(loadError)}
         >
-          <div className="mx-auto grid w-fit gap-5">
+          <div className="mx-auto grid w-fit gap-6">
             {Array.from({ length: pageCount }, (_, index) => (
               <AnnotatedPage
                 key={index}
@@ -341,7 +344,7 @@ function AnnotationNote({
   const below = box.y + box.height < 0.8;
   return (
     <div
-      className="absolute z-dropdown w-[320px] max-w-[80%] rounded-xl border border-border bg-surface p-3.5 shadow-popover"
+      className="absolute z-dropdown w-[320px] max-w-[80%] rounded-xl border border-border bg-surface p-4 shadow-popover"
       style={{
         left: `${Math.min(Math.max(box.x, 0.02), 0.62) * 100}%`,
         ...(below
@@ -350,10 +353,10 @@ function AnnotationNote({
       }}
       role="note"
     >
-      <div className="flex items-baseline gap-2">
+      <div className="flex items-center gap-2">
         <span
           className={cx(
-            "flex-none rounded-[4px] px-1.5 py-0.5 text-11 font-medium tracking-[0.02em] uppercase",
+            "inline-flex h-5 flex-none items-center rounded-xs px-1.5 text-11 font-semibold tracking-[0.02em] uppercase",
             MARK_STYLES[annotation.type],
           )}
         >
@@ -363,7 +366,7 @@ function AnnotationNote({
           {annotation.text_ref}
         </span>
         <button
-          className="flex-none border-0 bg-transparent p-0 text-11 text-text-muted hover:text-text-primary"
+          className={cx(inlineIconButtonClass, "-mr-1.5 text-text-muted hover:bg-surface-subtle hover:text-text-primary")}
           type="button"
           onClick={onClose}
           aria-label="Close note"
@@ -388,17 +391,17 @@ function modeLabel(mode: AnnotationRetrievalMode | null): string {
 /** The design's "About this viewer" popup, describing what each control does. */
 function ViewerHelp() {
   return (
-    <div className="absolute top-[calc(100%+6px)] right-3 z-dropdown w-[320px] rounded-xl border border-border bg-surface px-4 py-3.5 shadow-popover">
+    <div className="absolute top-[calc(100%+6px)] right-0 z-dropdown w-[320px] rounded-xl border border-border bg-surface p-4 shadow-popover">
       <div className="text-13 font-semibold text-text-primary">About this viewer</div>
-      <p className="mt-1.5 mb-0 text-13 text-text-secondary">
+      <p className="mt-1 mb-0 text-13 text-text-secondary">
         Annotations are generated by <b className="font-semibold text-text-primary">annotagent</b>.
         It extracts the PDF text, then writes highlights, notes, and jargon definitions anchored to
         the page layout.
       </p>
-      <ul className="mt-2.5 mb-0 flex list-none gap-3 border-t border-hairline p-0 pt-2.5">
+      <ul className="mt-3 mb-0 flex list-none gap-3 border-t border-hairline p-0 pt-3">
         {LEGEND.map(({ type, label }) => (
           <li className="flex items-center gap-1.5 text-12 text-text-secondary" key={type}>
-            <span className={cx("h-2.5 w-2.5 rounded-[3px] border-b-2", MARK_STYLES[type])} />
+            <span className={cx("h-2.5 w-2.5 rounded-[2px] border-b-2", MARK_STYLES[type])} />
             {label}
           </li>
         ))}

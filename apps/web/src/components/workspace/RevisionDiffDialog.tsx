@@ -47,14 +47,14 @@ export function RevisionDiffDialog({ operations, chips, onClose }: RevisionDiffD
                 </span>
               </div>
               {operation.rationale ? (
-                <p className="mt-1.5 mb-0 text-13 text-text-secondary">
+                <p className="mt-1 mb-0 text-13 text-text-secondary">
                   {operation.rationale}
                 </p>
               ) : null}
               {changes.length > 0 ? (
-                <dl className="mt-3 mb-0 grid gap-2.5">
+                <dl className="mt-3 mb-0 grid gap-3">
                   {changes.map((change) => (
-                    <div className="grid gap-0.5" key={change.label}>
+                    <div className="grid gap-1" key={change.label}>
                       <dt className={kickerClass}>{change.label}</dt>
                       <dd className="m-0 grid gap-0.5 text-13">
                         {change.before !== null ? (
@@ -91,7 +91,7 @@ export function OperationBadge({ chip }: { chip: OperationChip }) {
   return (
     <span
       className={cx(
-        "flex-none rounded-[5px] px-1.5 py-px text-11 font-semibold tracking-[0.02em] uppercase",
+        "inline-flex h-5 flex-none items-center rounded-xs px-1.5 text-11 font-semibold tracking-[0.02em] uppercase",
         BADGE_TONE[chip.tone],
       )}
     >

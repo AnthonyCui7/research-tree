@@ -194,7 +194,8 @@ export function MenuItem({
   return (
     <button
       className={cx(
-        "flex w-full items-center gap-2.5 rounded-md border-0 bg-transparent px-2.5 text-left text-13 transition-[background-color] duration-150 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-text-muted",
+        // Rounded 6px, the menu's 12px less the 6px it is inset by.
+        "flex w-full items-center gap-2.5 rounded-sm border-0 bg-transparent px-2.5 text-left text-13 transition-[background-color] duration-150 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-text-muted",
         description ? "py-1.5" : "h-8",
         tone === "danger"
           ? "text-error hover:bg-error-surface focus-visible:bg-error-surface"

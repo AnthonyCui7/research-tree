@@ -3,7 +3,7 @@ import { isVersionConflict, messageFrom, VERSION_CONFLICT_MESSAGE } from "../../
 import { repositoryWorkspaceGateway } from "../../data/workspaceApi";
 import { cx } from "../../lib/cx";
 import { dateTimeLabel } from "../../lib/format";
-import { compactActionClass, errorNoticeClass } from "../../lib/controlClasses";
+import { badgeClass, compactActionClass, errorNoticeClass } from "../../lib/controlClasses";
 import { PanelHeader } from "../panel/RightPanel";
 import { ChatIcon, PencilIcon, TreeIcon } from "../ui/icons";
 import type { WorkspaceVersion } from "../../lib/types";
@@ -111,12 +111,12 @@ export function WorkspaceHistory({
             const editor = versionEditor(version);
             return (
               <li
-                className="relative flex gap-3.5 pb-6 last:pb-0"
+                className="relative flex gap-3 pb-6 last:pb-0"
                 key={`${version.navigation_index ?? 0}:${version.version_hash}`}
               >
                 {last ? null : (
                   <span
-                    className="absolute top-7 bottom-1 left-[13.5px] w-px bg-hairline"
+                    className="absolute top-8 bottom-1 left-[13.5px] w-px bg-hairline"
                     aria-hidden="true"
                   />
                 )}
@@ -137,16 +137,14 @@ export function WorkspaceHistory({
                       {humanReason(version.reason)}
                     </p>
                     {current ? (
-                      <span className="flex-none rounded-full bg-accent-subtle px-2 py-px text-11 font-semibold text-accent-deep">
-                        Current
-                      </span>
+                      <span className={cx(badgeClass, "bg-accent-subtle text-accent-deep")}>Current</span>
                     ) : null}
                   </div>
-                  <p className="mt-0.5 mb-0 text-12 text-text-muted">
+                  <p className="mt-1 mb-0 text-12 text-text-muted">
                     {editor.label} · {dateTimeLabel(version.created_at)}
                   </p>
                   {current ? null : (
-                    <div className="mt-2 flex items-center gap-2.5">
+                    <div className="mt-2 flex items-center gap-3">
                       <button
                         className={compactActionClass}
                         type="button"

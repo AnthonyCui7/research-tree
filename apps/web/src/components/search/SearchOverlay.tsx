@@ -4,7 +4,7 @@ import { DIALOG_EXIT_MS } from "../../lib/animation";
 import { useModalDialog } from "../../lib/modalDialog";
 import { branchTint } from "../../lib/familyTint";
 import { pluralize } from "../../lib/format";
-import { kickerClass } from "../../lib/controlClasses";
+import { keycapClass, kickerClass } from "../../lib/controlClasses";
 import { PaperIcon, SearchIcon, TreeIcon } from "../ui/icons";
 import { authorLine, publicationDate } from "../tree/TreeNode";
 import type { BranchTreeNode, PaperTreeNode, TreeNodeId, TreeViewModel } from "../../lib/types";
@@ -121,8 +121,12 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
       >
-        <div className="flex flex-none items-center gap-3 border-b border-hairline px-5 py-4">
-          <SearchIcon className="size-4 flex-none text-text-muted" />
+        {/* The glyph sits in a slot as wide as a result's icon tile, so the
+            query lines up with the titles it matches. */}
+        <div className="box-content flex h-14 flex-none items-center gap-3 border-b border-hairline px-5">
+          <span className="grid h-7 w-7 flex-none place-items-center text-text-muted" aria-hidden="true">
+            <SearchIcon className="size-4" />
+          </span>
           <input
             ref={inputRef}
             className="min-w-0 flex-1 border-0 bg-transparent text-15 text-text-primary outline-0 placeholder:text-text-muted"
@@ -137,12 +141,10 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
             aria-controls="search-results"
             aria-activedescendant={results.length > 0 ? optionId(activeIndex) : undefined}
           />
-          <kbd className="flex-none rounded-[5px] border border-border bg-surface-subtle px-1.5 py-px font-sans text-11 text-text-muted">
-            esc
-          </kbd>
+          <kbd className={keycapClass}>esc</kbd>
         </div>
 
-        <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-2 pt-2 pb-2.5" ref={listRef}>
+        <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-2" ref={listRef}>
           <div
             role="listbox"
             id="search-results"
@@ -197,12 +199,12 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
           ) : null}
         </div>
 
-        <div className="flex flex-none items-center gap-4 border-t border-hairline px-5 py-2.5 text-12 text-text-muted">
+        <div className="box-content flex h-10 flex-none items-center gap-4 border-t border-hairline px-5 text-12 text-text-muted">
           <span className="flex items-center gap-1.5 max-[520px]:hidden">
-            <FooterKey>↑↓</FooterKey> navigate
+            <kbd className={keycapClass}>↑↓</kbd> navigate
           </span>
           <span className="flex items-center gap-1.5 max-[520px]:hidden">
-            <FooterKey>⏎</FooterKey> open
+            <kbd className={keycapClass}>⏎</kbd> open
           </span>
           <span className="ml-auto">Searches this workspace only</span>
         </div>
@@ -217,17 +219,9 @@ function optionId(index: number): string {
 
 function GroupLabel({ id, children }: { id: string; children: string }) {
   return (
-    <div className={cx(kickerClass, "px-3 pt-2.5 pb-1.5")} id={id} role="presentation">
+    <div className={cx(kickerClass, "px-3 pt-3 pb-1")} id={id} role="presentation">
       {children}
     </div>
-  );
-}
-
-function FooterKey({ children }: { children: string }) {
-  return (
-    <kbd className="rounded-[4px] border border-border bg-surface-subtle px-1 font-sans text-11">
-      {children}
-    </kbd>
   );
 }
 
@@ -255,7 +249,7 @@ function ResultRow({
   return (
     <div
       className={cx(
-        "flex w-full cursor-default items-center gap-3 rounded-lg px-3 py-2 text-left transition-[background-color] duration-100",
+        "flex w-full cursor-default items-center gap-3 rounded-md px-3 py-2 text-left transition-[background-color] duration-100",
         active ? "bg-surface-subtle" : "bg-transparent",
       )}
       id={id}
@@ -265,7 +259,7 @@ function ResultRow({
       onClick={onSelect}
     >
       <span
-        className="grid h-7 w-7 flex-none place-items-center rounded-lg border border-hairline text-text-secondary"
+        className="grid h-7 w-7 flex-none place-items-center rounded-sm border border-hairline text-text-secondary"
         style={{ background: tint }}
         aria-hidden="true"
       >
@@ -274,7 +268,7 @@ function ResultRow({
       <span className="min-w-0 flex-1">
         <span className="block truncate text-14 font-medium text-text-primary">{title}</span>
         {subtitle ? (
-          <span className="mt-px block truncate text-12 text-text-muted">{subtitle}</span>
+          <span className="block truncate text-12 text-text-muted">{subtitle}</span>
         ) : null}
       </span>
       {trailing ? <span className="flex-none text-12 text-text-muted">{trailing}</span> : null}

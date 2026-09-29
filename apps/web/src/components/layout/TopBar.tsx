@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { cx } from "../../lib/cx";
+import { keycapClass } from "../../lib/controlClasses";
 import { pluralize } from "../../lib/format";
 import { ChatIcon, ClockIcon, SearchIcon } from "../ui/icons";
 
@@ -40,8 +41,8 @@ export function TopBar({
       : `${pluralize(branchCount, "branch", "branches")} · ${pluralize(paperCount, "paper")}`;
 
   return (
-    <header className="flex h-[52px] flex-none items-center gap-2 border-b border-hairline bg-surface px-4">
-      <div className="flex min-w-0 flex-1 items-baseline gap-2.5 overflow-hidden">
+    <header className="box-content flex h-13 flex-none items-center gap-2 border-b border-hairline bg-surface px-4">
+      <div className="flex min-w-0 flex-1 items-baseline gap-3 overflow-hidden">
         <h1 className="m-0 truncate text-15 font-semibold text-text-primary">
           {workspaceTitle}
         </h1>
@@ -53,7 +54,7 @@ export function TopBar({
       </div>
 
       <button
-        className="flex h-8 w-[min(260px,32vw)] min-w-0 flex-none items-center gap-2 rounded-md border border-transparent bg-surface-subtle px-2.5 text-13 text-text-muted transition-[background-color,border-color] duration-150 enabled:hover:border-border disabled:cursor-not-allowed disabled:opacity-60 max-[640px]:w-8 max-[640px]:justify-center max-[640px]:border-border max-[640px]:bg-surface max-[640px]:px-0"
+        className="flex h-8 w-[min(260px,32vw)] min-w-0 flex-none items-center gap-2 rounded-md border border-transparent bg-surface-subtle pr-1.5 pl-3 text-13 text-text-muted transition-[background-color,border-color] duration-150 enabled:hover:border-border disabled:cursor-not-allowed disabled:opacity-60 max-[640px]:w-8 max-[640px]:justify-center max-[640px]:border-border max-[640px]:bg-surface max-[640px]:px-0"
         type="button"
         onClick={onOpenSearch}
         disabled={searchDisabled}
@@ -62,7 +63,7 @@ export function TopBar({
       >
         <SearchIcon className="size-4 flex-none" />
         <span className="min-w-0 flex-1 truncate text-left max-[640px]:hidden">Search this workspace</span>
-        <kbd className="flex-none rounded-[4px] border border-border bg-surface px-[5px] font-sans text-11 leading-[16px] text-text-muted max-[640px]:hidden">
+        <kbd className={cx(keycapClass, "max-[640px]:hidden")}>
           ⌘K
         </kbd>
       </button>
@@ -109,7 +110,7 @@ function ToolButton({
   return (
     <button
       className={cx(
-        "flex h-8 flex-none items-center gap-1.5 rounded-md border px-2.5 text-13 font-medium transition-[background-color,border-color,color] duration-150 disabled:cursor-not-allowed disabled:border-border disabled:bg-surface disabled:text-border-strong max-[640px]:px-2",
+        "flex h-8 flex-none items-center gap-1.5 rounded-md border px-3 text-13 font-medium transition-[background-color,border-color,color] duration-150 disabled:cursor-not-allowed disabled:border-border disabled:bg-surface disabled:text-border-strong max-[640px]:px-2",
         active
           ? emphasis
             ? "border-accent-border bg-accent-subtle text-accent-deep"

@@ -55,8 +55,8 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
           closing ? "animate-interface-center-exit" : "animate-interface-center-enter",
         )}
       >
-        <header className="flex flex-none items-start gap-3 pt-5 pr-4 pb-4 pl-6">
-          <div className="min-w-0 flex-1 pt-0.5">
+        <header className="flex flex-none items-start gap-3 p-6">
+          <div className="min-w-0 flex-1">
             <h2
               className="m-0 text-17 font-semibold text-text-primary"
               id="account-dialog-title"
@@ -67,8 +67,10 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
               <p className="mt-1 mb-0 text-13 text-text-secondary">{subtitle}</p>
             ) : null}
           </div>
+          {/* Centred on the title's line, with its glyph on the 24px edge the
+              title and the body share. */}
           <button
-            className={iconButtonClass}
+            className={cx(iconButtonClass, "-mt-1 -mr-2.5")}
             type="button"
             onClick={dismiss}
             aria-label={`Close ${title}`}
@@ -81,7 +83,7 @@ export function AccountDialog({ title, subtitle, onClose, children, footer }: Ac
         <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-6 pb-6">{children}</div>
 
         {footer ? (
-          <div className="flex flex-none items-center gap-2 border-t border-hairline px-6 py-3.5">
+          <div className="box-content flex h-16 flex-none items-center gap-2 border-t border-hairline px-6">
             {footer}
           </div>
         ) : null}

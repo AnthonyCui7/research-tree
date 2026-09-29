@@ -70,7 +70,7 @@ export function NodeActionsMenu({
             <span className={kickerClass}>Move to</span>
           </MenuItem>
           {destinations.length === 0 ? (
-            <p className="m-0 px-2.5 py-1.5 text-12 text-text-muted">
+            <p className="m-0 px-2.5 py-2 text-12 text-text-muted">
               No other branch to move it to.
             </p>
           ) : null}
