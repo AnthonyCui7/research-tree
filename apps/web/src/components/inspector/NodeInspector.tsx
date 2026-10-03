@@ -275,7 +275,7 @@ function Abstract({ text }: { text: string }) {
       </p>
       {long ? (
         <button
-          className="mt-2 flex items-center gap-1 border-0 bg-transparent p-0 text-13 leading-4 font-medium text-accent-deep hover:text-accent"
+          className="mt-3 flex items-center gap-1 border-0 bg-transparent p-0 text-13 leading-4 font-medium text-accent-deep hover:text-accent"
           type="button"
           onClick={() => setExpanded((current) => !current)}
           aria-expanded={expanded}
@@ -298,7 +298,8 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
   const visible = showAll ? papers : papers.slice(0, SIMILAR_PREVIEW);
   return (
     <Section label="Similar papers" count={papers.length}>
-      <ul className="m-0 grid list-none gap-4 p-0">
+      {/* Twice the space inside a reference, so each title reads with its own byline. */}
+      <ul className="m-0 grid list-none gap-6 p-0">
         {visible.map((paper) => (
           <li key={paper.paper_id}>
             <Reference
@@ -313,9 +314,11 @@ function SimilarPapers({ papers }: { papers: SimilarPaper[] }) {
           </li>
         ))}
       </ul>
+      {/* A row of the list, as far from the last reference as references are
+          from each other; the abstract's toggle sits a line below the text. */}
       {papers.length > SIMILAR_PREVIEW ? (
         <button
-          className="mt-2 flex items-center gap-1 border-0 bg-transparent p-0 text-13 leading-4 font-medium text-accent-deep hover:text-accent"
+          className="mt-5 flex items-center gap-1 border-0 bg-transparent p-0 text-13 leading-4 font-medium text-accent-deep hover:text-accent"
           type="button"
           onClick={() => setShowAll((current) => !current)}
           aria-expanded={showAll}
@@ -373,13 +376,14 @@ function BranchView({
       {readingPath.length > 0 ? (
         <Section label="Reading path" count={readingPath.length}>
           {/* Each row's padding is pulled back out on every side, so its number
-              sits on the column's edge and only the hover wash reaches past it. */}
-          <ol className="-m-2 grid list-none p-0">
+              sits on the column's edge and only the hover wash reaches past it.
+              Rows sit twice as far apart as a title from its byline. */}
+          <ol className="-m-2 grid list-none gap-2 p-0">
             {readingPath.map((paper, index) => (
               <li className="relative" key={paper.id}>
                 {index < readingPath.length - 1 ? (
                   <span
-                    className="absolute top-8 -bottom-1 left-[17.5px] w-px bg-accent-border"
+                    className="absolute top-8 -bottom-3 left-[17.5px] w-px bg-accent-border"
                     aria-hidden="true"
                   />
                 ) : null}
@@ -543,10 +547,14 @@ function Title({ children, large = false }: { children: string; large?: boolean 
   );
 }
 
-/** The short facts under a title, each with the icon that says what it is. */
+/**
+ * The short facts under a title, each with the icon that says what it is.
+ * Wrapped onto a second line they sit as close as lines of text, so the
+ * facts read as one block between the title and what follows.
+ */
 function Facts({ children }: { children: ReactNode }) {
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-13 leading-4 text-text-muted">
+    <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-13 leading-4 text-text-muted">
       {children}
     </div>
   );

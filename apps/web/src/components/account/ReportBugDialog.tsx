@@ -60,7 +60,9 @@ export function ReportBugDialog({ onClose }: { onClose: () => void }) {
           </button>
         }
       >
-        <div className="grid justify-items-center px-4 py-12 text-center">
+        {/* Centred between the title and the footer's rule: the header leaves
+            32px and the body 16px, so 16px more below evens them. */}
+        <div className="grid justify-items-center px-4 pt-8 pb-12 text-center">
           <span
             className="grid h-10 w-10 place-items-center rounded-full bg-accent-subtle text-accent-deep"
             aria-hidden="true"

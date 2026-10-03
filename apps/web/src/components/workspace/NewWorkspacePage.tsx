@@ -229,10 +229,12 @@ function TopicStep({
         {/* As in the assistant's composer: controls 8px inside a box rounded
             24px, their own 16px radius plus that gap. */}
         <div className="flex items-center gap-2 p-2">
+          {/* Both icons are drawn about 2px inside their boxes, so the pill's
+              left padding is that much less to match the right. */}
           <button
             className={cx(
               pillClass,
-              "font-medium",
+              "pl-2.5 font-medium",
               instructionsOpen
                 ? "border-accent-border bg-accent-wash text-accent-deep enabled:hover:bg-accent-subtle"
                 : "border-border bg-surface text-text-secondary enabled:hover:bg-surface-subtle enabled:hover:text-text-primary",
@@ -373,9 +375,11 @@ function ReviewStep({
       ) : null}
       {error ? <StepError error={error} onOpenApiKeys={onOpenApiKeys} /> : null}
 
+      {/* The arrows are drawn 2.5px inside their boxes, so the side an arrow
+          sits on gives 2px of padding back to look as wide as the other. */}
       <div className="mt-8 flex items-center gap-2">
         <button
-          className={largeSecondaryActionClass}
+          className={cx(largeSecondaryActionClass, "pl-3")}
           type="button"
           onClick={onBack}
           disabled={busy}
@@ -388,7 +392,7 @@ function ReviewStep({
             is confirmed with a second Enter. */}
         {existing ? (
           <button
-            className={cx(largePrimaryActionClass, "ml-auto")}
+            className={cx(largePrimaryActionClass, "ml-auto pr-3")}
             type="button"
             onClick={() => onOpenExisting(existing.workspace_id)}
             autoFocus
@@ -398,7 +402,7 @@ function ReviewStep({
           </button>
         ) : recognized && review.can_create ? (
           <button
-            className={cx(largePrimaryActionClass, "ml-auto")}
+            className={cx(largePrimaryActionClass, "ml-auto", !busy && "pr-3")}
             type="button"
             disabled={busy}
             onClick={onBuild}
@@ -492,7 +496,7 @@ function BuildProgress({
         <BuildIllustration stages={progress.stages} />
       </div>
 
-      <ol className="m-0 mt-6 grid list-none gap-5 p-0">
+      <ol className="m-0 mt-6 grid list-none gap-4 p-0">
         {progress.stages.map((stage, index) => (
           <StageRow
             key={stage.id}
@@ -530,8 +534,10 @@ function BuildProgress({
       <div className="mt-6 flex items-center gap-2">
         {active ? (
           <>
+            {/* Borderless, so its text is what shows: the box it hovers in
+                reaches out past the column's edge and the row's height. */}
             <button
-              className={cx(largeGhostActionClass, "-ml-3.5")}
+              className={cx(largeGhostActionClass, "-my-2 -ml-3.5")}
               type="button"
               disabled={canceling}
               onClick={() => {
@@ -542,7 +548,8 @@ function BuildProgress({
               {canceling ? "Cancelling…" : "Cancel build"}
             </button>
             {isOpenable(run) ? (
-              <button className={cx(largePrimaryActionClass, "ml-auto")} type="button" onClick={onOpen}>
+              // The arrow is drawn 2.5px inside its box; its side gives 2px back.
+              <button className={cx(largePrimaryActionClass, "ml-auto pr-3")} type="button" onClick={onOpen}>
                 Open workspace
                 <ArrowRightIcon className="size-4" />
               </button>
@@ -583,7 +590,7 @@ function StageRow({ stage, last, took }: { stage: BuildStage; last: boolean; too
       {last ? null : (
         <span
           className={cx(
-            "absolute top-6 -bottom-4 left-[9.5px] w-px",
+            "absolute top-6 -bottom-3 left-[9.5px] w-px",
             stage.state === "done" ? "bg-accent-border" : "bg-hairline",
           )}
           aria-hidden="true"

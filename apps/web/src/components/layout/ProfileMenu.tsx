@@ -34,8 +34,9 @@ export function ProfileMenu({
   const { user } = session;
 
   return (
-    // As wide as the sidebar's rows, so it sits flush over the account row it opens from.
-    <PopoverMenu anchor={anchor} onClose={onClose} label="Account" width={244}>
+    // As wide as the sidebar's rows, its 260px less the hairline and 8px a
+    // side, so it sits flush over the account row it opens from.
+    <PopoverMenu anchor={anchor} onClose={onClose} label="Account" width={243}>
       {/* The avatar's left edge is on the same 16px line as the icons below it. */}
       <div className="flex items-center gap-2.5 border-b border-hairline px-4 py-3">
         <Avatar user={user} size={32} />

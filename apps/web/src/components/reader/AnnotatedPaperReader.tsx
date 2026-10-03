@@ -146,8 +146,10 @@ export function AnnotatedPaperReader({ workspaceId, paper, onClose, onOpenAssist
             <ReaderStatus annotations={annotations} error={error} />
           </p>
         </div>
+        {/* The chevron is drawn 4px inside its box, so the right padding is
+            that much less to end it as far from the edge as the label starts. */}
         <button
-          className={secondaryActionClass}
+          className={cx(secondaryActionClass, "pr-2")}
           type="button"
           disabled={generating}
           onClick={(event) => setModeAnchor(anchorFromEvent(event.currentTarget, "right"))}

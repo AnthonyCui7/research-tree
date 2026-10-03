@@ -62,6 +62,9 @@ const MODELS = [
 /** Tallest the composer grows before it scrolls: eight 24px lines under its 14px top padding. */
 const COMPOSER_MAX_HEIGHT = 206;
 
+/** The thread's own top padding, kept above a question brought to the top. */
+const THREAD_TOP_INSET = 24;
+
 export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: WorkspaceAgentProps) {
   const [modelAnchor, setModelAnchor] = useState<MenuAnchor | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
@@ -79,11 +82,34 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
     setDraft: setMessage,
   } = session;
 
+  const latestQuestionRef = useRef<HTMLDivElement>(null);
+  const latestQuestionIndex = conversation.map((item) => item.role).lastIndexOf("user");
+  const itemsShown = useRef(conversation.length);
+
+  // The thread follows what is added at its foot, except an answer. It lands
+  // whole, so one taller than the view would open on its last lines; the
+  // question it answers is brought to the top instead, and the answer is read
+  // from its start.
   useEffect(() => {
     const element = conversationRef.current;
     if (!element) return;
-    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-  }, [conversation.length, busy, pendingReview, result, outcome, steps.length]);
+    const answered =
+      conversation.length > itemsShown.current && conversation.at(-1)?.role === "agent";
+    itemsShown.current = conversation.length;
+    const bottom = element.scrollHeight - element.clientHeight;
+    const question = latestQuestionRef.current;
+    const top =
+      answered && question
+        ? Math.min(
+            bottom,
+            element.scrollTop +
+              question.getBoundingClientRect().top -
+              element.getBoundingClientRect().top -
+              THREAD_TOP_INSET,
+          )
+        : bottom;
+    element.scrollTo({ top, behavior: "smooth" });
+  }, [conversation, busy, pendingReview, result, outcome, steps.length]);
 
   useEffect(() => {
     const composer = composerRef.current;
@@ -124,7 +150,11 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
 
           {conversation.map((item, index) =>
             item.role === "user" ? (
-              <div className="flex justify-end pl-10" key={`user-${index}`}>
+              <div
+                className="flex justify-end pl-10"
+                key={`user-${index}`}
+                ref={index === latestQuestionIndex ? latestQuestionRef : undefined}
+              >
                 <p className="m-0 rounded-3xl bg-surface-subtle px-4 py-2 text-14 leading-6 whitespace-pre-wrap text-text-primary [overflow-wrap:anywhere]">
                   {item.text}
                 </p>
@@ -158,7 +188,9 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
           {outcome ? <ReviewOutcomeLine outcome={outcome} /> : null}
           {result ? <AgentRunNotices result={result} /> : null}
           {error ? (
-            <div className={cx(errorNoticeClass, "flex items-start gap-3")} role="alert">
+            // A button at the foot of the strip is a hard edge, so it sits as
+            // far from the bottom as the message's capitals do from the top.
+            <div className={cx(errorNoticeClass, "flex items-start gap-3", error.needsKey && "pb-4")} role="alert">
               <span className="min-w-0 flex-1">
                 {error.message}
                 {error.needsKey ? (
@@ -204,10 +236,11 @@ export function WorkspaceAgent({ session, tree, onClose, onOpenApiKeys }: Worksp
           />
           {/* The buttons sit 8px inside the box, which is why it is rounded 24px:
               their own 16px radius plus that gap. The picker's label lines up with
-              the text above it. */}
+              the text above it, and its chevron, drawn 4px inside its box, ends
+              as far from the pill's edge as the label starts. */}
           <div className="flex items-center gap-2 p-2">
             <button
-              className="flex h-8 items-center gap-1 rounded-full border-0 bg-transparent px-3 text-13 font-medium text-text-secondary transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary"
+              className="flex h-8 items-center gap-1 rounded-full border-0 bg-transparent pr-2 pl-3 text-13 font-medium text-text-secondary transition-[background-color,color] duration-150 hover:bg-surface-subtle hover:text-text-primary aria-expanded:bg-surface-subtle aria-expanded:text-text-primary"
               type="button"
               aria-haspopup="menu"
               aria-expanded={modelAnchor !== null}
@@ -368,9 +401,12 @@ function introPrompts(tree: TreeViewModel | null): IntroPrompt[] {
  */
 function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: AgentActivity | null }) {
   const current = activity ?? { kind: "thinking" as const };
+  // A step is recorded as it starts, so the newest one is still under way
+  // until the next event arrives: it shows once, as what is happening now.
+  const done = steps[steps.length - 1] === activity ? steps.slice(0, -1) : steps;
   return (
     <div className="grid gap-2" role="status">
-      {steps.map((step, index) => (
+      {done.map((step, index) => (
         <div className="flex items-start gap-2.5 text-13 text-text-muted" key={`${index}:${stepKey(step)}`}>
           <StepGlyph step={step} />
           <span className="min-w-0 [overflow-wrap:anywhere]">{describe(step, "done")}</span>
@@ -389,10 +425,14 @@ function ActivityTrail({ steps, activity }: { steps: AgentStep[]; activity: Agen
   );
 }
 
-/** What a finished reply was built from, folded to one line until opened. */
+/**
+ * What a finished reply was built from, folded to one line until opened.
+ * Folded, the line is the reply's own header and sits close above it; opened,
+ * the steps are a block of their own, a paragraph's space from the reply.
+ */
 function StepsTaken({ steps }: { steps: AgentStep[] }) {
   return (
-    <details className="group mb-3">
+    <details className="group mb-1 open:mb-4">
       <summary className="flex w-fit max-w-full cursor-pointer list-none items-center gap-1 text-13 text-text-muted transition-[color] duration-150 hover:text-text-secondary [&::-webkit-details-marker]:hidden">
         <span className="min-w-0 truncate">{summarizeSteps(steps)}</span>
         <ChevronDownIcon className="size-4 flex-none -rotate-90 transition-transform duration-150 group-open:rotate-0" />
@@ -634,11 +674,13 @@ const markdownComponents = {
   hr({ node: _node, className, ...props }: MarkdownComponentProps<"hr">) {
     return <hr className={cx("my-6 border-0 border-t border-hairline", className)} {...props} />;
   },
+  // A code block's edge is drawn, and text 24px from an edge looks as far
+  // away as the next paragraph's letters do 16px below a line.
   pre({ node: _node, className, ...props }: MarkdownComponentProps<"pre">) {
     return (
       <pre
         className={cx(
-          "mb-4 overflow-x-auto rounded-md border border-hairline bg-surface-subtle p-4 text-13 last:mb-0 [&_code]:bg-transparent [&_code]:p-0",
+          "my-6 overflow-x-auto rounded-md border border-hairline bg-surface-subtle p-4 text-13 first:mt-0 last:mb-0 [&_code]:bg-transparent [&_code]:p-0",
           className,
         )}
         {...props}
@@ -651,10 +693,12 @@ const markdownComponents = {
     );
   },
   // Replies compare papers and branches in tables often, so a table gets
-  // rules and cell padding to be read as one.
+  // rules and cell padding to be read as one. Its header starts where a
+  // paragraph would, and the rule under its last row is an edge, spaced as
+  // a code block's is.
   table({ node: _node, className, ...props }: MarkdownComponentProps<"table">) {
     return (
-      <div className="mb-4 overflow-x-auto last:mb-0">
+      <div className="mb-6 overflow-x-auto last:mb-0">
         <table className={cx("w-full border-collapse text-13", className)} {...props} />
       </div>
     );
@@ -662,7 +706,7 @@ const markdownComponents = {
   th({ node: _node, className, ...props }: MarkdownComponentProps<"th">) {
     return (
       <th
-        className={cx("border-b border-border py-2 pr-4 text-left align-bottom font-semibold", className)}
+        className={cx("border-b border-border pr-4 pb-2 text-left align-bottom font-semibold", className)}
         {...props}
       />
     );
@@ -688,10 +732,16 @@ const markdownHeadingClass = "mt-6 mb-2 font-semibold text-text-primary first:mt
 
 function displayMarkdown(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
+  // Code is shown exactly as written, so nothing inside a fence is rewritten.
+  let fenced = false;
   return lines
     .map((line, index) => {
       const trimmed = line.trim();
-      if (!trimmed) return line;
+      if (/^(```|~~~)/.test(trimmed)) {
+        fenced = !fenced;
+        return line;
+      }
+      if (fenced || !trimmed) return line;
       if (isPlainAssistantHeading(lines, index)) {
         return `## ${trimmed}`;
       }
@@ -706,7 +756,8 @@ function displayMarkdown(text: string): string {
 function isPlainAssistantHeading(lines: string[], index: number): boolean {
   const line = lines[index]?.trim() ?? "";
   if (line.length > 72 || /[.!?:;,]$/.test(line)) return false;
-  if (/^(#{1,6}|\d+\.|[-*+]\s|>|```)/.test(line)) return false;
+  // Already markdown: a heading, a list item, a quote, a fence, or a table row.
+  if (/^(#{1,6}|\d+\.|[-*+]\s|>|```|\|)/.test(line)) return false;
   if (!/[A-Za-z]/.test(line)) return false;
   const previous = lines[index - 1]?.trim();
   const next = lines[index + 1]?.trim();
