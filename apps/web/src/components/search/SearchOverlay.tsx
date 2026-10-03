@@ -141,7 +141,7 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
             aria-controls="search-results"
             aria-activedescendant={results.length > 0 ? optionId(activeIndex) : undefined}
           />
-          <kbd className={keycapClass}>esc</kbd>
+          <kbd className={keycapClass}>Esc</kbd>
         </div>
 
         <div className="scrollbar-rt min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-2" ref={listRef}>
@@ -165,7 +165,8 @@ export function SearchOverlay({ tree, onSelectNode, onClose }: SearchOverlayProp
                     icon={<TreeIcon className="size-4" />}
                     tint={branchTint(node.family)}
                     title={node.title}
-                    trailing={pluralize(node.paperCount, "paper")}
+                    // A branch that groups others has no reading path of its own to count.
+                    trailing={node.family === "group" ? undefined : pluralize(node.paperCount, "paper")}
                   />
                 ))}
               </div>

@@ -61,10 +61,14 @@ export function Toast({ tone, children, onDismiss, dismissLabel = "Dismiss", act
   );
 }
 
-/** Bottom-left stack the toasts rise from — the zoom stepper owns the right. */
+/**
+ * Bottom-left stack the toasts rise from — the zoom stepper owns the right —
+ * 16px in from the corner, as the stepper is from its own, so the two share a
+ * bottom edge.
+ */
 export function ToastStack({ children }: { children: ReactNode }) {
   return (
-    <div className="pointer-events-none absolute bottom-6 left-6 z-dropdown flex w-[min(420px,calc(100%-48px))] flex-col gap-2">
+    <div className="pointer-events-none absolute bottom-4 left-4 z-dropdown flex w-[min(420px,calc(100%-32px))] flex-col gap-2">
       <div className="pointer-events-auto flex w-full flex-col gap-2">{children}</div>
     </div>
   );

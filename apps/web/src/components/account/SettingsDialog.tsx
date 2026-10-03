@@ -55,7 +55,7 @@ export function SettingsDialog({
       <AccountSection title="Keyboard">
         <dl className="m-0 grid gap-2">
           <Shortcut keys="⌘K" label="Search branches and papers" />
-          <Shortcut keys="esc" label="Close the open panel" />
+          <Shortcut keys="Esc" label="Close the open panel" />
           <Shortcut keys="Enter" label="Send an assistant message" />
         </dl>
       </AccountSection>

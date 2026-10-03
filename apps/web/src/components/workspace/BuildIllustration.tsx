@@ -25,10 +25,12 @@ export function BuildIllustration({ stages }: { stages: BuildStage[] }) {
 
   return (
     <svg className="block h-auto w-full" viewBox="0 0 560 196" aria-hidden="true">
-      {/* The field being read: the pool of papers the build ranks and chooses from. */}
+      {/* The field being read: the pool of papers the build ranks and chooses
+          from. It gives way to the structure drawn from it, and stays when a
+          build stops before any was. */}
       <g
         className="transition-opacity duration-700"
-        style={{ opacity: reading === "done" ? 0 : 1 }}
+        style={{ opacity: structureShown ? 0 : 1 }}
       >
         {POOL.map(([x, y], index) => (
           <rect

@@ -86,6 +86,11 @@ export function WorkspaceHistory({
   }
 
   const ordered = [...versions].reverse();
+  // The server marks exactly one entry current, by position. Matching on the
+  // hash marked both halves of a duplicate that older workspaces can still
+  // carry, so neither offered a way back.
+  const isCurrent = (version: WorkspaceVersion) =>
+    version.is_current ?? version.version_hash === currentVersionHash;
 
   return (
     <>
@@ -103,23 +108,26 @@ export function WorkspaceHistory({
         ) : null}
         <ol className="m-0 list-none p-0">
           {ordered.map((version, index) => {
-            // The server marks exactly one entry current, by position. Matching
-            // on the hash marked both halves of a duplicate that older
-            // workspaces can still carry, so neither offered a way back.
-            const current = version.is_current ?? version.version_hash === currentVersionHash;
-            const last = index === ordered.length - 1;
+            const current = isCurrent(version);
+            const next = ordered[index + 1];
             const editor = versionEditor(version);
             return (
               <li
                 className="relative flex gap-3 pb-6 last:pb-0"
                 key={`${version.navigation_index ?? 0}:${version.version_hash}`}
               >
-                {last ? null : (
+                {/* The line to the next mark stops 4px short of both, counting
+                    the current mark's ring as part of it. */}
+                {next ? (
                   <span
-                    className="absolute top-8 bottom-1 left-[13.5px] w-px bg-hairline"
+                    className={cx(
+                      "absolute left-[13.5px] w-px bg-hairline",
+                      current ? "top-9" : "top-8",
+                      isCurrent(next) ? "bottom-2" : "bottom-1",
+                    )}
                     aria-hidden="true"
                   />
-                )}
+                ) : null}
                 <span
                   className={cx(
                     "relative grid h-7 w-7 flex-none place-items-center rounded-full",

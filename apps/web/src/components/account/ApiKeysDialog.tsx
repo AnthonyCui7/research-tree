@@ -114,7 +114,8 @@ export function ApiKeysDialog({ onClose }: { onClose: () => void }) {
       }
     >
       <AccountSection title="OpenAI">
-        <div className="flex min-h-12 items-center gap-2.5 rounded-xl border border-hairline px-4 py-2.5">
+        {/* 48px with or without the 28px Remove button, which sits 9px inside it. */}
+        <div className="flex min-h-12 items-center gap-2.5 rounded-xl border border-hairline px-4 py-2">
           <span
             className={cx(
               "h-1.5 w-1.5 flex-none rounded-full",
